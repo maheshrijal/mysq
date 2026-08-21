@@ -1,0 +1,161 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"flag"
+	"fmt"
+	"log"
+	"math/rand/v2"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+)
+
+func main() {
+	var dsn string
+	var duration time.Duration
+	var workers int
+	flag.StringVar(&dsn, "dsn", "loadgen:mysqldot-load-test@tcp(127.0.0.1:33306)/app?parseTime=true", "test MySQL DSN")
+	flag.DurationVar(&duration, "duration", 45*time.Second, "load duration")
+	flag.IntVar(&workers, "workers", 8, "concurrent OLTP workers")
+	flag.Parse()
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(workers + 8)
+	db.SetMaxIdleConns(workers + 8)
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		log.Fatal(err)
+	}
+	seed(ctx, db)
+
+	var operations atomic.Uint64
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			work(ctx, db, worker, &operations)
+		}(i)
+	}
+	wg.Add(3)
+	go func() { defer wg.Done(); holdRowLock(ctx, db, 35*time.Second) }()
+	go func() { defer wg.Done(); waitOnRowLock(ctx, db) }()
+	go func() { defer wg.Done(); runLongStatement(ctx, db, 35) }()
+	wg.Wait()
+	fmt.Printf("load complete: %d operations\n", operations.Load())
+}
+
+func seed(ctx context.Context, db *sql.DB) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	statement, err := tx.PrepareContext(ctx, `INSERT IGNORE INTO accounts(id,email,balance) VALUES(?,?,?)`)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for i := 1; i <= 500; i++ {
+		if _, err := statement.ExecContext(ctx, i, fmt.Sprintf("account-%d@example.test", i), 1000); err != nil {
+			log.Fatal(err)
+		}
+	}
+	_ = statement.Close()
+	if err := tx.Commit(); err != nil {
+		log.Fatal(err)
+	}
+	for i := 0; i < 2500; i++ {
+		_, err := db.ExecContext(ctx, `INSERT INTO orders(account_id,status,amount,payload) VALUES(?,?,?,JSON_OBJECT('source','e2e','sequence',?))`,
+			1+rand.IntN(500), []string{"pending", "paid", "shipped", "cancelled"}[rand.IntN(4)], 1+rand.IntN(10000), i)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
+func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64) {
+	statuses := []string{"pending", "paid", "shipped", "cancelled"}
+	for ctx.Err() == nil {
+		account := 1 + rand.IntN(500)
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE accounts SET balance=balance+? WHERE id=?`, rand.IntN(20)-10, account)
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO orders(account_id,status,amount,payload) VALUES(?,?,?,JSON_OBJECT('worker',?,'token',UUID()))`,
+				account, statuses[rand.IntN(len(statuses))], 1+rand.IntN(10000), worker)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO audit_events(account_id,event_type,message) VALUES(?, 'order', CONCAT('worker-', ?))`, account, worker)
+		}
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			continue
+		}
+		var sum sql.NullFloat64
+		_ = db.QueryRowContext(ctx, `SELECT SUM(amount) FROM orders WHERE status=? AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.source'))='missing'`, statuses[rand.IntN(len(statuses))]).Scan(&sum)
+		if operations.Add(1)%100 == 0 {
+			rows, queryErr := db.QueryContext(ctx, `SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY SUM(amount) DESC`)
+			if queryErr == nil {
+				for rows.Next() {
+					var status string
+					var count int
+					var amount float64
+					_ = rows.Scan(&status, &count, &amount)
+				}
+				_ = rows.Close()
+			}
+		}
+	}
+}
+
+func holdRowLock(ctx context.Context, db *sql.DB, duration time.Duration) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET balance=balance+1 WHERE id=1`); err != nil {
+		_ = tx.Rollback()
+		return
+	}
+	timer := time.NewTimer(duration)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		_ = tx.Rollback()
+	case <-timer.C:
+		_ = tx.Commit()
+	}
+}
+
+func waitOnRowLock(ctx context.Context, db *sql.DB) {
+	timer := time.NewTimer(800 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		return
+	case <-timer.C:
+	}
+	_, _ = db.ExecContext(ctx, `UPDATE accounts SET balance=balance-1 WHERE id=1`)
+}
+
+func runLongStatement(ctx context.Context, db *sql.DB, seconds int) {
+	var ignored int
+	_ = db.QueryRowContext(ctx, `SELECT SLEEP(?)`, seconds).Scan(&ignored)
+}

@@ -1,0 +1,9 @@
+/bin/
+/dist/
+/.tmp/
+/coverage.out
+/mysqldot-export-*/
+/.mysqldot/
+.DS_Store
+*.log
+*.zip

@@ -1,0 +1,9 @@
+.git
+.github
+.tmp
+bin
+dist
+coverage.out
+mysqldot-export-*
+*.log
+*.zip

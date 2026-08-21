@@ -1,0 +1,32 @@
+#!/usr/bin/expect -f
+
+set timeout 25
+set binary [lindex $argv 0]
+set dsn [lindex $argv 1]
+spawn -noecho $binary tui $dsn --interval 250ms
+expect {
+  -re {Refreshed [0-9:]+ .* snapshot [0-9a-f]+} {}
+  timeout { exit 10 }
+  eof { exit 11 }
+}
+send "\t"
+send "\t"
+send "e"
+expect {
+  -re {Agent bundle exported:} {}
+  timeout { exit 12 }
+  eof { exit 13 }
+}
+send "r"
+expect {
+  -re {Refreshed [0-9:]+ .* snapshot [0-9a-f]+} {}
+  timeout { exit 14 }
+  eof { exit 15 }
+}
+send "q"
+expect eof
+catch wait result
+set exit_code [lindex $result 3]
+if {$exit_code != 0} {
+  exit $exit_code
+}

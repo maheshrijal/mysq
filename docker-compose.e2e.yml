@@ -1,0 +1,25 @@
+name: mysqldot-e2e
+
+services:
+  mysql:
+    image: mysql:8.4
+    command:
+      - --performance-schema=ON
+      - --innodb-monitor-enable=all
+      - --slow-query-log=ON
+      - --long-query-time=0.1
+    environment:
+      MYSQL_ROOT_PASSWORD: mysqldot-root-test
+      MYSQL_DATABASE: app
+    ports:
+      - "127.0.0.1:${MYSQLDOT_MYSQL_PORT:-33306}:3306"
+    tmpfs:
+      - /var/lib/mysql:size=1g
+    volumes:
+      - ./test/e2e/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
