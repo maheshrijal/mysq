@@ -21,6 +21,11 @@ func Markdown(w io.Writer, ctx *model.Context) error {
 		ctx.Metrics.QueriesPerSecond, ctx.Metrics.TransactionsPerSecond,
 		ctx.Metrics.ConnectionsCurrent, ctx.Metrics.ConnectionsMax, ctx.Metrics.ThreadsRunning,
 		ctx.Metrics.BufferPoolHitPercent, ctx.Metrics.TempDiskTablePercent)
+	fmt.Fprintf(&out, "| Statement p95 | Statement p99 | Maximum | Errors/s | Warnings/s | Deadlocks/s |\n")
+	fmt.Fprintf(&out, "|---:|---:|---:|---:|---:|---:|\n")
+	fmt.Fprintf(&out, "| %s | %s | %s | %.2f | %.2f | %.2f |\n\n", duration(ctx.StatementLatency.P95Millis),
+		duration(ctx.StatementLatency.P99Millis), duration(ctx.StatementLatency.MaxMillis),
+		ctx.Metrics.StatementErrorsPerSec, ctx.Metrics.StatementWarningsPerSec, ctx.Metrics.DeadlocksPerSecond)
 	fmt.Fprintf(&out, "| Data reads/s | Data writes/s | Fsyncs/s | Redo/s | Checkpoint age | Pending I/O |\n")
 	fmt.Fprintf(&out, "|---:|---:|---:|---:|---:|---:|\n")
 	fmt.Fprintf(&out, "| %.2f | %.2f | %.2f | %s | %s (%.2f%%) | %d/%d/%d |\n\n",
@@ -36,20 +41,38 @@ func Markdown(w io.Writer, ctx *model.Context) error {
 		}
 	}
 	if len(ctx.Queries) > 0 {
-		out.WriteString("## Top statements\n\n| Total | Calls | Mean | Active user | Digest | Statement |\n|---:|---:|---:|---|---|---|\n")
+		out.WriteString("## Top statements\n\n| Total | Calls | Mean | p95 | p99 | Errors/warnings | Active user | Digest | Statement |\n|---:|---:|---:|---:|---:|---:|---|---|---|\n")
 		for _, query := range ctx.Queries[:min(10, len(ctx.Queries))] {
 			users := "—"
 			if len(query.ActiveUsers) > 0 {
 				users = strings.Join(query.ActiveUsers, ", ")
 			}
-			fmt.Fprintf(&out, "| %s | %d | %.2fms | %s | `%s` | `%s` |\n", duration(query.TotalLatencyMillis), query.Calls, query.MeanLatencyMillis, users, query.Digest, escapeMarkdown(query.Statement))
+			fmt.Fprintf(&out, "| %s | %d | %.2fms | %s | %s | %d/%d | %s | `%s` | `%s` |\n", duration(query.TotalLatencyMillis),
+				query.Calls, query.MeanLatencyMillis, duration(query.P95LatencyMillis), duration(query.P99LatencyMillis),
+				query.Errors, query.Warnings, users, query.Digest, escapeMarkdown(query.Statement))
 		}
 		out.WriteByte('\n')
 	}
 	if len(ctx.WaitEvents) > 0 {
-		out.WriteString("## Top wait events\n\n| Event | Count | Total | Mean | Max |\n|---|---:|---:|---:|---:|\n")
+		out.WriteString("## Sampled wait pressure\n\n| Event | Sample share | Wait/s | Events/s | Cumulative total |\n|---|---:|---:|---:|---:|\n")
 		for _, wait := range ctx.WaitEvents[:min(10, len(ctx.WaitEvents))] {
-			fmt.Fprintf(&out, "| `%s` | %d | %s | %.1fµs | %s |\n", wait.Name, wait.Count, duration(wait.TotalLatencyMillis), wait.MeanLatencyMicros, duration(wait.MaxLatencyMillis))
+			fmt.Fprintf(&out, "| `%s` | %.1f%% | %s/s | %.2f | %s |\n", wait.Name, wait.SampleSharePercent,
+				duration(wait.WaitMillisPerSecond), wait.EventsPerSecond, duration(wait.TotalLatencyMillis))
+		}
+		out.WriteByte('\n')
+	}
+	if len(ctx.FileIO) > 0 {
+		out.WriteString("## MySQL file I/O\n\n| Instrument | Reads/s | Writes/s | Read latency | Write latency | Wait/s |\n|---|---:|---:|---:|---:|---:|\n")
+		for _, item := range ctx.FileIO[:min(10, len(ctx.FileIO))] {
+			fmt.Fprintf(&out, "| `%s` | %.2f | %.2f | %s | %s | %s/s |\n", item.Name, item.ReadsPerSecond,
+				item.WritesPerSecond, duration(item.MeanReadLatencyMillis), duration(item.MeanWriteLatencyMillis), duration(item.WaitMillisPerSecond))
+		}
+		out.WriteByte('\n')
+	}
+	if len(ctx.ServerErrors) > 0 {
+		out.WriteString("## MySQL errors and warnings\n\n| Error | Sample/s | Total | Last seen | Name |\n|---:|---:|---:|---|---|\n")
+		for _, item := range ctx.ServerErrors[:min(10, len(ctx.ServerErrors))] {
+			fmt.Fprintf(&out, "| %d | %.2f | %d | %s | `%s` |\n", item.Number, item.RaisedPerSecond, item.Raised, item.LastSeen, item.Name)
 		}
 		out.WriteByte('\n')
 	}
@@ -60,6 +83,9 @@ func Markdown(w io.Writer, ctx *model.Context) error {
 		}
 		out.WriteByte('\n')
 	}
+	fmt.Fprintf(&out, "Instrumentation: %d/%d digest slots used (%.1f%%), %d lost events, disabled consumers: `%s`.\n\n",
+		ctx.Instrumentation.DigestRows, ctx.Instrumentation.DigestCapacity, ctx.Instrumentation.DigestUtilizationPercent,
+		ctx.Instrumentation.TotalLost, strings.Join(ctx.Instrumentation.DisabledConsumers, ", "))
 	out.WriteString("All statement text is normalized and literal values are redacted. Counter-derived conclusions are scoped to the server uptime and sample interval shown in `context.json`.\n")
 	_, err := io.WriteString(w, out.String())
 	return err

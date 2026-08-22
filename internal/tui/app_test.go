@@ -24,7 +24,9 @@ func TestTUIRendersAndNavigatesAllViews(t *testing.T) {
 	m.snapshot = ctx
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 38})
 	m = updated.(Model)
-	if view := m.View(); !strings.Contains(view, "12.0 qps") || !strings.Contains(view, "DATABASE POSTURE") || !strings.Contains(view, "PRIORITY SIGNAL") {
+	if view := m.View(); !strings.Contains(view, "12.0 qps") || !strings.Contains(view, "DATABASE POSTURE") ||
+		!strings.Contains(view, "PRIORITY SIGNAL") || !strings.Contains(view, "CURRENT MYSQL LOAD") ||
+		!strings.Contains(view, "QUERY HEALTH") || !strings.Contains(view, "CONTENTION") {
 		t.Fatalf("overview missing content:\n%s", view)
 	}
 	for _, expected := range []string{"No other connections", "SELECT * FROM t", "INNODB I/O AND REDO", "Test finding", "app.t", "performance_schema"} {

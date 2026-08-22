@@ -1,6 +1,7 @@
 package collect
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -109,5 +110,47 @@ func TestSummarizeProcessesByUserHostAndPair(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing groups: %+v", want)
+	}
+}
+
+func TestDeriveWaitEventsUsesSampleIntervalAndRanksCurrentPressure(t *testing.T) {
+	first := map[string]waitCounter{
+		"wait/io/file/innodb/data": {Name: "wait/io/file/innodb/data", Class: "io/file", Count: 100, TotalMillis: 1000},
+		"wait/synch/mutex/sql/x":   {Name: "wait/synch/mutex/sql/x", Class: "synch/mutex", Count: 1000, TotalMillis: 9000},
+	}
+	second := map[string]waitCounter{
+		"wait/io/file/innodb/data": {Name: "wait/io/file/innodb/data", Class: "io/file", Count: 110, TotalMillis: 1200},
+		"wait/synch/mutex/sql/x":   {Name: "wait/synch/mutex/sql/x", Class: "synch/mutex", Count: 1001, TotalMillis: 9010},
+	}
+	waits := deriveWaitEvents(first, second, 2*time.Second)
+	if len(waits) != 2 || waits[0].Class != "io/file" || waits[0].SampleCount != 10 || waits[0].EventsPerSecond != 5 || waits[0].WaitMillisPerSecond != 100 {
+		t.Fatalf("unexpected sampled waits: %+v", waits)
+	}
+	if math.Abs(waits[0].SampleSharePercent-95.238) > 0.01 {
+		t.Fatalf("sample share = %.3f", waits[0].SampleSharePercent)
+	}
+}
+
+func TestDeriveFileIOCalculatesLatencyFromCounterDeltas(t *testing.T) {
+	first := map[string]fileIOCounter{"data": {Name: "data", Reads: 10, Writes: 5, BytesRead: 1000, BytesWritten: 500, ReadMillis: 20, WriteMillis: 10}}
+	second := map[string]fileIOCounter{"data": {Name: "data", Reads: 14, Writes: 7, BytesRead: 5000, BytesWritten: 2500, ReadMillis: 28, WriteMillis: 16}}
+	items := deriveFileIO(first, second, 2*time.Second)
+	if len(items) != 1 || items[0].ReadsPerSecond != 2 || items[0].WritesPerSecond != 1 ||
+		items[0].ReadBytesPerSecond != 2000 || items[0].MeanReadLatencyMillis != 2 || items[0].MeanWriteLatencyMillis != 3 {
+		t.Fatalf("unexpected file I/O: %+v", items)
+	}
+}
+
+func TestDeriveServerErrorsAndInstrumentationLoss(t *testing.T) {
+	first := map[uint64]errorCounter{1062: {Number: 1062, Name: "ER_DUP_ENTRY", Raised: 10}}
+	second := map[uint64]errorCounter{1062: {Number: 1062, Name: "ER_DUP_ENTRY", Raised: 14, LastSeen: "now"}}
+	errors := deriveServerErrors(first, second, 2*time.Second)
+	if len(errors) != 1 || errors[0].SampleRaised != 4 || errors[0].RaisedPerSecond != 2 {
+		t.Fatalf("unexpected errors: %+v", errors)
+	}
+	coverage := model.Instrumentation{}
+	applyInstrumentationStatus(&coverage, map[string]string{"Performance_schema_digest_lost": "3", "Threads_running": "5"})
+	if coverage.TotalLost != 3 || coverage.Lost["Performance_schema_digest_lost"] != 3 {
+		t.Fatalf("unexpected coverage: %+v", coverage)
 	}
 }

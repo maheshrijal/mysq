@@ -271,9 +271,14 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		result.MetadataLocks, probeErr = c.collectMetadataLocks(ctx, conn)
 		return probeErr
 	})
-	c.probe(ctx, result, "wait events", func() error {
+	c.probe(ctx, result, "statement latency histogram", func() error {
 		var probeErr error
-		result.WaitEvents, probeErr = c.collectWaitEvents(ctx, conn)
+		result.StatementLatency, probeErr = c.collectStatementLatency(ctx, conn)
+		return probeErr
+	})
+	c.probe(ctx, result, "instrumentation coverage", func() error {
+		var probeErr error
+		result.Instrumentation, probeErr = c.collectInstrumentation(ctx, conn, result.Variables)
 		return probeErr
 	})
 	c.probe(ctx, result, "memory consumers", func() error {
@@ -295,6 +300,10 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 
 	// The rate window starts only after catalog and Performance Schema probes,
 	// so the diagnostic does not report its own work as application throughput.
+	firstWaits, firstWaitErr := c.collectWaitCounters(ctx, conn)
+	firstFileIO, firstFileErr := c.collectFileIOCounters(ctx, conn)
+	firstErrors, firstErrorErr := c.collectErrorCounters(ctx, conn)
+	firstStatements, firstStatementErr := c.collectStatementCounters(ctx, conn)
 	first, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect initial global status: %w", err)
@@ -317,18 +326,57 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		return nil, fmt.Errorf("collect final global status: %w", err)
 	}
 	elapsed := time.Since(started)
+	secondWaits, secondWaitErr := c.collectWaitCounters(ctx, conn)
+	secondFileIO, secondFileErr := c.collectFileIOCounters(ctx, conn)
+	secondErrors, secondErrorErr := c.collectErrorCounters(ctx, conn)
+	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
+	if c.sampleProbe(result, "wait events", firstWaitErr, secondWaitErr) {
+		result.WaitEvents = deriveWaitEvents(firstWaits, secondWaits, elapsed)
+	}
+	if c.sampleProbe(result, "file I/O", firstFileErr, secondFileErr) {
+		result.FileIO = deriveFileIO(firstFileIO, secondFileIO, elapsed)
+	}
+	if c.sampleProbe(result, "server errors", firstErrorErr, secondErrorErr) {
+		result.ServerErrors = deriveServerErrors(firstErrors, secondErrors, elapsed)
+	}
+	statementSampleAvailable := c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr)
 	result.IntervalMillis = elapsed.Milliseconds()
 	result.GlobalStatus = second
 	result.Server.UptimeSeconds = unsigned(second["Uptime"])
 	historyListLength := result.Metrics.HistoryListLength
 	result.Metrics = deriveMetrics(first, second, result.Variables, elapsed)
+	if statementSampleAvailable {
+		seconds := elapsed.Seconds()
+		if seconds <= 0 {
+			seconds = 1
+		}
+		result.Metrics.StatementErrorsPerSec = float64(counterDelta(firstStatements.Errors, secondStatements.Errors)) / seconds
+		result.Metrics.StatementWarningsPerSec = float64(counterDelta(firstStatements.Warnings, secondStatements.Warnings)) / seconds
+	}
 	result.Metrics.HistoryListLength = historyListLength
+	applyInstrumentationStatus(&result.Instrumentation, second)
 	result.Fingerprint = fingerprint(result.Server)
 	return result, nil
 }
 
 func (c *Collector) probe(ctx context.Context, result *model.Context, name string, fn func() error) {
 	err := fn()
+	c.recordCapability(result, name, err)
+}
+
+func (c *Collector) sampleProbe(result *model.Context, name string, errors ...error) bool {
+	var err error
+	for _, candidate := range errors {
+		if candidate != nil {
+			err = candidate
+			break
+		}
+	}
+	c.recordCapability(result, name, err)
+	return err == nil
+}
+
+func (c *Collector) recordCapability(result *model.Context, name string, err error) {
 	capability := model.Capability{Name: name, Available: err == nil}
 	if err != nil {
 		capability.Reason = compactError(err)
@@ -470,37 +518,40 @@ func deriveMetrics(first, second, variables map[string]string, elapsed time.Dura
 	openFilesLimit := unsigned(variables["open_files_limit"])
 
 	metrics := model.Metrics{
-		QueriesPerSecond:      queries / seconds,
-		TransactionsPerSecond: (commits + rollbacks) / seconds,
-		RowsReadPerSecond:     delta(first, second, "Innodb_rows_read") / seconds,
-		RowsWrittenPerSecond:  (delta(first, second, "Innodb_rows_inserted") + delta(first, second, "Innodb_rows_updated") + delta(first, second, "Innodb_rows_deleted")) / seconds,
-		SlowQueriesPerSecond:  perSecond("Slow_queries"),
-		AbortedConnectsPerSec: perSecond("Aborted_connects"),
-		RowLockWaitsPerSecond: perSecond("Innodb_row_lock_waits"),
-		RedoWaitsPerSecond:    perSecond("Innodb_log_waits"),
-		ConnectionsCurrent:    connections,
-		ConnectionsMax:        maxConnections,
-		ThreadsRunning:        unsigned(second["Threads_running"]),
-		DataReadsPerSecond:    perSecond("Innodb_data_reads"),
-		DataWritesPerSecond:   perSecond("Innodb_data_writes"),
-		DataFsyncsPerSecond:   perSecond("Innodb_data_fsyncs"),
-		RedoBytesPerSecond:    perSecond("Innodb_os_log_written"),
-		RedoWritesPerSecond:   perSecond("Innodb_log_writes"),
-		RedoFsyncsPerSecond:   perSecond("Innodb_os_log_fsyncs"),
-		NetworkInBytesPerSec:  perSecond("Bytes_received"),
-		NetworkOutBytesPerSec: perSecond("Bytes_sent"),
-		FullScansPerSecond:    perSecond("Select_scan"),
-		SortMergePassesPerSec: perSecond("Sort_merge_passes"),
-		BufferPoolWaitsPerSec: perSecond("Innodb_buffer_pool_wait_free"),
-		PendingReads:          unsigned(second["Innodb_data_pending_reads"]),
-		PendingWrites:         unsigned(second["Innodb_data_pending_writes"]),
-		PendingFsyncs:         unsigned(second["Innodb_data_pending_fsyncs"]),
-		BufferPoolDataBytes:   unsigned(second["Innodb_buffer_pool_bytes_data"]),
-		BufferPoolDirtyBytes:  unsigned(second["Innodb_buffer_pool_bytes_dirty"]),
-		RedoCurrentLSN:        unsigned(second["Innodb_redo_log_current_lsn"]),
-		RedoFlushedLSN:        unsigned(second["Innodb_redo_log_flushed_to_disk_lsn"]),
-		RedoCheckpointLSN:     unsigned(second["Innodb_redo_log_checkpoint_lsn"]),
-		RedoCapacityBytes:     unsigned(second["Innodb_redo_log_capacity_resized"]),
+		QueriesPerSecond:        queries / seconds,
+		TransactionsPerSecond:   (commits + rollbacks) / seconds,
+		RowsReadPerSecond:       delta(first, second, "Innodb_rows_read") / seconds,
+		RowsWrittenPerSecond:    (delta(first, second, "Innodb_rows_inserted") + delta(first, second, "Innodb_rows_updated") + delta(first, second, "Innodb_rows_deleted")) / seconds,
+		SlowQueriesPerSecond:    perSecond("Slow_queries"),
+		AbortedConnectsPerSec:   perSecond("Aborted_connects"),
+		RowLockWaitsPerSecond:   perSecond("Innodb_row_lock_waits"),
+		RedoWaitsPerSecond:      perSecond("Innodb_log_waits"),
+		ConnectionsCurrent:      connections,
+		ConnectionsMax:          maxConnections,
+		ThreadsRunning:          unsigned(second["Threads_running"]),
+		DataReadsPerSecond:      perSecond("Innodb_data_reads"),
+		DataWritesPerSecond:     perSecond("Innodb_data_writes"),
+		DataFsyncsPerSecond:     perSecond("Innodb_data_fsyncs"),
+		RedoBytesPerSecond:      perSecond("Innodb_os_log_written"),
+		RedoWritesPerSecond:     perSecond("Innodb_log_writes"),
+		RedoFsyncsPerSecond:     perSecond("Innodb_os_log_fsyncs"),
+		NetworkInBytesPerSec:    perSecond("Bytes_received"),
+		NetworkOutBytesPerSec:   perSecond("Bytes_sent"),
+		FullScansPerSecond:      perSecond("Select_scan"),
+		SortMergePassesPerSec:   perSecond("Sort_merge_passes"),
+		BufferPoolWaitsPerSec:   perSecond("Innodb_buffer_pool_wait_free"),
+		PendingReads:            unsigned(second["Innodb_data_pending_reads"]),
+		PendingWrites:           unsigned(second["Innodb_data_pending_writes"]),
+		PendingFsyncs:           unsigned(second["Innodb_data_pending_fsyncs"]),
+		BufferPoolDataBytes:     unsigned(second["Innodb_buffer_pool_bytes_data"]),
+		BufferPoolDirtyBytes:    unsigned(second["Innodb_buffer_pool_bytes_dirty"]),
+		RedoCurrentLSN:          unsigned(second["Innodb_redo_log_current_lsn"]),
+		RedoFlushedLSN:          unsigned(second["Innodb_redo_log_flushed_to_disk_lsn"]),
+		RedoCheckpointLSN:       unsigned(second["Innodb_redo_log_checkpoint_lsn"]),
+		RedoCapacityBytes:       unsigned(second["Innodb_redo_log_capacity_resized"]),
+		DeadlocksPerSecond:      perSecond("Innodb_deadlocks"),
+		LockTimeoutsPerSecond:   perSecond("Innodb_row_lock_timeouts"),
+		ThreadsCreatedPerSecond: perSecond("Threads_created"),
 	}
 	if metrics.RedoCapacityBytes == 0 {
 		metrics.RedoCapacityBytes = unsigned(variables["innodb_redo_log_capacity"])
@@ -559,7 +610,11 @@ func fingerprint(server model.Server) string {
 func (c *Collector) collectQueries(ctx context.Context, conn *sql.Conn) ([]model.Query, error) {
 	statement := `SELECT COALESCE(DIGEST,''), COALESCE(SCHEMA_NAME,''), COALESCE(DIGEST_TEXT,''),
 		COUNT_STAR, SUM_TIMER_WAIT / 1000000000, AVG_TIMER_WAIT / 1000000000,
-		SUM_ROWS_EXAMINED, SUM_ROWS_SENT, SUM_NO_INDEX_USED, SUM_CREATED_TMP_TABLES,
+		CASE WHEN MAX_TIMER_WAIT <= 9223372036854775807 THEN MAX_TIMER_WAIT ELSE 0 END / 1000000000,
+		QUANTILE_95 / 1000000000,
+		QUANTILE_99 / 1000000000, QUANTILE_999 / 1000000000,
+		SUM_ROWS_EXAMINED, SUM_ROWS_SENT, SUM_ROWS_AFFECTED, SUM_ERRORS, SUM_WARNINGS,
+		SUM_NO_INDEX_USED, SUM_SELECT_SCAN, SUM_CREATED_TMP_TABLES,
 		SUM_CREATED_TMP_DISK_TABLES, COALESCE(CAST(FIRST_SEEN AS CHAR),''), COALESCE(CAST(LAST_SEEN AS CHAR),'')
 	  FROM performance_schema.events_statements_summary_by_digest
       WHERE DIGEST IS NOT NULL AND DIGEST_TEXT IS NOT NULL
@@ -573,8 +628,10 @@ func (c *Collector) collectQueries(ctx context.Context, conn *sql.Conn) ([]model
 	for rows.Next() {
 		var item model.Query
 		if err := rows.Scan(&item.Digest, &item.Schema, &item.Statement, &item.Calls,
-			&item.TotalLatencyMillis, &item.MeanLatencyMillis, &item.RowsExamined,
-			&item.RowsSent, &item.NoIndexUsed, &item.TmpTables, &item.TmpDiskTables,
+			&item.TotalLatencyMillis, &item.MeanLatencyMillis, &item.MaxLatencyMillis,
+			&item.P95LatencyMillis, &item.P99LatencyMillis, &item.P999LatencyMillis,
+			&item.RowsExamined, &item.RowsSent, &item.RowsAffected, &item.Errors, &item.Warnings,
+			&item.NoIndexUsed, &item.FullScans, &item.TmpTables, &item.TmpDiskTables,
 			&item.FirstSeen, &item.LastSeen); err != nil {
 			return nil, err
 		}
@@ -588,9 +645,11 @@ func (c *Collector) collectTables(ctx context.Context, conn *sql.Conn) ([]model.
 	statement := `SELECT t.TABLE_SCHEMA, t.TABLE_NAME, COALESCE(t.ENGINE,''),
         COALESCE(t.TABLE_ROWS,0), COALESCE(t.DATA_LENGTH,0), COALESCE(t.INDEX_LENGTH,0),
         COALESCE(t.DATA_LENGTH + t.INDEX_LENGTH,0), COALESCE(io.COUNT_READ,0),
-        COALESCE(io.COUNT_WRITE,0), COALESCE(io.COUNT_FETCH,0), COALESCE(io.COUNT_INSERT,0),
-        COALESCE(io.COUNT_UPDATE,0), COALESCE(io.COUNT_DELETE,0),
-        EXISTS(SELECT 1 FROM information_schema.STATISTICS s
+		COALESCE(io.COUNT_WRITE,0), COALESCE(io.COUNT_FETCH,0), COALESCE(io.COUNT_INSERT,0),
+		COALESCE(io.COUNT_UPDATE,0), COALESCE(io.COUNT_DELETE,0),
+		COALESCE(io.SUM_TIMER_READ,0) / 1000000000,
+		COALESCE(io.SUM_TIMER_WRITE,0) / 1000000000,
+		EXISTS(SELECT 1 FROM information_schema.STATISTICS s
           WHERE s.TABLE_SCHEMA=t.TABLE_SCHEMA AND s.TABLE_NAME=t.TABLE_NAME AND s.INDEX_NAME='PRIMARY'),
         COALESCE(t.AUTO_INCREMENT,0)
       FROM information_schema.TABLES t
@@ -609,7 +668,8 @@ func (c *Collector) collectTables(ctx context.Context, conn *sql.Conn) ([]model.
 		var item model.Table
 		if err := rows.Scan(&item.Schema, &item.Name, &item.Engine, &item.EstimatedRows,
 			&item.DataBytes, &item.IndexBytes, &item.TotalBytes, &item.Reads, &item.Writes,
-			&item.Fetches, &item.Inserts, &item.Updates, &item.Deletes, &item.HasPrimaryKey,
+			&item.Fetches, &item.Inserts, &item.Updates, &item.Deletes,
+			&item.ReadLatencyMillis, &item.WriteLatencyMillis, &item.HasPrimaryKey,
 			&item.AutoIncrement); err != nil {
 			return nil, err
 		}
@@ -622,7 +682,9 @@ func (c *Collector) collectIndexes(ctx context.Context, conn *sql.Conn) ([]model
 	statement := `SELECT s.TABLE_SCHEMA, s.TABLE_NAME, s.INDEX_NAME,
         GROUP_CONCAT(s.COLUMN_NAME ORDER BY s.SEQ_IN_INDEX SEPARATOR ', '),
         MIN(s.NON_UNIQUE)=0, MIN(COALESCE(s.IS_VISIBLE,'YES'))='YES',
-        COALESCE(MAX(s.CARDINALITY),0), COALESCE(MAX(io.COUNT_READ),0), COALESCE(MAX(io.COUNT_WRITE),0)
+		COALESCE(MAX(s.CARDINALITY),0), COALESCE(MAX(io.COUNT_READ),0), COALESCE(MAX(io.COUNT_WRITE),0),
+		COALESCE(MAX(io.SUM_TIMER_READ),0) / 1000000000,
+		COALESCE(MAX(io.SUM_TIMER_WRITE),0) / 1000000000
       FROM information_schema.STATISTICS s
       LEFT JOIN performance_schema.table_io_waits_summary_by_index_usage io
         ON io.OBJECT_SCHEMA=s.TABLE_SCHEMA AND io.OBJECT_NAME=s.TABLE_NAME
@@ -639,7 +701,8 @@ func (c *Collector) collectIndexes(ctx context.Context, conn *sql.Conn) ([]model
 	for rows.Next() {
 		var item model.Index
 		if err := rows.Scan(&item.Schema, &item.Table, &item.Name, &item.Columns,
-			&item.Unique, &item.Visible, &item.Cardinality, &item.Reads, &item.Writes); err != nil {
+			&item.Unique, &item.Visible, &item.Cardinality, &item.Reads, &item.Writes,
+			&item.ReadLatencyMillis, &item.WriteLatencyMillis); err != nil {
 			return nil, err
 		}
 		indexes = append(indexes, item)
@@ -829,29 +892,285 @@ func (c *Collector) collectMetadataLocks(ctx context.Context, conn *sql.Conn) ([
 	return locks, rows.Err()
 }
 
-func (c *Collector) collectWaitEvents(ctx context.Context, conn *sql.Conn) ([]model.WaitEvent, error) {
+type waitCounter struct {
+	Name, Class             string
+	Count                   uint64
+	TotalMillis, MeanMicros float64
+	MaxMillis               float64
+}
+
+type fileIOCounter struct {
+	Name, Class                            string
+	Reads, Writes, BytesRead, BytesWritten uint64
+	ReadMillis, WriteMillis                float64
+}
+
+type errorCounter struct {
+	Number, Raised, Handled uint64
+	Name, SQLState          string
+	FirstSeen, LastSeen     string
+}
+
+type statementCounter struct {
+	Count, Errors, Warnings uint64
+}
+
+func (c *Collector) collectWaitCounters(ctx context.Context, conn *sql.Conn) (map[string]waitCounter, error) {
 	statement := `SELECT EVENT_NAME,
-		SUBSTRING_INDEX(SUBSTRING_INDEX(EVENT_NAME,'/',2),'/',-1), COUNT_STAR,
+		SUBSTRING_INDEX(SUBSTRING_INDEX(EVENT_NAME,'/',3),'/',-2), COUNT_STAR,
 		SUM_TIMER_WAIT / 1000000000, AVG_TIMER_WAIT / 1000000,
 		MAX_TIMER_WAIT / 1000000000
 	  FROM performance_schema.events_waits_summary_global_by_event_name
-	  WHERE COUNT_STAR > 0 AND EVENT_NAME <> 'idle' AND EVENT_NAME NOT LIKE 'idle/%'
-	  ORDER BY SUM_TIMER_WAIT DESC LIMIT 30`
+	  WHERE COUNT_STAR > 0 AND EVENT_NAME <> 'idle' AND EVENT_NAME NOT LIKE 'idle/%'`
 	rows, err := conn.QueryContext(ctx, statement)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	waits := make([]model.WaitEvent, 0)
+	waits := make(map[string]waitCounter)
 	for rows.Next() {
-		var item model.WaitEvent
-		if err := rows.Scan(&item.Name, &item.Class, &item.Count, &item.TotalLatencyMillis,
-			&item.MeanLatencyMicros, &item.MaxLatencyMillis); err != nil {
+		var item waitCounter
+		if err := rows.Scan(&item.Name, &item.Class, &item.Count, &item.TotalMillis,
+			&item.MeanMicros, &item.MaxMillis); err != nil {
 			return nil, err
 		}
-		waits = append(waits, item)
+		waits[item.Name] = item
 	}
 	return waits, rows.Err()
+}
+
+func deriveWaitEvents(first, second map[string]waitCounter, elapsed time.Duration) []model.WaitEvent {
+	seconds := elapsed.Seconds()
+	if seconds <= 0 {
+		seconds = 1
+	}
+	waits := make([]model.WaitEvent, 0, len(second))
+	var sampleTotal float64
+	for name, current := range second {
+		previous := first[name]
+		sampleLatency := floatDelta(previous.TotalMillis, current.TotalMillis)
+		sampleTotal += sampleLatency
+		waits = append(waits, model.WaitEvent{
+			Name: name, Class: current.Class, Count: current.Count,
+			TotalLatencyMillis: current.TotalMillis, MeanLatencyMicros: current.MeanMicros,
+			MaxLatencyMillis: current.MaxMillis,
+			SampleCount:      counterDelta(previous.Count, current.Count), SampleLatencyMillis: sampleLatency,
+			EventsPerSecond:     float64(counterDelta(previous.Count, current.Count)) / seconds,
+			WaitMillisPerSecond: sampleLatency / seconds,
+		})
+	}
+	for index := range waits {
+		if sampleTotal > 0 {
+			waits[index].SampleSharePercent = waits[index].SampleLatencyMillis * 100 / sampleTotal
+		}
+	}
+	sort.Slice(waits, func(i, j int) bool {
+		if waits[i].SampleLatencyMillis != waits[j].SampleLatencyMillis {
+			return waits[i].SampleLatencyMillis > waits[j].SampleLatencyMillis
+		}
+		return waits[i].TotalLatencyMillis > waits[j].TotalLatencyMillis
+	})
+	if len(waits) > 30 {
+		waits = waits[:30]
+	}
+	return waits
+}
+
+func (c *Collector) collectFileIOCounters(ctx context.Context, conn *sql.Conn) (map[string]fileIOCounter, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT EVENT_NAME,
+		SUBSTRING_INDEX(SUBSTRING_INDEX(EVENT_NAME,'/',5),'/',-1),
+		COUNT_READ, COUNT_WRITE, SUM_NUMBER_OF_BYTES_READ, SUM_NUMBER_OF_BYTES_WRITE,
+		SUM_TIMER_READ / 1000000000, SUM_TIMER_WRITE / 1000000000
+	  FROM performance_schema.file_summary_by_event_name
+	  WHERE COUNT_READ > 0 OR COUNT_WRITE > 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]fileIOCounter)
+	for rows.Next() {
+		var item fileIOCounter
+		if err := rows.Scan(&item.Name, &item.Class, &item.Reads, &item.Writes, &item.BytesRead,
+			&item.BytesWritten, &item.ReadMillis, &item.WriteMillis); err != nil {
+			return nil, err
+		}
+		result[item.Name] = item
+	}
+	return result, rows.Err()
+}
+
+func deriveFileIO(first, second map[string]fileIOCounter, elapsed time.Duration) []model.FileIO {
+	seconds := elapsed.Seconds()
+	if seconds <= 0 {
+		seconds = 1
+	}
+	result := make([]model.FileIO, 0, len(second))
+	for name, current := range second {
+		previous := first[name]
+		reads := counterDelta(previous.Reads, current.Reads)
+		writes := counterDelta(previous.Writes, current.Writes)
+		readMillis := floatDelta(previous.ReadMillis, current.ReadMillis)
+		writeMillis := floatDelta(previous.WriteMillis, current.WriteMillis)
+		item := model.FileIO{
+			Name: name, Class: current.Class, Reads: current.Reads, Writes: current.Writes,
+			BytesRead: current.BytesRead, BytesWritten: current.BytesWritten,
+			TotalReadLatencyMillis: current.ReadMillis, TotalWriteLatencyMillis: current.WriteMillis,
+			ReadsPerSecond: float64(reads) / seconds, WritesPerSecond: float64(writes) / seconds,
+			ReadBytesPerSecond:  float64(counterDelta(previous.BytesRead, current.BytesRead)) / seconds,
+			WriteBytesPerSecond: float64(counterDelta(previous.BytesWritten, current.BytesWritten)) / seconds,
+			WaitMillisPerSecond: (readMillis + writeMillis) / seconds,
+		}
+		if reads > 0 {
+			item.MeanReadLatencyMillis = readMillis / float64(reads)
+		}
+		if writes > 0 {
+			item.MeanWriteLatencyMillis = writeMillis / float64(writes)
+		}
+		result = append(result, item)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].WaitMillisPerSecond != result[j].WaitMillisPerSecond {
+			return result[i].WaitMillisPerSecond > result[j].WaitMillisPerSecond
+		}
+		return result[i].TotalReadLatencyMillis+result[i].TotalWriteLatencyMillis >
+			result[j].TotalReadLatencyMillis+result[j].TotalWriteLatencyMillis
+	})
+	if len(result) > 30 {
+		result = result[:30]
+	}
+	return result
+}
+
+func (c *Collector) collectErrorCounters(ctx context.Context, conn *sql.Conn) (map[uint64]errorCounter, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT ERROR_NUMBER, COALESCE(ERROR_NAME,''), COALESCE(SQL_STATE,''),
+		SUM_ERROR_RAISED, SUM_ERROR_HANDLED, COALESCE(CAST(FIRST_SEEN AS CHAR),''),
+		COALESCE(CAST(LAST_SEEN AS CHAR),'')
+	  FROM performance_schema.events_errors_summary_global_by_error
+	  WHERE SUM_ERROR_RAISED > 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[uint64]errorCounter)
+	for rows.Next() {
+		var item errorCounter
+		if err := rows.Scan(&item.Number, &item.Name, &item.SQLState, &item.Raised, &item.Handled,
+			&item.FirstSeen, &item.LastSeen); err != nil {
+			return nil, err
+		}
+		result[item.Number] = item
+	}
+	return result, rows.Err()
+}
+
+func deriveServerErrors(first, second map[uint64]errorCounter, elapsed time.Duration) []model.ServerError {
+	seconds := elapsed.Seconds()
+	if seconds <= 0 {
+		seconds = 1
+	}
+	result := make([]model.ServerError, 0, len(second))
+	for number, current := range second {
+		previous := first[number]
+		sample := counterDelta(previous.Raised, current.Raised)
+		result = append(result, model.ServerError{
+			Number: number, Name: current.Name, SQLState: current.SQLState,
+			Raised: current.Raised, Handled: current.Handled, FirstSeen: current.FirstSeen, LastSeen: current.LastSeen,
+			SampleRaised: sample, RaisedPerSecond: float64(sample) / seconds,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].SampleRaised != result[j].SampleRaised {
+			return result[i].SampleRaised > result[j].SampleRaised
+		}
+		return result[i].Raised > result[j].Raised
+	})
+	if len(result) > 30 {
+		result = result[:30]
+	}
+	return result
+}
+
+func (c *Collector) collectStatementCounters(ctx context.Context, conn *sql.Conn) (statementCounter, error) {
+	var result statementCounter
+	err := conn.QueryRowContext(ctx, `SELECT COALESCE(SUM(COUNT_STAR),0), COALESCE(SUM(SUM_ERRORS),0),
+		COALESCE(SUM(SUM_WARNINGS),0)
+	  FROM performance_schema.events_statements_summary_global_by_event_name
+	  WHERE EVENT_NAME LIKE 'statement/%'`).Scan(&result.Count, &result.Errors, &result.Warnings)
+	return result, err
+}
+
+func (c *Collector) collectStatementLatency(ctx context.Context, conn *sql.Conn) (model.StatementLatency, error) {
+	var result model.StatementLatency
+	err := conn.QueryRowContext(ctx, `SELECT
+		COALESCE(MIN(CASE WHEN BUCKET_QUANTILE >= 0.95 AND COUNT_BUCKET_AND_LOWER > 0 THEN BUCKET_TIMER_HIGH END),0) / 1000000000,
+		COALESCE(MIN(CASE WHEN BUCKET_QUANTILE >= 0.99 AND COUNT_BUCKET_AND_LOWER > 0 THEN BUCKET_TIMER_HIGH END),0) / 1000000000,
+		COALESCE(MIN(CASE WHEN BUCKET_QUANTILE >= 0.999 AND COUNT_BUCKET_AND_LOWER > 0 THEN BUCKET_TIMER_HIGH END),0) / 1000000000,
+		(SELECT COALESCE(MAX(CASE WHEN MAX_TIMER_WAIT <= 9223372036854775807 THEN MAX_TIMER_WAIT END),0) / 1000000000
+		 FROM performance_schema.events_statements_summary_by_digest WHERE DIGEST IS NOT NULL)
+	  FROM performance_schema.events_statements_histogram_global`).Scan(
+		&result.P95Millis, &result.P99Millis, &result.P999Millis, &result.MaxMillis)
+	return result, err
+}
+
+func (c *Collector) collectInstrumentation(ctx context.Context, conn *sql.Conn, variables map[string]string) (model.Instrumentation, error) {
+	result := model.Instrumentation{DigestCapacity: unsigned(variables["performance_schema_digests_size"])}
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM performance_schema.events_statements_summary_by_digest
+		WHERE DIGEST IS NOT NULL`).Scan(&result.DigestRows); err != nil {
+		return result, err
+	}
+	rows, err := conn.QueryContext(ctx, `SELECT NAME FROM performance_schema.setup_consumers
+		WHERE ENABLED='NO' AND NAME IN ('global_instrumentation','thread_instrumentation',
+		'statements_digest','events_statements_current','events_waits_current','events_transactions_current')
+		ORDER BY NAME`)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return result, err
+		}
+		result.DisabledConsumers = append(result.DisabledConsumers, name)
+	}
+	if result.DigestCapacity > 0 {
+		result.DigestUtilizationPercent = float64(result.DigestRows) * 100 / float64(result.DigestCapacity)
+	}
+	return result, rows.Err()
+}
+
+func applyInstrumentationStatus(result *model.Instrumentation, status map[string]string) {
+	result.Lost = make(map[string]uint64)
+	for name, raw := range status {
+		lower := strings.ToLower(name)
+		if !strings.HasPrefix(lower, "performance_schema_") || !strings.HasSuffix(lower, "_lost") {
+			continue
+		}
+		value := unsigned(raw)
+		if value == 0 {
+			continue
+		}
+		result.Lost[name] = value
+		result.TotalLost += value
+	}
+	if len(result.Lost) == 0 {
+		result.Lost = nil
+	}
+}
+
+func counterDelta(first, second uint64) uint64 {
+	if second < first {
+		return 0
+	}
+	return second - first
+}
+
+func floatDelta(first, second float64) float64 {
+	if second < first {
+		return 0
+	}
+	return second - first
 }
 
 func (c *Collector) collectMemoryConsumers(ctx context.Context, conn *sql.Conn) ([]model.MemoryConsumer, error) {
@@ -909,6 +1228,35 @@ func (c *Collector) collectReplication(ctx context.Context, conn *sql.Conn) (*mo
 	if lag != "" && !strings.EqualFold(lag, "NULL") {
 		parsed := signed(lag)
 		replica.SecondsBehind = &parsed
+	}
+	appliers, err := queryMaps(ctx, conn, "SELECT * FROM performance_schema.replication_applier_status")
+	if err != nil {
+		return nil, err
+	}
+	if len(appliers) > 0 {
+		applier := appliers[0]
+		replica.ApplierState = applier["SERVICE_STATE"]
+		replica.TransactionRetries = unsigned(applier["COUNT_TRANSACTIONS_RETRIES"])
+		if delay := applier["REMAINING_DELAY"]; delay != "" && !strings.EqualFold(delay, "NULL") {
+			parsed := signed(delay)
+			replica.RemainingDelaySeconds = &parsed
+		}
+	}
+	workers, err := queryMaps(ctx, conn, "SELECT * FROM performance_schema.replication_applier_status_by_worker")
+	if err != nil {
+		return nil, err
+	}
+	for _, worker := range workers {
+		replica.Workers = append(replica.Workers, model.ReplicationWorker{
+			Channel: worker["CHANNEL_NAME"], WorkerID: unsigned(worker["WORKER_ID"]),
+			ThreadID: unsigned(worker["THREAD_ID"]), ServiceState: worker["SERVICE_STATE"],
+			LastErrorNumber:            unsigned(worker["LAST_ERROR_NUMBER"]),
+			LastErrorMessage:           sanitize.Text(worker["LAST_ERROR_MESSAGE"]),
+			LastErrorTimestamp:         worker["LAST_ERROR_TIMESTAMP"],
+			ApplyingTransaction:        worker["APPLYING_TRANSACTION"],
+			LastAppliedTransaction:     worker["LAST_APPLIED_TRANSACTION"],
+			ApplyingTransactionRetries: unsigned(worker["APPLYING_TRANSACTION_RETRIES_COUNT"]),
+		})
 	}
 	return replica, nil
 }

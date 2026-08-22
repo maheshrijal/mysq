@@ -146,6 +146,7 @@ func buildArtifacts(ctx *model.Context) ([]artifact, error) {
 		{"context.json", "Complete versioned diagnostic context for agents and programs", ctx},
 		{"findings.json", "Deterministic findings and supporting evidence", ctx.Findings},
 		{"metrics.json", "Derived interval metrics", ctx.Metrics},
+		{"raw/instrumentation.json", "Performance Schema coverage and lost-event counters", ctx.Instrumentation},
 		{"raw/global-status.json", "SHOW GLOBAL STATUS values at the end of the sample", ctx.GlobalStatus},
 		{"raw/capabilities.json", "Probe availability and degraded-coverage reasons", ctx.Capabilities},
 	} {
@@ -162,7 +163,7 @@ func buildArtifacts(ctx *model.Context) ([]artifact, error) {
 	}
 	items = append(items, artifact{name: "summary.md", mediaType: "text/markdown", description: "Human and agent-readable findings-first report", data: markdown.Bytes()})
 	items = append(items, artifact{name: "README.md", mediaType: "text/markdown", description: "Bundle contract and safe-use notes", data: []byte(bundleReadme(ctx))})
-	items = append(items, artifact{name: "schema/context-1.1.0.json", mediaType: "application/schema+json", description: "JSON Schema for context.json", data: contract.ContextLatest()})
+	items = append(items, artifact{name: "schema/context-1.2.0.json", mediaType: "application/schema+json", description: "JSON Schema for context.json", data: contract.ContextLatest()})
 	items = append(items, artifact{name: "raw/innodb-status.txt", mediaType: "text/plain", description: "Redacted SHOW ENGINE INNODB STATUS output", data: []byte(ctx.InnoDBStatus)})
 	items = append(items, artifact{name: "variables.cnf", mediaType: "text/plain", description: "Sorted server variables in option-file syntax", data: variablesFile(ctx.Variables)})
 
@@ -183,20 +184,25 @@ func csvFiles(ctx *model.Context) ([]artifact, error) {
 	queries := make([][]string, 0, len(ctx.Queries))
 	for _, item := range ctx.Queries {
 		queries = append(queries, []string{item.Digest, item.Schema, item.Statement, strconv.FormatUint(item.Calls, 10),
-			formatFloat(item.TotalLatencyMillis), formatFloat(item.MeanLatencyMillis), strconv.FormatUint(item.RowsExamined, 10),
-			strconv.FormatUint(item.RowsSent, 10), strconv.FormatUint(item.NoIndexUsed, 10), strconv.FormatUint(item.TmpTables, 10),
+			formatFloat(item.TotalLatencyMillis), formatFloat(item.MeanLatencyMillis), formatFloat(item.MaxLatencyMillis),
+			formatFloat(item.P95LatencyMillis), formatFloat(item.P99LatencyMillis), formatFloat(item.P999LatencyMillis),
+			strconv.FormatUint(item.RowsExamined, 10), strconv.FormatUint(item.RowsSent, 10), strconv.FormatUint(item.RowsAffected, 10),
+			strconv.FormatUint(item.Errors, 10), strconv.FormatUint(item.Warnings, 10), strconv.FormatUint(item.NoIndexUsed, 10),
+			strconv.FormatUint(item.FullScans, 10), strconv.FormatUint(item.TmpTables, 10),
 			strconv.FormatUint(item.TmpDiskTables, 10), item.FirstSeen, item.LastSeen, strings.Join(item.ActiveUsers, ",")})
 	}
 	tables := make([][]string, 0, len(ctx.Tables))
 	for _, item := range ctx.Tables {
 		tables = append(tables, []string{item.Schema, item.Name, item.Engine, strconv.FormatUint(item.EstimatedRows, 10),
 			strconv.FormatUint(item.DataBytes, 10), strconv.FormatUint(item.IndexBytes, 10), strconv.FormatUint(item.TotalBytes, 10),
-			strconv.FormatUint(item.Reads, 10), strconv.FormatUint(item.Writes, 10), strconv.FormatBool(item.HasPrimaryKey)})
+			strconv.FormatUint(item.Reads, 10), strconv.FormatUint(item.Writes, 10), formatFloat(item.ReadLatencyMillis),
+			formatFloat(item.WriteLatencyMillis), strconv.FormatBool(item.HasPrimaryKey)})
 	}
 	indexes := make([][]string, 0, len(ctx.Indexes))
 	for _, item := range ctx.Indexes {
 		indexes = append(indexes, []string{item.Schema, item.Table, item.Name, item.Columns, strconv.FormatBool(item.Unique),
-			strconv.FormatBool(item.Visible), strconv.FormatUint(item.Cardinality, 10), strconv.FormatUint(item.Reads, 10), strconv.FormatUint(item.Writes, 10)})
+			strconv.FormatBool(item.Visible), strconv.FormatUint(item.Cardinality, 10), strconv.FormatUint(item.Reads, 10),
+			strconv.FormatUint(item.Writes, 10), formatFloat(item.ReadLatencyMillis), formatFloat(item.WriteLatencyMillis)})
 	}
 	processes := make([][]string, 0, len(ctx.Processes))
 	for _, item := range ctx.Processes {
@@ -226,7 +232,22 @@ func csvFiles(ctx *model.Context) ([]artifact, error) {
 	waits := make([][]string, 0, len(ctx.WaitEvents))
 	for _, item := range ctx.WaitEvents {
 		waits = append(waits, []string{item.Name, item.Class, strconv.FormatUint(item.Count, 10), formatFloat(item.TotalLatencyMillis),
-			formatFloat(item.MeanLatencyMicros), formatFloat(item.MaxLatencyMillis)})
+			formatFloat(item.MeanLatencyMicros), formatFloat(item.MaxLatencyMillis), strconv.FormatUint(item.SampleCount, 10),
+			formatFloat(item.SampleLatencyMillis), formatFloat(item.EventsPerSecond), formatFloat(item.WaitMillisPerSecond),
+			formatFloat(item.SampleSharePercent)})
+	}
+	fileIO := make([][]string, 0, len(ctx.FileIO))
+	for _, item := range ctx.FileIO {
+		fileIO = append(fileIO, []string{item.Name, item.Class, strconv.FormatUint(item.Reads, 10), strconv.FormatUint(item.Writes, 10),
+			strconv.FormatUint(item.BytesRead, 10), strconv.FormatUint(item.BytesWritten, 10), formatFloat(item.TotalReadLatencyMillis),
+			formatFloat(item.TotalWriteLatencyMillis), formatFloat(item.ReadsPerSecond), formatFloat(item.WritesPerSecond),
+			formatFloat(item.ReadBytesPerSecond), formatFloat(item.WriteBytesPerSecond), formatFloat(item.MeanReadLatencyMillis),
+			formatFloat(item.MeanWriteLatencyMillis), formatFloat(item.WaitMillisPerSecond)})
+	}
+	errors := make([][]string, 0, len(ctx.ServerErrors))
+	for _, item := range ctx.ServerErrors {
+		errors = append(errors, []string{strconv.FormatUint(item.Number, 10), item.Name, item.SQLState, strconv.FormatUint(item.Raised, 10),
+			strconv.FormatUint(item.Handled, 10), item.FirstSeen, item.LastSeen, strconv.FormatUint(item.SampleRaised, 10), formatFloat(item.RaisedPerSecond)})
 	}
 	memory := make([][]string, 0, len(ctx.MemoryConsumers))
 	for _, item := range ctx.MemoryConsumers {
@@ -234,15 +255,17 @@ func csvFiles(ctx *model.Context) ([]artifact, error) {
 	}
 
 	specs := []csvSpec{
-		{"queries.csv", "Normalized statement digest statistics", []string{"digest", "schema", "statement", "calls", "total_latency_ms", "mean_latency_ms", "rows_examined", "rows_sent", "no_index_used", "tmp_tables", "tmp_disk_tables", "first_seen", "last_seen", "active_users"}, queries},
-		{"tables.csv", "Table size and I/O statistics", []string{"schema", "table", "engine", "estimated_rows", "data_bytes", "index_bytes", "total_bytes", "reads", "writes", "has_primary_key"}, tables},
-		{"indexes.csv", "Index definitions and usage counters", []string{"schema", "table", "index", "columns", "unique", "visible", "cardinality", "reads", "writes"}, indexes},
+		{"queries.csv", "Normalized statement digest statistics", []string{"digest", "schema", "statement", "calls", "total_latency_ms", "mean_latency_ms", "max_latency_ms", "p95_latency_ms", "p99_latency_ms", "p999_latency_ms", "rows_examined", "rows_sent", "rows_affected", "errors", "warnings", "no_index_used", "full_scans", "tmp_tables", "tmp_disk_tables", "first_seen", "last_seen", "active_users"}, queries},
+		{"tables.csv", "Table size, I/O count, and latency statistics", []string{"schema", "table", "engine", "estimated_rows", "data_bytes", "index_bytes", "total_bytes", "reads", "writes", "read_latency_ms", "write_latency_ms", "has_primary_key"}, tables},
+		{"indexes.csv", "Index definitions, usage, and latency counters", []string{"schema", "table", "index", "columns", "unique", "visible", "cardinality", "reads", "writes", "read_latency_ms", "write_latency_ms"}, indexes},
 		{"processes.csv", "Redacted active-session snapshot", []string{"id", "thread_id", "user", "host", "database", "command", "seconds", "state", "digest", "wait_event", "statement_latency_ms", "statement"}, processes},
 		{"connections.csv", "Connection counts grouped by user, host, and user-host pair", []string{"kind", "key", "total", "active", "sleeping", "other"}, connectionGroups},
 		{"locks.csv", "Active InnoDB row lock waits", []string{"waiting_transaction", "blocking_transaction", "schema", "table", "index", "lock_type", "lock_mode"}, locks},
 		{"transactions.csv", "Active InnoDB transaction snapshot", []string{"transaction", "state", "started_at", "age_seconds", "process_id", "user", "host", "rows_locked", "rows_modified", "tables_in_use", "tables_locked", "statement"}, transactions},
 		{"metadata-locks.csv", "Active and pending metadata locks", []string{"thread_id", "process_id", "user", "host", "object_type", "schema", "object", "lock_type", "duration", "status"}, metadataLocks},
-		{"wait-events.csv", "Top Performance Schema wait events", []string{"event", "class", "count", "total_latency_ms", "mean_latency_us", "max_latency_ms"}, waits},
+		{"wait-events.csv", "Sampled and cumulative Performance Schema wait events", []string{"event", "class", "count", "total_latency_ms", "mean_latency_us", "max_latency_ms", "sample_count", "sample_latency_ms", "events_per_second", "wait_ms_per_second", "sample_share_percent"}, waits},
+		{"file-io.csv", "Sampled and cumulative MySQL file I/O", []string{"event", "class", "reads", "writes", "bytes_read", "bytes_written", "total_read_latency_ms", "total_write_latency_ms", "reads_per_second", "writes_per_second", "read_bytes_per_second", "write_bytes_per_second", "mean_read_latency_ms", "mean_write_latency_ms", "wait_ms_per_second"}, fileIO},
+		{"server-errors.csv", "Sampled and cumulative MySQL errors and warnings", []string{"number", "name", "sql_state", "raised", "handled", "first_seen", "last_seen", "sample_raised", "raised_per_second"}, errors},
 		{"memory-consumers.csv", "Top MySQL memory consumers", []string{"consumer", "current_bytes", "high_bytes", "allocations"}, memory},
 	}
 	result := make([]artifact, 0, len(specs))

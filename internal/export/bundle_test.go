@@ -23,7 +23,7 @@ func TestWriteCreatesAgentBundleAndArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"manifest.json", "context.json", "summary.md", "queries.csv", "transactions.csv", "metadata-locks.csv", "wait-events.csv", "memory-consumers.csv", "schema/context-1.1.0.json", "variables.cnf", "README.md"} {
+	for _, name := range []string{"manifest.json", "context.json", "summary.md", "queries.csv", "transactions.csv", "metadata-locks.csv", "wait-events.csv", "file-io.csv", "server-errors.csv", "memory-consumers.csv", "raw/instrumentation.json", "schema/context-1.2.0.json", "variables.cnf", "README.md"} {
 		if _, err := os.Stat(filepath.Join(output, name)); err != nil {
 			t.Fatalf("missing %s: %v", name, err)
 		}

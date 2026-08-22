@@ -146,6 +146,7 @@ func renderFull(ctx *model.Context, p palette, width int) string {
 		{"redo", humanBytes(uint64(ctx.Metrics.RedoBytesPerSecond)) + "/s", humanBytes(ctx.Metrics.RedoCheckpointAgeBytes) + " checkpoint age", fmt.Sprintf("%.2f%% of %s", ctx.Metrics.RedoCheckpointAgePct, humanBytes(ctx.Metrics.RedoCapacityBytes))},
 		{"buffer pool", humanBytes(ctx.Metrics.BufferPoolDataBytes) + " data", humanBytes(ctx.Metrics.BufferPoolDirtyBytes) + " dirty", fmt.Sprintf("%.2f waits/s", ctx.Metrics.BufferPoolWaitsPerSec)},
 		{"network", humanBytes(uint64(ctx.Metrics.NetworkInBytesPerSec)) + "/s in", humanBytes(uint64(ctx.Metrics.NetworkOutBytesPerSec)) + "/s out", fmt.Sprintf("%.2f full scans/s", ctx.Metrics.FullScansPerSecond)},
+		{"statement health", "p95 " + duration(ctx.StatementLatency.P95Millis), "p99 " + duration(ctx.StatementLatency.P99Millis), fmt.Sprintf("%.2f errors/s · %.2f warnings/s", ctx.Metrics.StatementErrorsPerSec, ctx.Metrics.StatementWarningsPerSec)},
 	}
 	out.WriteString(table([]string{"area", "primary", "secondary", "related"}, engineRows, []int{16, 24, 30, 32}, p))
 
@@ -153,9 +154,30 @@ func renderFull(ctx *model.Context, p palette, width int) string {
 		section("TOP WAIT EVENTS")
 		waitRows := make([][]string, 0, min(10, len(ctx.WaitEvents)))
 		for _, item := range ctx.WaitEvents[:min(10, len(ctx.WaitEvents))] {
-			waitRows = append(waitRows, []string{humanCount(item.Count), duration(item.TotalLatencyMillis), fmt.Sprintf("%.1fµs", item.MeanLatencyMicros), duration(item.MaxLatencyMillis), item.Name})
+			waitRows = append(waitRows, []string{fmt.Sprintf("%.1f%%", item.SampleSharePercent), duration(item.WaitMillisPerSecond) + "/s",
+				fmt.Sprintf("%.1f/s", item.EventsPerSecond), duration(item.TotalLatencyMillis), item.Name})
 		}
-		out.WriteString(table([]string{"count", "total", "mean", "max", "event"}, waitRows, []int{10, 12, 12, 12, 56}, p))
+		out.WriteString(table([]string{"share", "wait/s", "events/s", "cumulative", "event"}, waitRows, []int{10, 12, 12, 12, 56}, p))
+	}
+
+	if len(ctx.FileIO) > 0 {
+		section("MYSQL FILE I/O")
+		ioRows := make([][]string, 0, min(10, len(ctx.FileIO)))
+		for _, item := range ctx.FileIO[:min(10, len(ctx.FileIO))] {
+			ioRows = append(ioRows, []string{fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond),
+				duration(item.MeanReadLatencyMillis), duration(item.MeanWriteLatencyMillis), item.Name})
+		}
+		out.WriteString(table([]string{"read/s", "write/s", "read latency", "write latency", "instrument"}, ioRows, []int{10, 10, 14, 14, 56}, p))
+	}
+
+	if len(ctx.ServerErrors) > 0 {
+		section("MYSQL ERRORS AND WARNINGS")
+		errorRows := make([][]string, 0, min(10, len(ctx.ServerErrors)))
+		for _, item := range ctx.ServerErrors[:min(10, len(ctx.ServerErrors))] {
+			errorRows = append(errorRows, []string{fmt.Sprint(item.Number), fmt.Sprintf("%.2f/s", item.RaisedPerSecond),
+				humanCount(item.Raised), item.LastSeen, item.Name})
+		}
+		out.WriteString(table([]string{"error", "sample", "total", "last seen", "name"}, errorRows, []int{9, 12, 10, 22, 45}, p))
 	}
 
 	if len(ctx.Queries) > 0 {
@@ -176,10 +198,10 @@ func renderFull(ctx *model.Context, p palette, width int) string {
 			}
 			queryRows = append(queryRows, []string{
 				duration(query.TotalLatencyMillis), fmt.Sprintf("%.1f%%", share), humanCount(query.Calls),
-				fmt.Sprintf("%.2fms", query.MeanLatencyMillis), users, truncate(query.Statement, 40),
+				duration(query.P95LatencyMillis), users, truncate(query.Statement, 40),
 			})
 		}
-		out.WriteString(table([]string{"total", "share", "calls", "mean", "user now", "statement"}, queryRows, []int{10, 8, 10, 11, 14, 41}, p))
+		out.WriteString(table([]string{"total", "share", "calls", "p95", "user now", "statement"}, queryRows, []int{10, 8, 10, 11, 14, 41}, p))
 		out.WriteString(p.muted.Render("Statement text is normalized; literals are never exported.") + "\n")
 	}
 

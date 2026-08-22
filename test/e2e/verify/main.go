@@ -56,6 +56,15 @@ func verifyContext(path string) {
 	if len(ctx.WaitEvents) == 0 || len(ctx.MemoryConsumers) == 0 || ctx.Metrics.RedoCapacityBytes == 0 || ctx.Metrics.BufferPoolDataBytes == 0 {
 		log.Fatalf("insufficient engine coverage: waits=%d memory=%d redo_capacity=%d buffer_data=%d", len(ctx.WaitEvents), len(ctx.MemoryConsumers), ctx.Metrics.RedoCapacityBytes, ctx.Metrics.BufferPoolDataBytes)
 	}
+	if len(ctx.FileIO) == 0 || len(ctx.ServerErrors) == 0 || ctx.StatementLatency.P95Millis == 0 || ctx.Instrumentation.DigestCapacity == 0 {
+		log.Fatalf("insufficient MySQL investigation data: file_io=%d errors=%d p95=%.2f digest_capacity=%d",
+			len(ctx.FileIO), len(ctx.ServerErrors), ctx.StatementLatency.P95Millis, ctx.Instrumentation.DigestCapacity)
+	}
+	// MySQL occasionally exposes an unsigned timer underflow near UINT64_MAX.
+	// It is not a real statement duration and must never reach the product surface.
+	if ctx.StatementLatency.MaxMillis > 9223372036.854775 {
+		log.Fatalf("statement max latency contains an invalid Performance Schema timer: %.4fms", ctx.StatementLatency.MaxMillis)
+	}
 	for _, process := range ctx.Processes {
 		if strings.Contains(process.Statement, "mysq-load-test") {
 			log.Fatal("process statement leaked a literal")
@@ -78,7 +87,7 @@ func verifyBundle(directory string) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		log.Fatal(err)
 	}
-	if !m.SecretFree || len(m.Files) != 20 {
+	if !m.SecretFree || len(m.Files) != 23 {
 		log.Fatalf("invalid manifest: secret_free=%t files=%d", m.SecretFree, len(m.Files))
 	}
 	for _, file := range m.Files {

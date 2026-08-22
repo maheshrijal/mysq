@@ -42,7 +42,7 @@ if [[ "$gate_code" -ne 2 ]]; then
   exit 1
 fi
 
-for section in queries tables indexes processes transactions locks metadata-locks waits memory engine variables replication; do
+for section in queries tables indexes processes transactions locks metadata-locks waits io errors memory engine coverage variables replication; do
   MYSQ_DATABASE_URL="$monitor_dsn" "$binary" "$section" --json --interval 250ms >"$work_dir/${section}.json"
 done
 

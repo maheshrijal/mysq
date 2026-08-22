@@ -53,7 +53,7 @@ mysq export --zip
 
 ## The terminal
 
-`mysq inspect` is the fast, findings-first read. `--full` adds engine I/O and redo, top waits, memory consumers, transactions, statements, tables, connections, locks, replication, and collection details.
+`mysq inspect` is the fast, findings-first read. `--full` adds sampled MySQL waits, file-I/O latency, statement tail latency, errors, instrumentation coverage, engine I/O and redo, memory consumers, transactions, tables, connections, locks, replication, and collection details.
 
 `mysq tui` opens the live interactive view:
 
@@ -81,17 +81,19 @@ An export is written atomically and refuses to overwrite an existing path. It co
 |---|---|
 | `summary.md` | Findings-first narrative for a human or agent |
 | `context.json` | Complete versioned diagnostic contract |
-| `schema/context-1.1.0.json` | JSON Schema for validation and tool generation |
+| `schema/context-1.2.0.json` | JSON Schema for validation and tool generation |
 | `findings.json` / `metrics.json` | Small deterministic reasoning inputs |
-| `queries.csv` | Normalized statement digests and cost |
-| `tables.csv` / `indexes.csv` | Storage, I/O, keys, and usage evidence |
+| `queries.csv` | Normalized statement digests, tail latency, errors, and cost |
+| `tables.csv` / `indexes.csv` | Storage, I/O latency, keys, and usage evidence |
 | `processes.csv` / `connections.csv` / `locks.csv` | Redacted concurrency snapshot and user/host grouping |
 | `transactions.csv` / `metadata-locks.csv` | Active transaction and metadata-lock evidence |
-| `wait-events.csv` / `memory-consumers.csv` | Performance Schema waits and MySQL memory allocation |
+| `wait-events.csv` / `file-io.csv` | Sampled Performance Schema wait and file-I/O pressure |
+| `server-errors.csv` / `memory-consumers.csv` | MySQL errors and internal memory allocation |
 | `variables.cnf` | Sorted captured configuration; evidence, not an apply file |
 | `raw/innodb-status.txt` | Redacted InnoDB monitor output |
 | `raw/global-status.json` | End-of-sample counters |
 | `raw/capabilities.json` | Exact probe coverage and degradation reasons |
+| `raw/instrumentation.json` | Digest capacity, disabled consumers, and lost-event counters |
 | `manifest.json` | Media types, descriptions, and SHA-256 for every artifact |
 
 The bundle is secret-free by construction. SQL string and numeric literals are removed before data enters the in-memory snapshot, so later renderers cannot accidentally choose to leak them. DSNs and passwords are never persisted.
@@ -102,18 +104,21 @@ The bundle is secret-free by construction. SQL string and numeric literals are r
 |---|---|
 | `inspect` | Findings-first report; `--full`, JSON, Markdown, CI gate, history, and inline export |
 | `tui` | Live interactive terminal with refresh and native export |
-| `queries` | Statement digests ranked by total latency |
-| `tables` | Table size, estimated rows, I/O, and primary-key state |
-| `indexes` | Index columns, uniqueness, visibility, and read/write counters |
+| `queries` | Statement digests with p95/p99/max latency, errors, user, and row efficiency |
+| `tables` | Table size, estimated rows, I/O latency, and primary-key state |
+| `indexes` | Index columns, uniqueness, visibility, and read/write latency |
 | `processes` | Redacted process-list snapshot |
 | `transactions` | Active InnoDB transactions, age, ownership, rows, and normalized SQL |
 | `locks` | Active InnoDB row-lock wait graph edges |
 | `metadata-locks` | Active and pending metadata locks with owners and objects |
-| `waits` | Top Performance Schema wait events by total latency |
+| `waits` | Sampled wait share and pressure with cumulative context |
+| `io` | Sampled MySQL file-I/O throughput and latency |
+| `errors` | Sampled and cumulative MySQL server errors and warnings |
 | `memory` | Top MySQL memory consumers and high-water allocation |
 | `engine` | Sampled InnoDB I/O, redo/checkpoint, buffer, network, and scan metrics |
+| `coverage` | Performance Schema consumers, digest capacity, and lost events |
 | `variables` | Sorted global configuration |
-| `replication` | Replica thread state, lag, GTID sets, and redacted errors |
+| `replication` | Receiver, applier and worker state, lag, retries, GTID sets, and redacted errors |
 | `export` | Atomic JSON/Markdown/CSV/TXT agent bundle, optionally zipped |
 | `snapshots list` | Local snapshot inventory |
 | `diff` | Offline health, findings, metrics, and statement comparison |

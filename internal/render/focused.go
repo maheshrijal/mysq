@@ -14,7 +14,7 @@ func Focused(w io.Writer, section string, ctx *model.Context) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	switch section {
 	case "queries":
-		fmt.Fprintln(tw, "TOTAL\tSHARE\tCALLS\tMEAN\tEXAMINED\tSENT\tTMP DISK\tACTIVE USER\tSTATEMENT")
+		fmt.Fprintln(tw, "TOTAL\tSHARE\tCALLS\tMEAN\tP95\tP99\tMAX\tERRORS/WARN\tEXAMINED\tSENT\tACTIVE USER\tSTATEMENT")
 		var total float64
 		for _, item := range ctx.Queries {
 			total += item.TotalLatencyMillis
@@ -28,9 +28,10 @@ func Focused(w io.Writer, section string, ctx *model.Context) error {
 			if len(item.ActiveUsers) > 0 {
 				users = strings.Join(item.ActiveUsers, ",")
 			}
-			fmt.Fprintf(tw, "%s\t%.1f%%\t%s\t%.2fms\t%s\t%s\t%s\t%s\t%s\n", duration(item.TotalLatencyMillis), share,
-				humanCount(item.Calls), item.MeanLatencyMillis, humanCount(item.RowsExamined), humanCount(item.RowsSent),
-				humanCount(item.TmpDiskTables), users, truncate(item.Statement, 76))
+			fmt.Fprintf(tw, "%s\t%.1f%%\t%s\t%.2fms\t%s\t%s\t%s\t%d/%d\t%s\t%s\t%s\t%s\n", duration(item.TotalLatencyMillis), share,
+				humanCount(item.Calls), item.MeanLatencyMillis, duration(item.P95LatencyMillis), duration(item.P99LatencyMillis),
+				duration(item.MaxLatencyMillis), item.Errors, item.Warnings, humanCount(item.RowsExamined), humanCount(item.RowsSent),
+				users, truncate(item.Statement, 76))
 		}
 	case "tables":
 		fmt.Fprintln(tw, "SIZE\tROWS\tREADS\tWRITES\tPK\tTABLE")
@@ -74,10 +75,23 @@ func Focused(w io.Writer, section string, ctx *model.Context) error {
 				item.User, item.Host, item.ObjectType, item.Schema, item.Object, item.LockType, item.Duration)
 		}
 	case "waits":
-		fmt.Fprintln(tw, "COUNT\tTOTAL\tMEAN\tMAX\tCLASS\tEVENT")
+		fmt.Fprintln(tw, "SAMPLE SHARE\tWAIT/S\tEVENTS/S\tSAMPLE COUNT\tCUM TOTAL\tCLASS\tEVENT")
 		for _, item := range ctx.WaitEvents {
-			fmt.Fprintf(tw, "%s\t%s\t%.1fµs\t%s\t%s\t%s\n", humanCount(item.Count), duration(item.TotalLatencyMillis),
-				item.MeanLatencyMicros, duration(item.MaxLatencyMillis), item.Class, item.Name)
+			fmt.Fprintf(tw, "%.1f%%\t%s/s\t%.2f\t%s\t%s\t%s\t%s\n", item.SampleSharePercent, duration(item.WaitMillisPerSecond),
+				item.EventsPerSecond, humanCount(item.SampleCount), duration(item.TotalLatencyMillis), item.Class, item.Name)
+		}
+	case "io":
+		fmt.Fprintln(tw, "READ/S\tWRITE/S\tREAD BYTES/S\tWRITE BYTES/S\tREAD LAT\tWRITE LAT\tWAIT/S\tINSTRUMENT")
+		for _, item := range ctx.FileIO {
+			fmt.Fprintf(tw, "%.2f\t%.2f\t%s/s\t%s/s\t%s\t%s\t%s/s\t%s\n", item.ReadsPerSecond, item.WritesPerSecond,
+				humanBytes(uint64(item.ReadBytesPerSecond)), humanBytes(uint64(item.WriteBytesPerSecond)),
+				duration(item.MeanReadLatencyMillis), duration(item.MeanWriteLatencyMillis), duration(item.WaitMillisPerSecond), item.Name)
+		}
+	case "errors":
+		fmt.Fprintln(tw, "ERROR\tSQLSTATE\tSAMPLE/S\tSAMPLE\tTOTAL\tHANDLED\tLAST SEEN\tNAME")
+		for _, item := range ctx.ServerErrors {
+			fmt.Fprintf(tw, "%d\t%s\t%.2f\t%d\t%d\t%d\t%s\t%s\n", item.Number, item.SQLState,
+				item.RaisedPerSecond, item.SampleRaised, item.Raised, item.Handled, item.LastSeen, item.Name)
 		}
 	case "memory":
 		fmt.Fprintln(tw, "CURRENT\tHIGH WATER\tALLOCATIONS\tCONSUMER")
@@ -94,6 +108,21 @@ func Focused(w io.Writer, section string, ctx *model.Context) error {
 		fmt.Fprintf(tw, "redo_checkpoint_age\t%s\nredo_capacity\t%s\nredo_checkpoint_age_percent\t%.2f%%\n", humanBytes(m.RedoCheckpointAgeBytes), humanBytes(m.RedoCapacityBytes), m.RedoCheckpointAgePct)
 		fmt.Fprintf(tw, "buffer_pool_data\t%s\nbuffer_pool_dirty\t%s\nbuffer_pool_waits_per_second\t%.2f\n", humanBytes(m.BufferPoolDataBytes), humanBytes(m.BufferPoolDirtyBytes), m.BufferPoolWaitsPerSec)
 		fmt.Fprintf(tw, "network_in_per_second\t%s/s\nnetwork_out_per_second\t%s/s\nfull_scans_per_second\t%.2f\nsort_merge_passes_per_second\t%.2f\n", humanBytes(uint64(m.NetworkInBytesPerSec)), humanBytes(uint64(m.NetworkOutBytesPerSec)), m.FullScansPerSecond, m.SortMergePassesPerSec)
+		fmt.Fprintf(tw, "statement_errors_per_second\t%.2f\nstatement_warnings_per_second\t%.2f\ndeadlocks_per_second\t%.2f\nlock_timeouts_per_second\t%.2f\nthreads_created_per_second\t%.2f\n", m.StatementErrorsPerSec, m.StatementWarningsPerSec, m.DeadlocksPerSecond, m.LockTimeoutsPerSecond, m.ThreadsCreatedPerSecond)
+	case "coverage":
+		coverage := ctx.Instrumentation
+		fmt.Fprintln(tw, "SIGNAL\tVALUE")
+		fmt.Fprintf(tw, "digest_rows\t%d\ndigest_capacity\t%d\ndigest_utilization\t%.2f%%\ntotal_lost\t%d\ndisabled_consumers\t%s\n",
+			coverage.DigestRows, coverage.DigestCapacity, coverage.DigestUtilizationPercent, coverage.TotalLost,
+			strings.Join(coverage.DisabledConsumers, ","))
+		keys := make([]string, 0, len(coverage.Lost))
+		for key := range coverage.Lost {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fmt.Fprintf(tw, "%s\t%d\n", key, coverage.Lost[key])
+		}
 	case "variables":
 		fmt.Fprintln(tw, "VARIABLE\tVALUE")
 		keys := make([]string, 0, len(ctx.Variables))
@@ -117,6 +146,11 @@ func Focused(w io.Writer, section string, ctx *model.Context) error {
 		fmt.Fprintln(tw, "FIELD\tVALUE")
 		fmt.Fprintf(tw, "source\t%s:%d\nchannel\t%s\nio_running\t%s\nsql_running\t%s\nlag\t%s\nlast_io_error\t%s\nlast_sql_error\t%s\n",
 			r.SourceHost, r.SourcePort, r.Channel, r.IORunning, r.SQLRunning, lag, r.LastIOError, r.LastSQLError)
+		fmt.Fprintf(tw, "applier_state\t%s\ntransaction_retries\t%d\nworkers\t%d\n", r.ApplierState, r.TransactionRetries, len(r.Workers))
+		for _, worker := range r.Workers {
+			fmt.Fprintf(tw, "worker_%d\t%s thread=%d retries=%d error=%d %s\n", worker.WorkerID, worker.ServiceState,
+				worker.ThreadID, worker.ApplyingTransactionRetries, worker.LastErrorNumber, worker.LastErrorMessage)
+		}
 	default:
 		return fmt.Errorf("unknown focused section %q", section)
 	}

@@ -25,7 +25,7 @@ send "\033\[B"
 send "\r"
 expect -re {NORMALIZED SQL}
 send "\033"
-expect -re {DB TIME.*CALLS.*AVG.*USER.*QUERY}
+expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
 send "\033\[D"
 expect -re {● 2 CONNECTIONS}
 send "\033\[A"

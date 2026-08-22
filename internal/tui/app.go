@@ -541,51 +541,86 @@ func overview(ctx *model.Context, width int) string {
 
 	identity := lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("%s %s · uptime %s · %.1fs collection window",
 		ctx.Server.Flavor, ctx.Server.Version, humanDuration(ctx.Server.UptimeSeconds), float64(ctx.IntervalMillis)/1000))
-	return postureBox + "\n" + cards + "\n" + lower + "\n" + engineSignals(ctx, width) + "\n" + identity
+	return postureBox + "\n" + cards + "\n" + lower + "\n" + mysqlInvestigationPanels(ctx, width) + "\n" + identity
 }
 
-func engineSignals(ctx *model.Context, width int) string {
-	type signal struct {
-		label string
-		value string
-		color lipgloss.TerminalColor
-	}
-	signals := []signal{
-		{"Rows read", fmt.Sprintf("%.1f/s", ctx.Metrics.RowsReadPerSecond), cyan},
-		{"Rows written", fmt.Sprintf("%.1f/s", ctx.Metrics.RowsWrittenPerSecond), cyan},
-		{"Table cache", fmt.Sprintf("%.2f%%", ctx.Metrics.TableCacheHitPercent), colorForLow(ctx.Metrics.TableCacheHitPercent, 99, 95)},
-		{"Disk temp tables", fmt.Sprintf("%.1f%%", ctx.Metrics.TempDiskTablePercent), colorForPercent(ctx.Metrics.TempDiskTablePercent, 10, 25)},
-		{"Open files", fmt.Sprintf("%.1f%%", ctx.Metrics.OpenFilesUsedPercent), colorForPercent(ctx.Metrics.OpenFilesUsedPercent, 75, 90)},
-		{"Purge history", humanCount(ctx.Metrics.HistoryListLength), colorForHistory(ctx.Metrics.HistoryListLength)},
-	}
-	columns := 3
-	if width < 88 {
-		columns = 2
-	}
-	innerWidth := max(18, width-4)
-	rows := make([]string, 0, (len(signals)+columns-1)/columns)
-	divider := lipgloss.NewStyle().Foreground(border).Render(" │ ")
-	usableWidth := max(columns*6, innerWidth-(columns-1)*3)
-	for start := 0; start < len(signals); start += columns {
-		cells := make([]string, 0, columns)
-		for column := 0; column < columns; column++ {
-			index := start + column
-			cellWidth := usableWidth / columns
-			if column == columns-1 {
-				cellWidth = usableWidth - (columns-1)*(usableWidth/columns)
-			}
-			if index >= len(signals) {
-				cells = append(cells, strings.Repeat(" ", cellWidth))
-				continue
-			}
-			item := signals[index]
-			label := lipgloss.NewStyle().Foreground(muted).Render(strings.ToUpper(item.label))
-			value := lipgloss.NewStyle().Foreground(item.color).Bold(true).Render(item.value)
-			cells = append(cells, lipgloss.NewStyle().Width(cellWidth).Render(padBetween(label, value, max(1, cellWidth-1))))
+func mysqlInvestigationPanels(ctx *model.Context, width int) string {
+	load := summarizeCurrentLoad(ctx)
+	loadBody := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render(fmt.Sprintf("%d active", load.active)) +
+		lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("  ·  %d executing  ·  %d waiting", load.executing, load.waiting)) + "\n" +
+		labelValue("TOP WAIT", load.topWait) + "\n" + labelValue("TOP USER", load.topUser)
+
+	queryBody := labelValue("P95 / P99", duration(ctx.StatementLatency.P95Millis)+" / "+duration(ctx.StatementLatency.P99Millis)) + "\n" +
+		labelValue("MAX", duration(ctx.StatementLatency.MaxMillis)) + "\n" +
+		labelValue("ERRORS / WARNINGS", fmt.Sprintf("%.2f/s / %.2f/s", ctx.Metrics.StatementErrorsPerSec, ctx.Metrics.StatementWarningsPerSec))
+
+	pendingMetadata := 0
+	for _, lock := range ctx.MetadataLocks {
+		if strings.EqualFold(lock.Status, "PENDING") {
+			pendingMetadata++
 		}
-		rows = append(rows, strings.Join(cells, divider))
 	}
-	return panelBox("ENGINE SIGNALS", strings.Join(rows, "\n"), width)
+	oldest := uint64(0)
+	for _, transaction := range ctx.Transactions {
+		oldest = maxUint64(oldest, transaction.AgeSeconds)
+	}
+	contentionBody := labelValue("ROW / METADATA WAITERS", fmt.Sprintf("%d / %d", len(ctx.Locks), pendingMetadata)) + "\n" +
+		labelValue("OLDEST TRANSACTION", humanDuration(oldest)) + "\n" +
+		labelValue("DEADLOCKS / TIMEOUTS", fmt.Sprintf("%.2f/s / %.2f/s", ctx.Metrics.DeadlocksPerSecond, ctx.Metrics.LockTimeoutsPerSecond))
+
+	if width < 96 {
+		return panelBox("CURRENT MYSQL LOAD", loadBody, width) + "\n" +
+			panelBox("QUERY HEALTH", queryBody, width) + "\n" + panelBox("CONTENTION", contentionBody, width)
+	}
+	first := width / 3
+	second := width / 3
+	third := width - first - second - 2
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		panelBox("CURRENT MYSQL LOAD", loadBody, first), " ",
+		panelBox("QUERY HEALTH", queryBody, second), " ",
+		panelBox("CONTENTION", contentionBody, third))
+}
+
+type currentLoadSummary struct {
+	active, executing, waiting int
+	topWait, topUser           string
+}
+
+func summarizeCurrentLoad(ctx *model.Context) currentLoadSummary {
+	result := currentLoadSummary{topWait: "none observed", topUser: "none active"}
+	users := make(map[string]int)
+	for _, process := range ctx.Processes {
+		if strings.EqualFold(process.Command, "Sleep") || strings.EqualFold(process.Command, "Daemon") {
+			continue
+		}
+		result.active++
+		if process.WaitEvent != "" {
+			result.waiting++
+		} else {
+			result.executing++
+		}
+		if process.User != "" {
+			users[process.User]++
+		}
+	}
+	if len(ctx.WaitEvents) > 0 && ctx.WaitEvents[0].SampleLatencyMillis > 0 {
+		result.topWait = fmt.Sprintf("%s  %.1f%%", ctx.WaitEvents[0].Class, ctx.WaitEvents[0].SampleSharePercent)
+	}
+	result.topUser = topCount(users)
+	return result
+}
+
+func topCount(values map[string]int) string {
+	name, count := "", 0
+	for candidate, candidateCount := range values {
+		if candidateCount > count || (candidateCount == count && candidate < name) {
+			name, count = candidate, candidateCount
+		}
+	}
+	if name == "" {
+		return "none active"
+	}
+	return fmt.Sprintf("%s  %d session(s)", name, count)
 }
 
 func findings(ctx *model.Context, width int) string {
@@ -626,13 +661,13 @@ func queries(ctx *model.Context, width, selected int) string {
 	wide := width >= 96
 	compactLayout := width < 68
 	widths := []int{2, 9, 8, 9, 11, 14, max(24, width-53)}
-	headings := []string{"", "DB TIME", "CALLS", "AVG", "ROWS EXAM", "USER", "QUERY"}
+	headings := []string{"", "DB TIME", "CALLS", "P95", "ROWS EXAM", "USER", "QUERY"}
 	if compactLayout {
 		widths = []int{2, 9, 12, max(20, width-23)}
 		headings = []string{"", "DB TIME", "USER", "QUERY"}
 	} else if !wide {
 		widths = []int{2, 9, 8, 9, 13, max(24, width-41)}
-		headings = []string{"", "DB TIME", "CALLS", "AVG", "USER", "QUERY"}
+		headings = []string{"", "DB TIME", "CALLS", "P95", "USER", "QUERY"}
 	}
 	out.WriteString(row(headings, widths, true) + "\n")
 	for index, query := range ctx.Queries {
@@ -644,12 +679,12 @@ func queries(ctx *model.Context, width, selected int) string {
 		if index == selected {
 			marker = "›"
 		}
-		values := []string{marker, duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.MeanLatencyMillis),
+		values := []string{marker, duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.P95LatencyMillis),
 			humanCount(query.RowsExamined), users, query.Statement}
 		if compactLayout {
 			values = []string{marker, duration(query.TotalLatencyMillis), users, query.Statement}
 		} else if !wide {
-			values = []string{marker, duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.MeanLatencyMillis), users, query.Statement}
+			values = []string{marker, duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.P95LatencyMillis), users, query.Statement}
 		}
 		out.WriteString(selectableRow(values, widths, index == selected) + "\n")
 	}
@@ -683,7 +718,7 @@ func queryDetail(ctx *model.Context, width, selected int) string {
 		labelValue("DATABASE", fallback(query.Schema, "all databases")),
 		labelValue("DB TIME", fmt.Sprintf("%s (%.1f%%)", duration(query.TotalLatencyMillis), queryShare(ctx.Queries, selected, total))),
 		labelValue("CALLS", humanCount(query.Calls)),
-		labelValue("AVG", duration(query.MeanLatencyMillis)),
+		labelValue("P95", duration(query.P95LatencyMillis)),
 	}, "  ·  ")
 	var out strings.Builder
 	out.WriteString(panelBox(fmt.Sprintf("QUERY %d OF %d", selected+1, len(ctx.Queries)),
@@ -692,9 +727,12 @@ func queryDetail(ctx *model.Context, width, selected int) string {
 	out.WriteString(lipgloss.NewStyle().Foreground(text).Bold(true).Width(max(20, width-2)).Render(query.Statement) + "\n")
 
 	evidence := []string{
+		labelValue("AVG / P99 / MAX", duration(query.MeanLatencyMillis)+" / "+duration(query.P99LatencyMillis)+" / "+duration(query.MaxLatencyMillis)),
 		labelValue("ROWS EXAMINED", humanCount(query.RowsExamined)),
 		labelValue("ROWS SENT", humanCount(query.RowsSent)),
+		labelValue("ERRORS / WARNINGS", humanCount(query.Errors)+" / "+humanCount(query.Warnings)),
 		labelValue("NO INDEX CALLS", humanCount(query.NoIndexUsed)),
+		labelValue("FULL SCANS", humanCount(query.FullScans)),
 		labelValue("TEMP TABLES", humanCount(query.TmpTables)),
 		labelValue("TEMP ON DISK", humanCount(query.TmpDiskTables)),
 	}
@@ -716,26 +754,9 @@ func labelValue(label, value string) string {
 
 func engine(ctx *model.Context, width int) string {
 	var out strings.Builder
-	active, waiting := 0, 0
-	users := map[string]bool{}
-	hosts := map[string]bool{}
-	for _, process := range ctx.Processes {
-		if strings.EqualFold(process.Command, "Sleep") || strings.EqualFold(process.Command, "Daemon") {
-			continue
-		}
-		active++
-		if process.WaitEvent != "" {
-			waiting++
-		}
-		if process.User != "" {
-			users[process.User] = true
-		}
-		if process.Host != "" {
-			hosts[process.Host] = true
-		}
-	}
-	load := fmt.Sprintf("active sessions %d  ·  waiting %d  ·  running %d  ·  users %d  ·  hosts %d",
-		active, waiting, max(0, active-waiting), len(users), len(hosts))
+	currentLoad := summarizeCurrentLoad(ctx)
+	load := fmt.Sprintf("active %d  ·  executing %d  ·  waiting %d  ·  top wait %s  ·  top user %s",
+		currentLoad.active, currentLoad.executing, currentLoad.waiting, currentLoad.topWait, currentLoad.topUser)
 	out.WriteString(panelBox("CURRENT DATABASE LOAD", lipgloss.NewStyle().Foreground(text).Bold(true).Render(load), width) + "\n")
 
 	out.WriteString(sectionTitle("INNODB I/O AND REDO") + "\n")
@@ -751,13 +772,67 @@ func engine(ctx *model.Context, width int) string {
 	out.WriteString(rows(metricRows, []string{"SIGNAL", "VALUE", "RELATED"}, metricWidths) + "\n")
 
 	if len(ctx.WaitEvents) > 0 {
-		out.WriteString(sectionTitle("TOP WAIT EVENTS") + "\n")
-		waitWidths := []int{10, 10, 12, 12, max(28, width-44)}
-		out.WriteString(row([]string{"COUNT", "TOTAL", "MEAN", "MAX", "EVENT"}, waitWidths, true) + "\n")
+		out.WriteString(sectionTitle("SAMPLED WAIT PRESSURE") + "\n")
+		waitWidths := []int{8, 12, 10, 12, max(28, width-42)}
+		out.WriteString(row([]string{"SHARE", "WAIT/S", "EVENTS/S", "CUM TOTAL", "EVENT"}, waitWidths, true) + "\n")
 		for _, wait := range ctx.WaitEvents {
-			out.WriteString(row([]string{humanCount(wait.Count), duration(wait.TotalLatencyMillis), fmt.Sprintf("%.1fµs", wait.MeanLatencyMicros), duration(wait.MaxLatencyMillis), wait.Name}, waitWidths, false) + "\n")
+			out.WriteString(row([]string{fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s",
+				fmt.Sprintf("%.1f", wait.EventsPerSecond), duration(wait.TotalLatencyMillis), wait.Name}, waitWidths, false) + "\n")
 		}
 	}
+
+	if len(ctx.FileIO) > 0 {
+		out.WriteString("\n" + sectionTitle("MYSQL FILE I/O") + "\n")
+		ioWidths := []int{10, 10, 12, 12, max(28, width-44)}
+		out.WriteString(row([]string{"READ/S", "WRITE/S", "READ LAT", "WRITE LAT", "FILE INSTRUMENT"}, ioWidths, true) + "\n")
+		for _, item := range ctx.FileIO[:min(12, len(ctx.FileIO))] {
+			out.WriteString(row([]string{fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond),
+				duration(item.MeanReadLatencyMillis), duration(item.MeanWriteLatencyMillis), item.Name}, ioWidths, false) + "\n")
+		}
+	}
+
+	if len(ctx.ServerErrors) > 0 {
+		out.WriteString("\n" + sectionTitle("MYSQL ERRORS AND WARNINGS") + "\n")
+		errorWidths := []int{9, 10, 10, 20, max(28, width-49)}
+		out.WriteString(row([]string{"ERROR", "SAMPLE/S", "TOTAL", "LAST SEEN", "NAME"}, errorWidths, true) + "\n")
+		for _, item := range ctx.ServerErrors[:min(10, len(ctx.ServerErrors))] {
+			out.WriteString(row([]string{fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond), humanCount(item.Raised),
+				item.LastSeen, item.Name}, errorWidths, false) + "\n")
+		}
+	}
+
+	if ctx.Replication != nil {
+		replication := ctx.Replication
+		lag := "unknown"
+		if replication.SecondsBehind != nil {
+			lag = fmt.Sprintf("%ds", *replication.SecondsBehind)
+		}
+		workerErrors := 0
+		for _, worker := range replication.Workers {
+			if worker.LastErrorNumber != 0 {
+				workerErrors++
+			}
+		}
+		body := labelValue("SOURCE", fmt.Sprintf("%s:%d", replication.SourceHost, replication.SourcePort)) + "  ·  " +
+			labelValue("IO / SQL / APPLIER", replication.IORunning+" / "+replication.SQLRunning+" / "+replication.ApplierState) + "\n" +
+			labelValue("LAG", lag) + "  ·  " + labelValue("RETRIES", humanCount(replication.TransactionRetries)) + "  ·  " +
+			labelValue("WORKERS / ERRORS", fmt.Sprintf("%d / %d", len(replication.Workers), workerErrors))
+		out.WriteString("\n" + panelBox("REPLICATION", body, width) + "\n")
+	}
+
+	coverageState := "complete"
+	coverageColor := green
+	if ctx.Instrumentation.TotalLost > 0 || len(ctx.Instrumentation.DisabledConsumers) > 0 {
+		coverageState = "degraded"
+		coverageColor = yellow
+	}
+	coverage := lipgloss.NewStyle().Foreground(coverageColor).Bold(true).Render("● "+coverageState) + "  " +
+		labelValue("DIGESTS", fmt.Sprintf("%d/%d (%.1f%%)", ctx.Instrumentation.DigestRows, ctx.Instrumentation.DigestCapacity, ctx.Instrumentation.DigestUtilizationPercent)) + "  ·  " +
+		labelValue("LOST", humanCount(ctx.Instrumentation.TotalLost))
+	if len(ctx.Instrumentation.DisabledConsumers) > 0 {
+		coverage += "\n" + labelValue("DISABLED", strings.Join(ctx.Instrumentation.DisabledConsumers, ", "))
+	}
+	out.WriteString("\n" + panelBox("INSTRUMENTATION COVERAGE", coverage, width) + "\n")
 
 	if len(ctx.MemoryConsumers) > 0 {
 		out.WriteString("\n" + sectionTitle("TOP MYSQL MEMORY CONSUMERS") + "\n")
@@ -767,7 +842,7 @@ func engine(ctx *model.Context, width int) string {
 			out.WriteString(row([]string{humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes), humanCount(consumer.Allocations), consumer.Name}, memoryWidths, false) + "\n")
 		}
 	}
-	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Wait and memory totals are cumulative since Performance Schema reset; rates use the collection interval."))
+	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Wait, file I/O, and error rates use the collection interval; cumulative totals are retained for forensic context."))
 	return out.String()
 }
 
@@ -785,14 +860,25 @@ func tablesView(ctx *model.Context, width int) string {
 		return empty("No application tables are visible to the monitoring user.")
 	}
 	var out strings.Builder
+	wide := width >= 110
 	widths := []int{12, 11, 11, 11, 5, max(20, width-50)}
-	out.WriteString(row([]string{"SIZE", "ROWS", "READS", "WRITES", "PK", "TABLE"}, widths, true) + "\n")
+	headings := []string{"SIZE", "ROWS", "READS", "WRITES", "PK", "TABLE"}
+	if wide {
+		widths = []int{11, 10, 9, 11, 9, 11, 5, max(22, width-66)}
+		headings = []string{"SIZE", "ROWS", "READS", "READ TIME", "WRITES", "WRITE TIME", "PK", "TABLE"}
+	}
+	out.WriteString(row(headings, widths, true) + "\n")
 	for _, table := range ctx.Tables {
 		pk := "yes"
 		if !table.HasPrimaryKey {
 			pk = "NO"
 		}
-		out.WriteString(row([]string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), humanCount(table.Writes), pk, table.Schema + "." + table.Name}, widths, false) + "\n")
+		values := []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), humanCount(table.Writes), pk, table.Schema + "." + table.Name}
+		if wide {
+			values = []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), duration(table.ReadLatencyMillis),
+				humanCount(table.Writes), duration(table.WriteLatencyMillis), pk, table.Schema + "." + table.Name}
+		}
+		out.WriteString(row(values, widths, false) + "\n")
 	}
 	if len(ctx.Indexes) > 0 {
 		out.WriteString("\n" + sectionTitle("INDEX ACTIVITY") + "\n")
@@ -1140,6 +1226,13 @@ func max(a, b int) int {
 
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxUint64(a, b uint64) uint64 {
+	if a > b {
 		return a
 	}
 	return b

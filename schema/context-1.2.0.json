@@ -1,0 +1,1292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/maheshrijal/mysq/schema/context-1.2.0.json",
+  "$defs": {
+    "Capability": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "available"
+      ]
+    },
+    "ConnectionGroup": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "active": {
+          "type": "integer"
+        },
+        "sleeping": {
+          "type": "integer"
+        },
+        "other": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "key",
+        "total",
+        "active",
+        "sleeping",
+        "other"
+      ]
+    },
+    "FileIO": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        },
+        "reads": {
+          "type": "integer"
+        },
+        "writes": {
+          "type": "integer"
+        },
+        "bytes_read": {
+          "type": "integer"
+        },
+        "bytes_written": {
+          "type": "integer"
+        },
+        "total_read_latency_ms": {
+          "type": "number"
+        },
+        "total_write_latency_ms": {
+          "type": "number"
+        },
+        "reads_per_second": {
+          "type": "number"
+        },
+        "writes_per_second": {
+          "type": "number"
+        },
+        "read_bytes_per_second": {
+          "type": "number"
+        },
+        "write_bytes_per_second": {
+          "type": "number"
+        },
+        "mean_read_latency_ms": {
+          "type": "number"
+        },
+        "mean_write_latency_ms": {
+          "type": "number"
+        },
+        "wait_ms_per_second": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "class",
+        "reads",
+        "writes",
+        "bytes_read",
+        "bytes_written",
+        "total_read_latency_ms",
+        "total_write_latency_ms",
+        "reads_per_second",
+        "writes_per_second",
+        "read_bytes_per_second",
+        "write_bytes_per_second",
+        "mean_read_latency_ms",
+        "mean_write_latency_ms",
+        "wait_ms_per_second"
+      ]
+    },
+    "Finding": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "subsystem": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "recommendation": {
+          "type": "string"
+        },
+        "objects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "evidence": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "severity",
+        "subsystem",
+        "title",
+        "summary",
+        "recommendation"
+      ]
+    },
+    "Health": {
+      "properties": {
+        "score": {
+          "type": "integer"
+        },
+        "critical": {
+          "type": "integer"
+        },
+        "warnings": {
+          "type": "integer"
+        },
+        "notes": {
+          "type": "integer"
+        },
+        "healthy": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "score",
+        "critical",
+        "warnings",
+        "notes",
+        "healthy"
+      ]
+    },
+    "Index": {
+      "properties": {
+        "schema": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "string"
+        },
+        "unique": {
+          "type": "boolean"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "cardinality": {
+          "type": "integer"
+        },
+        "reads": {
+          "type": "integer"
+        },
+        "writes": {
+          "type": "integer"
+        },
+        "read_latency_ms": {
+          "type": "number"
+        },
+        "write_latency_ms": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema",
+        "table",
+        "name",
+        "columns",
+        "unique",
+        "visible",
+        "cardinality",
+        "reads",
+        "writes",
+        "read_latency_ms",
+        "write_latency_ms"
+      ]
+    },
+    "Instrumentation": {
+      "properties": {
+        "digest_rows": {
+          "type": "integer"
+        },
+        "digest_capacity": {
+          "type": "integer"
+        },
+        "digest_utilization_percent": {
+          "type": "number"
+        },
+        "total_lost": {
+          "type": "integer"
+        },
+        "lost": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "disabled_consumers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "digest_rows",
+        "digest_capacity",
+        "digest_utilization_percent",
+        "total_lost"
+      ]
+    },
+    "LockWait": {
+      "properties": {
+        "waiting_transaction": {
+          "type": "string"
+        },
+        "blocking_transaction": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "index": {
+          "type": "string"
+        },
+        "lock_type": {
+          "type": "string"
+        },
+        "lock_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "waiting_transaction",
+        "blocking_transaction"
+      ]
+    },
+    "MemoryConsumer": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "current_bytes": {
+          "type": "integer"
+        },
+        "high_bytes": {
+          "type": "integer"
+        },
+        "allocations": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "current_bytes",
+        "high_bytes",
+        "allocations"
+      ]
+    },
+    "MetadataLock": {
+      "properties": {
+        "thread_id": {
+          "type": "integer"
+        },
+        "process_id": {
+          "type": "integer"
+        },
+        "user": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "object_type": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "object": {
+          "type": "string"
+        },
+        "lock_type": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "thread_id",
+        "process_id",
+        "object_type",
+        "lock_type",
+        "duration",
+        "status"
+      ]
+    },
+    "Metrics": {
+      "properties": {
+        "queries_per_second": {
+          "type": "number"
+        },
+        "transactions_per_second": {
+          "type": "number"
+        },
+        "rows_read_per_second": {
+          "type": "number"
+        },
+        "rows_written_per_second": {
+          "type": "number"
+        },
+        "slow_queries_per_second": {
+          "type": "number"
+        },
+        "aborted_connects_per_second": {
+          "type": "number"
+        },
+        "row_lock_waits_per_second": {
+          "type": "number"
+        },
+        "redo_waits_per_second": {
+          "type": "number"
+        },
+        "connections_current": {
+          "type": "integer"
+        },
+        "connections_max": {
+          "type": "integer"
+        },
+        "connections_used_percent": {
+          "type": "number"
+        },
+        "threads_running": {
+          "type": "integer"
+        },
+        "buffer_pool_hit_percent": {
+          "type": "number"
+        },
+        "buffer_pool_used_percent": {
+          "type": "number"
+        },
+        "buffer_pool_dirty_percent": {
+          "type": "number"
+        },
+        "temp_disk_table_percent": {
+          "type": "number"
+        },
+        "table_cache_hit_percent": {
+          "type": "number"
+        },
+        "open_files_used_percent": {
+          "type": "number"
+        },
+        "history_list_length": {
+          "type": "integer"
+        },
+        "data_reads_per_second": {
+          "type": "number"
+        },
+        "data_writes_per_second": {
+          "type": "number"
+        },
+        "data_fsyncs_per_second": {
+          "type": "number"
+        },
+        "redo_bytes_per_second": {
+          "type": "number"
+        },
+        "redo_writes_per_second": {
+          "type": "number"
+        },
+        "redo_fsyncs_per_second": {
+          "type": "number"
+        },
+        "network_in_bytes_per_second": {
+          "type": "number"
+        },
+        "network_out_bytes_per_second": {
+          "type": "number"
+        },
+        "full_scans_per_second": {
+          "type": "number"
+        },
+        "sort_merge_passes_per_second": {
+          "type": "number"
+        },
+        "buffer_pool_waits_per_second": {
+          "type": "number"
+        },
+        "pending_reads": {
+          "type": "integer"
+        },
+        "pending_writes": {
+          "type": "integer"
+        },
+        "pending_fsyncs": {
+          "type": "integer"
+        },
+        "buffer_pool_data_bytes": {
+          "type": "integer"
+        },
+        "buffer_pool_dirty_bytes": {
+          "type": "integer"
+        },
+        "redo_current_lsn": {
+          "type": "integer"
+        },
+        "redo_flushed_lsn": {
+          "type": "integer"
+        },
+        "redo_checkpoint_lsn": {
+          "type": "integer"
+        },
+        "redo_checkpoint_age_bytes": {
+          "type": "integer"
+        },
+        "redo_capacity_bytes": {
+          "type": "integer"
+        },
+        "redo_checkpoint_age_percent": {
+          "type": "number"
+        },
+        "statement_errors_per_second": {
+          "type": "number"
+        },
+        "statement_warnings_per_second": {
+          "type": "number"
+        },
+        "deadlocks_per_second": {
+          "type": "number"
+        },
+        "lock_timeouts_per_second": {
+          "type": "number"
+        },
+        "threads_created_per_second": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "queries_per_second",
+        "transactions_per_second",
+        "rows_read_per_second",
+        "rows_written_per_second",
+        "slow_queries_per_second",
+        "aborted_connects_per_second",
+        "row_lock_waits_per_second",
+        "redo_waits_per_second",
+        "connections_current",
+        "connections_max",
+        "connections_used_percent",
+        "threads_running",
+        "buffer_pool_hit_percent",
+        "buffer_pool_used_percent",
+        "buffer_pool_dirty_percent",
+        "temp_disk_table_percent",
+        "table_cache_hit_percent",
+        "open_files_used_percent",
+        "history_list_length",
+        "data_reads_per_second",
+        "data_writes_per_second",
+        "data_fsyncs_per_second",
+        "redo_bytes_per_second",
+        "redo_writes_per_second",
+        "redo_fsyncs_per_second",
+        "network_in_bytes_per_second",
+        "network_out_bytes_per_second",
+        "full_scans_per_second",
+        "sort_merge_passes_per_second",
+        "buffer_pool_waits_per_second",
+        "pending_reads",
+        "pending_writes",
+        "pending_fsyncs",
+        "buffer_pool_data_bytes",
+        "buffer_pool_dirty_bytes",
+        "redo_current_lsn",
+        "redo_flushed_lsn",
+        "redo_checkpoint_lsn",
+        "redo_checkpoint_age_bytes",
+        "redo_capacity_bytes",
+        "redo_checkpoint_age_percent",
+        "statement_errors_per_second",
+        "statement_warnings_per_second",
+        "deadlocks_per_second",
+        "lock_timeouts_per_second",
+        "threads_created_per_second"
+      ]
+    },
+    "Process": {
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "thread_id": {
+          "type": "integer"
+        },
+        "user": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "database": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "seconds": {
+          "type": "integer"
+        },
+        "state": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "wait_event": {
+          "type": "string"
+        },
+        "statement_latency_ms": {
+          "type": "number"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "thread_id",
+        "user",
+        "host",
+        "command",
+        "seconds",
+        "statement_latency_ms"
+      ]
+    },
+    "Query": {
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "calls": {
+          "type": "integer"
+        },
+        "total_latency_ms": {
+          "type": "number"
+        },
+        "mean_latency_ms": {
+          "type": "number"
+        },
+        "max_latency_ms": {
+          "type": "number"
+        },
+        "p95_latency_ms": {
+          "type": "number"
+        },
+        "p99_latency_ms": {
+          "type": "number"
+        },
+        "p999_latency_ms": {
+          "type": "number"
+        },
+        "rows_examined": {
+          "type": "integer"
+        },
+        "rows_sent": {
+          "type": "integer"
+        },
+        "rows_affected": {
+          "type": "integer"
+        },
+        "errors": {
+          "type": "integer"
+        },
+        "warnings": {
+          "type": "integer"
+        },
+        "full_scans": {
+          "type": "integer"
+        },
+        "no_index_used": {
+          "type": "integer"
+        },
+        "tmp_tables": {
+          "type": "integer"
+        },
+        "tmp_disk_tables": {
+          "type": "integer"
+        },
+        "first_seen": {
+          "type": "string"
+        },
+        "last_seen": {
+          "type": "string"
+        },
+        "active_users": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "digest",
+        "schema",
+        "statement",
+        "calls",
+        "total_latency_ms",
+        "mean_latency_ms",
+        "max_latency_ms",
+        "p95_latency_ms",
+        "p99_latency_ms",
+        "p999_latency_ms",
+        "rows_examined",
+        "rows_sent",
+        "rows_affected",
+        "errors",
+        "warnings",
+        "full_scans",
+        "no_index_used",
+        "tmp_tables",
+        "tmp_disk_tables"
+      ]
+    },
+    "Replication": {
+      "properties": {
+        "channel": {
+          "type": "string"
+        },
+        "source_host": {
+          "type": "string"
+        },
+        "source_port": {
+          "type": "integer"
+        },
+        "io_running": {
+          "type": "string"
+        },
+        "sql_running": {
+          "type": "string"
+        },
+        "seconds_behind": {
+          "type": "integer"
+        },
+        "last_io_error": {
+          "type": "string"
+        },
+        "last_sql_error": {
+          "type": "string"
+        },
+        "retrieved_gtid_set": {
+          "type": "string"
+        },
+        "executed_gtid_set": {
+          "type": "string"
+        },
+        "applier_state": {
+          "type": "string"
+        },
+        "remaining_delay_seconds": {
+          "type": "integer"
+        },
+        "transaction_retries": {
+          "type": "integer"
+        },
+        "workers": {
+          "items": {
+            "$ref": "#/$defs/ReplicationWorker"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "transaction_retries"
+      ]
+    },
+    "ReplicationWorker": {
+      "properties": {
+        "channel": {
+          "type": "string"
+        },
+        "worker_id": {
+          "type": "integer"
+        },
+        "thread_id": {
+          "type": "integer"
+        },
+        "service_state": {
+          "type": "string"
+        },
+        "last_error_number": {
+          "type": "integer"
+        },
+        "last_error_message": {
+          "type": "string"
+        },
+        "last_error_timestamp": {
+          "type": "string"
+        },
+        "applying_transaction": {
+          "type": "string"
+        },
+        "last_applied_transaction": {
+          "type": "string"
+        },
+        "applying_transaction_retries": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "worker_id",
+        "thread_id",
+        "service_state",
+        "last_error_number",
+        "applying_transaction_retries"
+      ]
+    },
+    "Server": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "database": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "flavor": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "uuid": {
+          "type": "string"
+        },
+        "server_id": {
+          "type": "integer"
+        },
+        "read_only": {
+          "type": "boolean"
+        },
+        "super_read_only": {
+          "type": "boolean"
+        },
+        "performance_schema": {
+          "type": "boolean"
+        },
+        "uptime_seconds": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host",
+        "port",
+        "database",
+        "version",
+        "flavor",
+        "hostname",
+        "uuid",
+        "server_id",
+        "read_only",
+        "super_read_only",
+        "performance_schema",
+        "uptime_seconds"
+      ]
+    },
+    "ServerError": {
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "sql_state": {
+          "type": "string"
+        },
+        "raised": {
+          "type": "integer"
+        },
+        "handled": {
+          "type": "integer"
+        },
+        "first_seen": {
+          "type": "string"
+        },
+        "last_seen": {
+          "type": "string"
+        },
+        "sample_raised": {
+          "type": "integer"
+        },
+        "raised_per_second": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "number",
+        "name",
+        "sql_state",
+        "raised",
+        "handled",
+        "sample_raised",
+        "raised_per_second"
+      ]
+    },
+    "StatementLatency": {
+      "properties": {
+        "p95_ms": {
+          "type": "number"
+        },
+        "p99_ms": {
+          "type": "number"
+        },
+        "p999_ms": {
+          "type": "number"
+        },
+        "max_ms": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "p95_ms",
+        "p99_ms",
+        "p999_ms",
+        "max_ms"
+      ]
+    },
+    "Table": {
+      "properties": {
+        "schema": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "engine": {
+          "type": "string"
+        },
+        "estimated_rows": {
+          "type": "integer"
+        },
+        "data_bytes": {
+          "type": "integer"
+        },
+        "index_bytes": {
+          "type": "integer"
+        },
+        "total_bytes": {
+          "type": "integer"
+        },
+        "reads": {
+          "type": "integer"
+        },
+        "writes": {
+          "type": "integer"
+        },
+        "read_latency_ms": {
+          "type": "number"
+        },
+        "write_latency_ms": {
+          "type": "number"
+        },
+        "fetches": {
+          "type": "integer"
+        },
+        "inserts": {
+          "type": "integer"
+        },
+        "updates": {
+          "type": "integer"
+        },
+        "deletes": {
+          "type": "integer"
+        },
+        "has_primary_key": {
+          "type": "boolean"
+        },
+        "auto_increment": {
+          "type": "integer"
+        },
+        "auto_increment_max": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema",
+        "name",
+        "engine",
+        "estimated_rows",
+        "data_bytes",
+        "index_bytes",
+        "total_bytes",
+        "reads",
+        "writes",
+        "read_latency_ms",
+        "write_latency_ms",
+        "fetches",
+        "inserts",
+        "updates",
+        "deletes",
+        "has_primary_key"
+      ]
+    },
+    "Transaction": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "age_seconds": {
+          "type": "integer"
+        },
+        "process_id": {
+          "type": "integer"
+        },
+        "user": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "rows_locked": {
+          "type": "integer"
+        },
+        "rows_modified": {
+          "type": "integer"
+        },
+        "tables_in_use": {
+          "type": "integer"
+        },
+        "tables_locked": {
+          "type": "integer"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "state",
+        "age_seconds",
+        "process_id",
+        "rows_locked",
+        "rows_modified",
+        "tables_in_use",
+        "tables_locked"
+      ]
+    },
+    "WaitEvent": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "total_latency_ms": {
+          "type": "number"
+        },
+        "mean_latency_us": {
+          "type": "number"
+        },
+        "max_latency_ms": {
+          "type": "number"
+        },
+        "sample_count": {
+          "type": "integer"
+        },
+        "sample_latency_ms": {
+          "type": "number"
+        },
+        "events_per_second": {
+          "type": "number"
+        },
+        "wait_ms_per_second": {
+          "type": "number"
+        },
+        "sample_share_percent": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "class",
+        "count",
+        "total_latency_ms",
+        "mean_latency_us",
+        "max_latency_ms",
+        "sample_count",
+        "sample_latency_ms",
+        "events_per_second",
+        "wait_ms_per_second",
+        "sample_share_percent"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "tool_version": {
+      "type": "string"
+    },
+    "collected_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "interval_ms": {
+      "type": "integer"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "server": {
+      "$ref": "#/$defs/Server"
+    },
+    "health": {
+      "$ref": "#/$defs/Health"
+    },
+    "metrics": {
+      "$ref": "#/$defs/Metrics"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "type": "array"
+    },
+    "queries": {
+      "items": {
+        "$ref": "#/$defs/Query"
+      },
+      "type": "array"
+    },
+    "tables": {
+      "items": {
+        "$ref": "#/$defs/Table"
+      },
+      "type": "array"
+    },
+    "indexes": {
+      "items": {
+        "$ref": "#/$defs/Index"
+      },
+      "type": "array"
+    },
+    "processes": {
+      "items": {
+        "$ref": "#/$defs/Process"
+      },
+      "type": "array"
+    },
+    "connection_groups": {
+      "items": {
+        "$ref": "#/$defs/ConnectionGroup"
+      },
+      "type": "array"
+    },
+    "locks": {
+      "items": {
+        "$ref": "#/$defs/LockWait"
+      },
+      "type": "array"
+    },
+    "transactions": {
+      "items": {
+        "$ref": "#/$defs/Transaction"
+      },
+      "type": "array"
+    },
+    "metadata_locks": {
+      "items": {
+        "$ref": "#/$defs/MetadataLock"
+      },
+      "type": "array"
+    },
+    "wait_events": {
+      "items": {
+        "$ref": "#/$defs/WaitEvent"
+      },
+      "type": "array"
+    },
+    "file_io": {
+      "items": {
+        "$ref": "#/$defs/FileIO"
+      },
+      "type": "array"
+    },
+    "server_errors": {
+      "items": {
+        "$ref": "#/$defs/ServerError"
+      },
+      "type": "array"
+    },
+    "memory_consumers": {
+      "items": {
+        "$ref": "#/$defs/MemoryConsumer"
+      },
+      "type": "array"
+    },
+    "statement_latency": {
+      "$ref": "#/$defs/StatementLatency"
+    },
+    "instrumentation": {
+      "$ref": "#/$defs/Instrumentation"
+    },
+    "replication": {
+      "$ref": "#/$defs/Replication"
+    },
+    "variables": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "global_status": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "innodb_status": {
+      "type": "string"
+    },
+    "capabilities": {
+      "items": {
+        "$ref": "#/$defs/Capability"
+      },
+      "type": "array"
+    },
+    "collection_warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "tool_version",
+    "collected_at",
+    "interval_ms",
+    "fingerprint",
+    "server",
+    "health",
+    "metrics",
+    "findings",
+    "queries",
+    "tables",
+    "indexes",
+    "processes",
+    "connection_groups",
+    "locks",
+    "transactions",
+    "metadata_locks",
+    "wait_events",
+    "file_io",
+    "server_errors",
+    "memory_consumers",
+    "statement_latency",
+    "instrumentation",
+    "variables",
+    "global_status",
+    "capabilities"
+  ]
+}
