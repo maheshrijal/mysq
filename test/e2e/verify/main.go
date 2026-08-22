@@ -87,7 +87,7 @@ func verifyBundle(directory string) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		log.Fatal(err)
 	}
-	if !m.SecretFree || len(m.Files) != 23 {
+	if !m.SecretFree || len(m.Files) != 24 {
 		log.Fatalf("invalid manifest: secret_free=%t files=%d", m.SecretFree, len(m.Files))
 	}
 	for _, file := range m.Files {

@@ -150,6 +150,17 @@ func renderFull(ctx *model.Context, p palette, width int) string {
 	}
 	out.WriteString(table([]string{"area", "primary", "secondary", "related"}, engineRows, []int{16, 24, 30, 32}, p))
 
+	if len(ctx.StatementSamples) > 0 {
+		section("CURRENT STATEMENT DATABASE TIME")
+		sampleRows := make([][]string, 0, min(10, len(ctx.StatementSamples)))
+		for _, item := range ctx.StatementSamples[:min(10, len(ctx.StatementSamples))] {
+			sampleRows = append(sampleRows, []string{fmt.Sprintf("%.1f%%", item.DatabaseTimeSharePercent),
+				duration(item.DatabaseTimeMillisPerSecond) + "/s", fmt.Sprintf("%.1f/s", item.CallsPerSecond),
+				item.Schema, item.Statement})
+		}
+		out.WriteString(table([]string{"share", "db time/s", "calls/s", "schema", "statement"}, sampleRows, []int{10, 14, 12, 14, 54}, p))
+	}
+
 	if len(ctx.WaitEvents) > 0 {
 		section("TOP WAIT EVENTS")
 		waitRows := make([][]string, 0, min(10, len(ctx.WaitEvents)))

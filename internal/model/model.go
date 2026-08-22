@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-const SchemaVersion = "1.2.0"
+const SchemaVersion = "1.3.0"
 
 type Context struct {
 	SchemaVersion    string            `json:"schema_version"`
@@ -26,6 +26,7 @@ type Context struct {
 	FileIO           []FileIO          `json:"file_io"`
 	ServerErrors     []ServerError     `json:"server_errors"`
 	MemoryConsumers  []MemoryConsumer  `json:"memory_consumers"`
+	StatementSamples []StatementSample `json:"statement_samples"`
 	StatementLatency StatementLatency  `json:"statement_latency"`
 	Instrumentation  Instrumentation   `json:"instrumentation"`
 	Replication      *Replication      `json:"replication,omitempty"`
@@ -298,6 +299,17 @@ type StatementLatency struct {
 	P99Millis  float64 `json:"p99_ms"`
 	P999Millis float64 `json:"p999_ms"`
 	MaxMillis  float64 `json:"max_ms"`
+}
+
+type StatementSample struct {
+	Digest                      string  `json:"digest"`
+	Schema                      string  `json:"schema"`
+	Statement                   string  `json:"statement"`
+	Calls                       uint64  `json:"calls"`
+	CallsPerSecond              float64 `json:"calls_per_second"`
+	DatabaseTimeMillis          float64 `json:"database_time_ms"`
+	DatabaseTimeMillisPerSecond float64 `json:"database_time_ms_per_second"`
+	DatabaseTimeSharePercent    float64 `json:"database_time_share_percent"`
 }
 
 type Instrumentation struct {

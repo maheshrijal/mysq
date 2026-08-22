@@ -38,6 +38,32 @@ func TestTUIRendersAndNavigatesAllViews(t *testing.T) {
 	}
 }
 
+func TestOverviewPrioritizesCurrentMySQLInvestigationSignals(t *testing.T) {
+	lag := int64(2)
+	ctx := &model.Context{
+		Server: model.Server{Flavor: "MySQL", Version: "8.4.0"},
+		Health: model.Health{Score: 76, Warnings: 1},
+		Metrics: model.Metrics{
+			ConnectionsMax: 100, BufferPoolHitPercent: 99.9, RedoCheckpointAgePct: 67,
+			FullScansPerSecond: 4.2, TempDiskTablePercent: 12.5, HistoryListLength: 4200,
+		},
+		StatementSamples: []model.StatementSample{{Statement: "SELECT * FROM orders WHERE account_id = ?", DatabaseTimeSharePercent: 62.5}},
+		Locks:            []model.LockWait{{BlockingTransaction: "trx-1", Schema: "app", Table: "orders"}, {BlockingTransaction: "trx-1", Schema: "app", Table: "orders"}},
+		Transactions:     []model.Transaction{{ID: "trx-1", User: "checkout", AgeSeconds: 31}},
+		Replication:      &model.Replication{IORunning: "Yes", SQLRunning: "Yes", ApplierState: "ON", SecondsBehind: &lag, Workers: []model.ReplicationWorker{{WorkerID: 1}}},
+		Instrumentation:  model.Instrumentation{DigestRows: 20, DigestCapacity: 100, DisabledConsumers: []string{"events_waits_current"}},
+	}
+	view := overview(ctx, 150)
+	for _, expected := range []string{"Redo checkpoint", "TOP SQL", "62.5%", "FULL SCANS / DISK TEMP", "BLOCKER", "checkout", "app.orders", "4.2k", "REPLICATION STATUS", "LAG", "2s", "DATA COVERAGE", "events_waits_current"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("overview missing %q:\n%s", expected, view)
+		}
+	}
+	if strings.Contains(view, "Buffer pool used") || strings.Contains(view, "MAX ") {
+		t.Fatalf("overview retained low-value pressure or latency signal:\n%s", view)
+	}
+}
+
 func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 	ctx := &model.Context{
 		Fingerprint: "abc", Server: model.Server{Host: "db", Port: 3306, Database: "app", Flavor: "MySQL", Version: "8.4.0"},

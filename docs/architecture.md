@@ -13,7 +13,7 @@ collector ──► versioned Context ──► deterministic analyzer
         terminal / TUI          history + diff          agent bundle
 ```
 
-The `Context` interface includes the versioned JSON shape, collection timestamp and interval, explicit probe capabilities, server identity, raw counters, normalized statements with point-in-time user attribution and tail latency, sampled and cumulative waits, file I/O, server errors, instrumentation coverage, memory summaries, replication workers, active transactions and locks, evidence tables, deterministic findings, and health score. Renderers do not re-query MySQL. History does not retain connection configuration.
+The `Context` interface includes the versioned JSON shape, collection timestamp and interval, explicit probe capabilities, server identity, raw counters, normalized statements with point-in-time user attribution and tail latency, interval statement database-time attribution, sampled and cumulative waits, file I/O, server errors, instrumentation coverage, memory summaries, replication workers, active transactions and locks, evidence tables, deterministic findings, and health score. Renderers do not re-query MySQL. History does not retain connection configuration.
 
 ## Modules
 
@@ -28,6 +28,6 @@ The collector degrades individual optional probes, but server identity and two c
 
 ## Database cost and safety
 
-An inspection uses one connection and samples `SHOW GLOBAL STATUS`, statement counters, wait summaries, file-I/O summaries, and error summaries around the configured interval. The emitted collections are bounded to 20 statement digests, 30 waits, 30 file instruments, 30 errors, 30 memory consumers, 100 tables, 100 processes, 100 transactions, and 100 metadata locks. It never queries application rows. `MAX_EXECUTION_TIME` is 10 seconds and the session is pinned read-only. Active user, process, transaction, and lock data is explicitly point-in-time and can change while the report is being consumed.
+An inspection uses one connection and samples `SHOW GLOBAL STATUS`, statement digest and global counters, wait summaries, file-I/O summaries, and error summaries around the configured interval. The emitted collections are bounded to 20 cumulative statement digests, 20 interval statement samples, 30 waits, 30 file instruments, 30 errors, 30 memory consumers, 100 tables, 100 processes, 100 transactions, and 100 metadata locks. It never queries application rows. `MAX_EXECUTION_TIME` is 10 seconds and the session is pinned read-only. Active user, process, transaction, and lock data is explicitly point-in-time and can change while the report is being consumed.
 
 Some Performance Schema summary tables grow with schema size. Their queries do not scan application data, but operators should still validate run time on unusually large fleets before aggressive scheduling. mysq is an on-demand diagnostic, not a monitoring daemon.

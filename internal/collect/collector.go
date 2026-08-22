@@ -308,6 +308,7 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	if err != nil {
 		return nil, fmt.Errorf("collect initial global status: %w", err)
 	}
+	firstDigests, firstDigestErr := c.collectStatementDigestCounters(ctx, conn)
 
 	interval := c.Interval
 	if interval < 100*time.Millisecond {
@@ -321,6 +322,7 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		return nil, ctx.Err()
 	case <-timer.C:
 	}
+	secondDigests, secondDigestErr := c.collectStatementDigestCounters(ctx, conn)
 	second, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect final global status: %w", err)
@@ -338,6 +340,9 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	}
 	if c.sampleProbe(result, "server errors", firstErrorErr, secondErrorErr) {
 		result.ServerErrors = deriveServerErrors(firstErrors, secondErrors, elapsed)
+	}
+	if c.sampleProbe(result, "statement database time", firstDigestErr, secondDigestErr) {
+		result.StatementSamples = deriveStatementSamples(firstDigests, secondDigests, elapsed, c.QueryLimit)
 	}
 	statementSampleAvailable := c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr)
 	result.IntervalMillis = elapsed.Milliseconds()
@@ -913,6 +918,80 @@ type errorCounter struct {
 
 type statementCounter struct {
 	Count, Errors, Warnings uint64
+}
+
+type statementDigestCounter struct {
+	Digest, Schema, Statement string
+	Count                     uint64
+	TotalMillis               float64
+}
+
+func (c *Collector) collectStatementDigestCounters(ctx context.Context, conn *sql.Conn) (map[string]statementDigestCounter, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT COALESCE(DIGEST,''), COALESCE(SCHEMA_NAME,''),
+		COALESCE(DIGEST_TEXT,''), COUNT_STAR, SUM_TIMER_WAIT / 1000000000
+	  FROM performance_schema.events_statements_summary_by_digest
+	  WHERE DIGEST IS NOT NULL AND DIGEST_TEXT IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]statementDigestCounter)
+	for rows.Next() {
+		var item statementDigestCounter
+		if err := rows.Scan(&item.Digest, &item.Schema, &item.Statement, &item.Count, &item.TotalMillis); err != nil {
+			return nil, err
+		}
+		item.Statement = sanitize.SQL(item.Statement)
+		result[item.Digest] = item
+	}
+	return result, rows.Err()
+}
+
+func deriveStatementSamples(first, second map[string]statementDigestCounter, elapsed time.Duration, limit int) []model.StatementSample {
+	seconds := elapsed.Seconds()
+	if seconds <= 0 {
+		seconds = 1
+	}
+	result := make([]model.StatementSample, 0)
+	totalMillis := 0.0
+	for digest, current := range second {
+		if internalStatementSample(current.Statement) {
+			continue
+		}
+		previous := first[digest]
+		calls := counterDelta(previous.Count, current.Count)
+		databaseTime := floatDelta(previous.TotalMillis, current.TotalMillis)
+		if calls == 0 && databaseTime == 0 {
+			continue
+		}
+		result = append(result, model.StatementSample{
+			Digest: digest, Schema: current.Schema, Statement: current.Statement, Calls: calls,
+			CallsPerSecond: float64(calls) / seconds, DatabaseTimeMillis: databaseTime,
+			DatabaseTimeMillisPerSecond: databaseTime / seconds,
+		})
+		totalMillis += databaseTime
+	}
+	for index := range result {
+		if totalMillis > 0 {
+			result[index].DatabaseTimeSharePercent = result[index].DatabaseTimeMillis * 100 / totalMillis
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].DatabaseTimeMillis != result[j].DatabaseTimeMillis {
+			return result[i].DatabaseTimeMillis > result[j].DatabaseTimeMillis
+		}
+		return result[i].Digest < result[j].Digest
+	})
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}
+
+func internalStatementSample(statement string) bool {
+	canonical := strings.NewReplacer("`", "", " ", "").Replace(strings.ToUpper(statement))
+	return strings.Contains(canonical, "PERFORMANCE_SCHEMA.EVENTS_STATEMENTS_SUMMARY_BY_DIGEST") &&
+		strings.Contains(canonical, "SUM_TIMER_WAIT") && strings.Contains(canonical, "COUNT_STAR")
 }
 
 func (c *Collector) collectWaitCounters(ctx context.Context, conn *sql.Conn) (map[string]waitCounter, error) {

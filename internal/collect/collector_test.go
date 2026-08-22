@@ -154,3 +154,32 @@ func TestDeriveServerErrorsAndInstrumentationLoss(t *testing.T) {
 		t.Fatalf("unexpected coverage: %+v", coverage)
 	}
 }
+
+func TestDeriveStatementSamplesRanksCurrentDatabaseTime(t *testing.T) {
+	first := map[string]statementDigestCounter{
+		"slow": {Digest: "slow", Schema: "app", Statement: "SELECT * FROM orders WHERE id = ?", Count: 10, TotalMillis: 100},
+		"fast": {Digest: "fast", Schema: "app", Statement: "SELECT * FROM users WHERE id = ?", Count: 20, TotalMillis: 200},
+	}
+	second := map[string]statementDigestCounter{
+		"slow": {Digest: "slow", Schema: "app", Statement: "SELECT * FROM orders WHERE id = ?", Count: 12, TotalMillis: 500},
+		"fast": {Digest: "fast", Schema: "app", Statement: "SELECT * FROM users WHERE id = ?", Count: 30, TotalMillis: 300},
+		"self": {Digest: "self", Statement: "SELECT `COUNT_STAR` , `SUM_TIMER_WAIT` FROM `performance_schema` . `events_statements_summary_by_digest`", Count: 1, TotalMillis: 1000},
+	}
+	samples := deriveStatementSamples(first, second, 2*time.Second, 10)
+	if len(samples) != 2 || samples[0].Digest != "slow" || samples[0].Calls != 2 || samples[0].CallsPerSecond != 1 ||
+		samples[0].DatabaseTimeMillis != 400 || samples[0].DatabaseTimeMillisPerSecond != 200 {
+		t.Fatalf("unexpected statement samples: %+v", samples)
+	}
+	if math.Abs(samples[0].DatabaseTimeSharePercent-80) > 0.01 {
+		t.Fatalf("database time share = %.2f, want 80", samples[0].DatabaseTimeSharePercent)
+	}
+}
+
+func TestDeriveStatementSamplesHandlesCounterReset(t *testing.T) {
+	first := map[string]statementDigestCounter{"query": {Digest: "query", Count: 100, TotalMillis: 1000}}
+	second := map[string]statementDigestCounter{"query": {Digest: "query", Count: 2, TotalMillis: 50}}
+	samples := deriveStatementSamples(first, second, time.Second, 10)
+	if len(samples) != 0 {
+		t.Fatalf("counter reset was not handled: %+v", samples)
+	}
+}

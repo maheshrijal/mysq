@@ -81,9 +81,10 @@ An export is written atomically and refuses to overwrite an existing path. It co
 |---|---|
 | `summary.md` | Findings-first narrative for a human or agent |
 | `context.json` | Complete versioned diagnostic contract |
-| `schema/context-1.2.0.json` | JSON Schema for validation and tool generation |
+| `schema/context-1.3.0.json` | JSON Schema for validation and tool generation |
 | `findings.json` / `metrics.json` | Small deterministic reasoning inputs |
 | `queries.csv` | Normalized statement digests, tail latency, errors, and cost |
+| `statement-samples.csv` | Statements ranked by database time during the collection interval |
 | `tables.csv` / `indexes.csv` | Storage, I/O latency, keys, and usage evidence |
 | `processes.csv` / `connections.csv` / `locks.csv` | Redacted concurrency snapshot and user/host grouping |
 | `transactions.csv` / `metadata-locks.csv` | Active transaction and metadata-lock evidence |
@@ -172,7 +173,7 @@ The role is the primary safety boundary. mysq also sets `transaction_read_only=O
 - InnoDB buffer hit/use/dirty ratios, purge history, redo waits, row-lock churn, and active blockers.
 - Physical I/O and fsync rates, pending I/O, redo generation and checkpoint age, buffer-pool bytes, network throughput, scans, and sorts.
 - Top Performance Schema wait events and memory consumers, preserving cumulative count, total, mean, max, current, and high-water values.
-- Statement digests by total latency, no-index execution, examined/sent rows, and disk temp tables.
+- Statement digests by total latency, no-index execution, examined/sent rows, and disk temp tables, plus an interval sample ranked by current database time.
 - Current SQL attribution by database user, client host, database, digest, statement state, and wait event when instrumentation provides it.
 - Table storage and I/O, missing primary keys, duplicate definitions, and review-only unused-index candidates.
 - Process duration, active InnoDB transactions, current row locks, and active or pending metadata locks.

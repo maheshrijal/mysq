@@ -163,7 +163,7 @@ func buildArtifacts(ctx *model.Context) ([]artifact, error) {
 	}
 	items = append(items, artifact{name: "summary.md", mediaType: "text/markdown", description: "Human and agent-readable findings-first report", data: markdown.Bytes()})
 	items = append(items, artifact{name: "README.md", mediaType: "text/markdown", description: "Bundle contract and safe-use notes", data: []byte(bundleReadme(ctx))})
-	items = append(items, artifact{name: "schema/context-1.2.0.json", mediaType: "application/schema+json", description: "JSON Schema for context.json", data: contract.ContextLatest()})
+	items = append(items, artifact{name: "schema/context-1.3.0.json", mediaType: "application/schema+json", description: "JSON Schema for context.json", data: contract.ContextLatest()})
 	items = append(items, artifact{name: "raw/innodb-status.txt", mediaType: "text/plain", description: "Redacted SHOW ENGINE INNODB STATUS output", data: []byte(ctx.InnoDBStatus)})
 	items = append(items, artifact{name: "variables.cnf", mediaType: "text/plain", description: "Sorted server variables in option-file syntax", data: variablesFile(ctx.Variables)})
 
@@ -253,9 +253,16 @@ func csvFiles(ctx *model.Context) ([]artifact, error) {
 	for _, item := range ctx.MemoryConsumers {
 		memory = append(memory, []string{item.Name, strconv.FormatUint(item.CurrentBytes, 10), strconv.FormatUint(item.HighBytes, 10), strconv.FormatUint(item.Allocations, 10)})
 	}
+	statementSamples := make([][]string, 0, len(ctx.StatementSamples))
+	for _, item := range ctx.StatementSamples {
+		statementSamples = append(statementSamples, []string{item.Digest, item.Schema, item.Statement,
+			strconv.FormatUint(item.Calls, 10), formatFloat(item.CallsPerSecond), formatFloat(item.DatabaseTimeMillis),
+			formatFloat(item.DatabaseTimeMillisPerSecond), formatFloat(item.DatabaseTimeSharePercent)})
+	}
 
 	specs := []csvSpec{
 		{"queries.csv", "Normalized statement digest statistics", []string{"digest", "schema", "statement", "calls", "total_latency_ms", "mean_latency_ms", "max_latency_ms", "p95_latency_ms", "p99_latency_ms", "p999_latency_ms", "rows_examined", "rows_sent", "rows_affected", "errors", "warnings", "no_index_used", "full_scans", "tmp_tables", "tmp_disk_tables", "first_seen", "last_seen", "active_users"}, queries},
+		{"statement-samples.csv", "Statements ranked by database time during the collection interval", []string{"digest", "schema", "statement", "calls", "calls_per_second", "database_time_ms", "database_time_ms_per_second", "database_time_share_percent"}, statementSamples},
 		{"tables.csv", "Table size, I/O count, and latency statistics", []string{"schema", "table", "engine", "estimated_rows", "data_bytes", "index_bytes", "total_bytes", "reads", "writes", "read_latency_ms", "write_latency_ms", "has_primary_key"}, tables},
 		{"indexes.csv", "Index definitions, usage, and latency counters", []string{"schema", "table", "index", "columns", "unique", "visible", "cardinality", "reads", "writes", "read_latency_ms", "write_latency_ms"}, indexes},
 		{"processes.csv", "Redacted active-session snapshot", []string{"id", "thread_id", "user", "host", "database", "command", "seconds", "state", "digest", "wait_event", "statement_latency_ms", "statement"}, processes},

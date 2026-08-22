@@ -53,6 +53,14 @@ func Markdown(w io.Writer, ctx *model.Context) error {
 		}
 		out.WriteByte('\n')
 	}
+	if len(ctx.StatementSamples) > 0 {
+		out.WriteString("## Current statement database time\n\n| Share | Database time/s | Calls/s | Schema | Statement |\n|---:|---:|---:|---|---|\n")
+		for _, item := range ctx.StatementSamples[:min(10, len(ctx.StatementSamples))] {
+			fmt.Fprintf(&out, "| %.1f%% | %s/s | %.2f | `%s` | `%s` |\n", item.DatabaseTimeSharePercent,
+				duration(item.DatabaseTimeMillisPerSecond), item.CallsPerSecond, item.Schema, escapeMarkdown(item.Statement))
+		}
+		out.WriteByte('\n')
+	}
 	if len(ctx.WaitEvents) > 0 {
 		out.WriteString("## Sampled wait pressure\n\n| Event | Sample share | Wait/s | Events/s | Cumulative total |\n|---|---:|---:|---:|---:|\n")
 		for _, wait := range ctx.WaitEvents[:min(10, len(ctx.WaitEvents))] {

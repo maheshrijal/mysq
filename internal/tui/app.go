@@ -509,7 +509,7 @@ func overview(ctx *model.Context, width int) string {
 	pressureInner := max(20, pressureWidth-4)
 	pressure := strings.Join([]string{
 		gaugeLine("Connection slots", ctx.Metrics.ConnectionsUsedPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.ConnectionsUsedPercent), colorForPercent(ctx.Metrics.ConnectionsUsedPercent, 75, 90), pressureInner),
-		gaugeLine("Buffer pool used", ctx.Metrics.BufferPoolUsedPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.BufferPoolUsedPercent), cyan, pressureInner),
+		gaugeLine("Redo checkpoint", ctx.Metrics.RedoCheckpointAgePct, fmt.Sprintf("%.1f%%", ctx.Metrics.RedoCheckpointAgePct), colorForPercent(ctx.Metrics.RedoCheckpointAgePct, 60, 80), pressureInner),
 		gaugeLine("Dirty pages", ctx.Metrics.BufferPoolDirtyPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.BufferPoolDirtyPercent), colorForPercent(ctx.Metrics.BufferPoolDirtyPercent, 40, 75), pressureInner),
 		gaugeLine("Disk temp tables", ctx.Metrics.TempDiskTablePercent, fmt.Sprintf("%.1f%%", ctx.Metrics.TempDiskTablePercent), colorForPercent(ctx.Metrics.TempDiskTablePercent, 10, 25), pressureInner),
 	}, "\n")
@@ -533,18 +533,30 @@ func overview(ctx *model.Context, width int) string {
 
 	identity := lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("%s %s · uptime %s · %.1fs collection window",
 		ctx.Server.Flavor, ctx.Server.Version, humanDuration(ctx.Server.UptimeSeconds), float64(ctx.IntervalMillis)/1000))
-	return postureBox + "\n" + cards + "\n" + lower + "\n" + mysqlInvestigationPanels(ctx, width) + "\n" + identity
+	result := postureBox + "\n" + cards + "\n" + lower + "\n" + mysqlInvestigationPanels(ctx, width)
+	if conditional := overviewConditionalPanels(ctx, width); conditional != "" {
+		result += "\n" + conditional
+	}
+	return result + "\n" + identity
 }
 
 func mysqlInvestigationPanels(ctx *model.Context, width int) string {
+	loadWidth, queryWidth, contentionWidth := width, width, width
+	if width >= 96 {
+		loadWidth = width / 3
+		queryWidth = width / 3
+		contentionWidth = width - loadWidth - queryWidth - 2
+	}
 	load := summarizeCurrentLoad(ctx)
 	loadBody := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render(fmt.Sprintf("%d active", load.active)) +
 		lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("  ·  %d executing  ·  %d waiting", load.executing, load.waiting)) + "\n" +
+		labelValue("TOP SQL", summarizeTopSQL(ctx, max(12, loadWidth-14))) + "\n" +
 		labelValue("TOP WAIT", load.topWait) + "\n" + labelValue("TOP USER", load.topUser)
 
 	queryBody := labelValue("P95 / P99", duration(ctx.StatementLatency.P95Millis)+" / "+duration(ctx.StatementLatency.P99Millis)) + "\n" +
-		labelValue("MAX", duration(ctx.StatementLatency.MaxMillis)) + "\n" +
-		labelValue("ERRORS / WARNINGS", fmt.Sprintf("%.2f/s / %.2f/s", ctx.Metrics.StatementErrorsPerSec, ctx.Metrics.StatementWarningsPerSec))
+		labelValue("ERRORS / WARNINGS", fmt.Sprintf("%.2f/s / %.2f/s", ctx.Metrics.StatementErrorsPerSec, ctx.Metrics.StatementWarningsPerSec)) + "\n" +
+		labelValue("FULL SCANS / DISK TEMP", fmt.Sprintf("%.2f/s / %.1f%%", ctx.Metrics.FullScansPerSecond, ctx.Metrics.TempDiskTablePercent)) + "\n" +
+		labelValue("SLOW / BUFFER WAITS", fmt.Sprintf("%.2f/s / %.2f/s", ctx.Metrics.SlowQueriesPerSecond, ctx.Metrics.BufferPoolWaitsPerSec))
 
 	pendingMetadata := 0
 	for _, lock := range ctx.MetadataLocks {
@@ -557,20 +569,101 @@ func mysqlInvestigationPanels(ctx *model.Context, width int) string {
 		oldest = maxUint64(oldest, transaction.AgeSeconds)
 	}
 	contentionBody := labelValue("ROW / METADATA WAITERS", fmt.Sprintf("%d / %d", len(ctx.Locks), pendingMetadata)) + "\n" +
-		labelValue("OLDEST TRANSACTION", humanDuration(oldest)) + "\n" +
+		labelValue("BLOCKER", summarizeTopBlocker(ctx, max(12, contentionWidth-14))) + "\n" +
+		labelValue("OLDEST / PURGE HISTORY", humanDuration(oldest)+" / "+humanCount(ctx.Metrics.HistoryListLength)) + "\n" +
 		labelValue("DEADLOCKS / TIMEOUTS", fmt.Sprintf("%.2f/s / %.2f/s", ctx.Metrics.DeadlocksPerSecond, ctx.Metrics.LockTimeoutsPerSecond))
 
 	if width < 96 {
 		return panelBox("CURRENT MYSQL LOAD", loadBody, width) + "\n" +
 			panelBox("QUERY HEALTH", queryBody, width) + "\n" + panelBox("CONTENTION", contentionBody, width)
 	}
-	first := width / 3
-	second := width / 3
-	third := width - first - second - 2
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		panelBox("CURRENT MYSQL LOAD", loadBody, first), " ",
-		panelBox("QUERY HEALTH", queryBody, second), " ",
-		panelBox("CONTENTION", contentionBody, third))
+		panelBox("CURRENT MYSQL LOAD", loadBody, loadWidth), " ",
+		panelBox("QUERY HEALTH", queryBody, queryWidth), " ",
+		panelBox("CONTENTION", contentionBody, contentionWidth))
+}
+
+func summarizeTopSQL(ctx *model.Context, width int) string {
+	if len(ctx.StatementSamples) == 0 {
+		return "none in sample"
+	}
+	top := ctx.StatementSamples[0]
+	prefix := fmt.Sprintf("%.1f%% · ", top.DatabaseTimeSharePercent)
+	return prefix + compact(top.Statement, max(8, width-lipgloss.Width(prefix)))
+}
+
+func summarizeTopBlocker(ctx *model.Context, width int) string {
+	if len(ctx.Locks) == 0 {
+		return "none active"
+	}
+	counts := make(map[string]int)
+	objects := make(map[string]string)
+	for _, lock := range ctx.Locks {
+		counts[lock.BlockingTransaction]++
+		if objects[lock.BlockingTransaction] == "" {
+			objects[lock.BlockingTransaction] = strings.Trim(strings.TrimSpace(lock.Schema+"."+lock.Table), ".")
+		}
+	}
+	blocker, waiters := "", 0
+	for transaction, count := range counts {
+		if count > waiters || (count == waiters && transaction < blocker) {
+			blocker, waiters = transaction, count
+		}
+	}
+	identity := "trx " + blocker
+	age := uint64(0)
+	for _, transaction := range ctx.Transactions {
+		if transaction.ID == blocker {
+			age = transaction.AgeSeconds
+			if transaction.User != "" {
+				identity = transaction.User
+			}
+			break
+		}
+	}
+	parts := []string{identity, fmt.Sprintf("%dx", waiters)}
+	if object := objects[blocker]; object != "" {
+		parts = append(parts, object)
+	} else if age > 0 {
+		parts = append(parts, humanDuration(age))
+	}
+	return compact(strings.Join(parts, " · "), width)
+}
+
+func overviewConditionalPanels(ctx *model.Context, width int) string {
+	panels := make([]string, 0, 2)
+	if ctx.Replication != nil {
+		r := ctx.Replication
+		lag := "unknown"
+		if r.SecondsBehind != nil {
+			lag = fmt.Sprintf("%ds", *r.SecondsBehind)
+		}
+		workerErrors := 0
+		for _, worker := range r.Workers {
+			if worker.LastErrorNumber != 0 {
+				workerErrors++
+			}
+		}
+		state, color := "healthy", green
+		if !strings.EqualFold(r.IORunning, "Yes") || !strings.EqualFold(r.SQLRunning, "Yes") || workerErrors > 0 || r.LastIOError != "" || r.LastSQLError != "" {
+			state, color = "attention", red
+		}
+		body := lipgloss.NewStyle().Foreground(color).Bold(true).Render("● "+state) + "  " +
+			labelValue("IO / SQL / APPLIER", r.IORunning+" / "+r.SQLRunning+" / "+fallback(r.ApplierState, "unknown")) + "  ·  " +
+			labelValue("LAG", lag) + "  ·  " + labelValue("WORKERS / ERRORS", fmt.Sprintf("%d / %d", len(r.Workers), workerErrors)) + "  ·  " +
+			labelValue("RETRIES", humanCount(r.TransactionRetries))
+		panels = append(panels, panelBox("REPLICATION STATUS", body, width))
+	}
+	if ctx.Instrumentation.TotalLost > 0 || len(ctx.Instrumentation.DisabledConsumers) > 0 {
+		body := lipgloss.NewStyle().Foreground(yellow).Bold(true).Render("● degraded") + "  " +
+			labelValue("DIGESTS", fmt.Sprintf("%d/%d", ctx.Instrumentation.DigestRows, ctx.Instrumentation.DigestCapacity)) + "  ·  " +
+			labelValue("LOST", humanCount(ctx.Instrumentation.TotalLost))
+		if len(ctx.Instrumentation.DisabledConsumers) > 0 {
+			body += "\n" + labelValue("DISABLED", compact(strings.Join(ctx.Instrumentation.DisabledConsumers, ", "), max(12, width-14)))
+		}
+		panels = append(panels, panelBox("DATA COVERAGE", body, width))
+	}
+	return strings.Join(panels, "\n")
 }
 
 type currentLoadSummary struct {

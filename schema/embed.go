@@ -2,12 +2,12 @@ package schema
 
 import _ "embed"
 
-//go:generate go run ../tools/schemagen -out context-1.2.0.json
+//go:generate go run ../tools/schemagen -out context-1.3.0.json
 
 //go:embed context-1.0.0.json
 var contextV1 []byte
 
-//go:embed context-1.2.0.json
+//go:embed context-1.3.0.json
 var contextLatest []byte
 
 func ContextV1() []byte {
