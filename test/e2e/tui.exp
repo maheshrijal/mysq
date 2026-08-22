@@ -14,14 +14,20 @@ expect {
   timeout { exit 10 }
   eof { exit 11 }
 }
-# Exercise every arrow direction against the view navigator. Content scrolling
-# remains on j/k and paging keys.
+# Exercise horizontal view navigation, vertical query selection, and the
+# Enter/Esc query detail workflow. Content scrolling remains on j/k and pages.
 send "\033\[C"
-expect -re {● 2 FINDINGS}
+expect -re {● 2 CONNECTIONS}
 send "\033\[B"
 expect -re {● 3 QUERIES}
+# Queries use vertical arrows for row selection and Enter/Esc for detail.
+send "\033\[B"
+send "\r"
+expect -re {NORMALIZED SQL}
+send "\033"
+expect -re {DB TIME.*CALLS.*AVG.*USER.*QUERY}
 send "\033\[D"
-expect -re {● 2 FINDINGS}
+expect -re {● 2 CONNECTIONS}
 send "\033\[A"
 expect -re {● 1 OVERVIEW}
 send "\t"

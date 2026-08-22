@@ -27,7 +27,7 @@ func TestTUIRendersAndNavigatesAllViews(t *testing.T) {
 	if view := m.View(); !strings.Contains(view, "12.0 qps") || !strings.Contains(view, "DATABASE POSTURE") || !strings.Contains(view, "PRIORITY SIGNAL") {
 		t.Fatalf("overview missing content:\n%s", view)
 	}
-	for _, expected := range []string{"Test finding", "SELECT * FROM t", "INNODB I/O AND REDO", "app.t", "No other connections", "performance_schema"} {
+	for _, expected := range []string{"No other connections", "SELECT * FROM t", "INNODB I/O AND REDO", "Test finding", "app.t", "performance_schema"} {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 		m = updated.(Model)
 		if view := m.View(); !strings.Contains(view, expected) {
@@ -194,10 +194,82 @@ func TestTopTabsReclaimWidthAndWindowOnNarrowTerminals(t *testing.T) {
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 72, Height: 28})
 	m = updated.(Model)
 	view = m.View()
-	if !strings.Contains(view, "2 Findings") || !strings.Contains(view, "3 QUERIES") || !strings.Contains(view, "4 Engine") {
+	if !strings.Contains(view, "2 Connections") || !strings.Contains(view, "3 QUERIES") || !strings.Contains(view, "4 Engine") {
 		t.Fatalf("narrow tab window omitted neighboring tabs:\n%s", view)
 	}
 	if strings.Contains(view, "1 Overview") || strings.Contains(view, "7 Config") {
 		t.Fatalf("narrow tab window rendered off-screen tabs:\n%s", view)
+	}
+}
+
+func TestQuerySelectionOpensDetailAndEscapeReturnsToList(t *testing.T) {
+	ctx := &model.Context{
+		Health:  model.Health{Score: 100},
+		Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100},
+		Queries: []model.Query{
+			{Statement: "SELECT id FROM users", Calls: 10, TotalLatencyMillis: 100, MeanLatencyMillis: 10, ActiveUsers: []string{"api"}},
+			{Digest: "digest-2", Schema: "app", Statement: "UPDATE orders SET status = ? WHERE id = ?", Calls: 3, TotalLatencyMillis: 90, MeanLatencyMillis: 30, RowsExamined: 12, RowsSent: 1, NoIndexUsed: 1, TmpTables: 2, TmpDiskTables: 1, ActiveUsers: []string{"worker"}},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 32})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	if m.tab != 2 || m.queryIndex != 1 {
+		t.Fatalf("down selected tab=%d query=%d, want tab=2 query=1", m.tab, m.queryIndex)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	view := m.View()
+	if !m.queryDetail || !strings.Contains(view, "NORMALIZED SQL") || !strings.Contains(view, "UPDATE orders SET status") || !strings.Contains(view, "USER") || !strings.Contains(view, "worker") {
+		t.Fatalf("enter did not open useful query detail:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	view = m.View()
+	if m.queryDetail || m.queryIndex != 1 || !strings.Contains(view, "ROWS EXAM") || !strings.Contains(view, "USER") || !strings.Contains(view, "QUERY") {
+		t.Fatalf("escape did not return to the selected query row:\n%s", view)
+	}
+	if strings.Contains(view, "TMP-D") || strings.Contains(view, "EXAM/SENT") {
+		t.Fatalf("query list retained low-value headers:\n%s", view)
+	}
+}
+
+func TestQueryListAndDetailStayWithinNarrowTerminal(t *testing.T) {
+	ctx := &model.Context{
+		Health:  model.Health{Score: 100},
+		Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100},
+		Queries: []model.Query{{
+			Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", Schema: "application",
+			Statement: "SELECT a_very_long_column_name FROM a_very_long_table_name WHERE tenant_id = ? AND status = ?",
+			Calls:     1200, TotalLatencyMillis: 9000, MeanLatencyMillis: 7.5, RowsExamined: 999999, RowsSent: 100,
+			ActiveUsers: []string{"checkout-worker"}, FirstSeen: "2026-08-22T10:00:00Z", LastSeen: "2026-08-22T11:00:00Z",
+		}},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 28})
+	m = updated.(Model)
+	assertViewWidth(t, m.View(), 60)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	assertViewWidth(t, m.View(), 60)
+}
+
+func assertViewWidth(t *testing.T, view string, width int) {
+	t.Helper()
+	for _, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("rendered line width %d exceeds %d:\n%s", got, width, view)
+		}
 	}
 }

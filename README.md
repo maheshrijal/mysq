@@ -57,10 +57,10 @@ mysq export --zip
 
 `mysq tui` opens the live interactive view:
 
-- Seven navigable views: Overview, Findings, Queries, Engine, Tables, Connections, and Config.
+- Seven navigable views: Overview, Connections, Queries, Engine, Findings, Tables, and Config.
 - A restrained adaptive palette that respects light and dark terminal backgrounds; color communicates health instead of decorating every surface.
 - A compact browser-style tab strip with live counts and full-width diagnostic content, collapsing to neighboring tabs in narrow split panes.
-- All four arrow keys, Tab/Shift-Tab, and number keys switch views; `j`/`k`, Page Up/Down, and `g`/`G` scroll within the active view.
+- Left/Right, Tab/Shift-Tab, and number keys switch views. In Queries, Up/Down selects a statement, Enter opens its full normalized SQL and execution evidence, and Esc returns to the selected row. `j`/`k`, Page Up/Down, and `g`/`G` scroll long content.
 - `r` reruns every diagnostic probe and saves a new local snapshot.
 - `e` writes the complete native agent bundle directly from the terminal and keeps its destination visible until dismissed with `Esc`.
 - Cards, gauges, tables, findings, and key hints reflow at terminal breakpoints; very small terminals get an explicit resize state instead of a broken layout.

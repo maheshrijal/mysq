@@ -17,9 +17,9 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Changed
 
+- Reorder investigation views to Overview, Connections, Queries, Engine, Findings, Tables, and Config; make Queries an Up/Down and Enter/Esc master-detail workflow with a smaller high-value column set that retains current user attribution.
 - Rename the project, executable, module, environment variable, local state, exports, Docker fixtures, and terminal branding from `mysqldot` to `mysq`; retain automatic snapshot migration and the legacy connection variable as compatibility paths.
 - Rebuilt the TUI visual system around an adaptive light/dark palette, semantic health colors, a browser-style tab strip, full-width responsive diagnostic panes, gauges, finding cards, and compact key hints.
 - Ignore MySQL server daemons such as `event_scheduler` when detecting long-running statements, preventing false critical health reports based on server uptime.
-- Make all four arrow keys navigate views consistently; retain `j`/`k` and paging keys for scrolling within a view.
 - Keep the complete agent-bundle destination visible in a persistent export confirmation instead of truncating it behind footer shortcuts.
 - Add a data-only Engine view inspired by Database Insights: current SQL/user/host attribution, wait events, InnoDB I/O and redo/checkpoint state, active transactions, metadata locks, and MySQL memory consumers without changing health analysis.

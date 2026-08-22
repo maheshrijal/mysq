@@ -29,24 +29,26 @@ type exportMessage struct {
 	err  error
 }
 
-var tabs = []string{"Overview", "Findings", "Queries", "Engine", "Tables", "Connections", "Config"}
+var tabs = []string{"Overview", "Connections", "Queries", "Engine", "Findings", "Tables", "Config"}
 
 type Model struct {
-	ctx        context.Context
-	inspect    Inspector
-	export     Exporter
-	snapshot   *model.Context
-	viewport   viewport.Model
-	spinner    spinner.Model
-	width      int
-	height     int
-	tab        int
-	loading    bool
-	help       bool
-	status     string
-	exportPath string
-	err        error
-	refreshed  time.Time
+	ctx         context.Context
+	inspect     Inspector
+	export      Exporter
+	snapshot    *model.Context
+	viewport    viewport.Model
+	spinner     spinner.Model
+	width       int
+	height      int
+	tab         int
+	queryIndex  int
+	queryDetail bool
+	loading     bool
+	help        bool
+	status      string
+	exportPath  string
+	err         error
+	refreshed   time.Time
 }
 
 var (
@@ -91,15 +93,50 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
-		case "tab", "right", "down", "l":
+		case "tab", "right", "l":
+			if m.queryDetail {
+				break
+			}
 			m.tab = (m.tab + 1) % len(tabs)
 			m.rebuild()
 			updateViewport = false
-		case "shift+tab", "left", "up", "h":
+		case "shift+tab", "left", "h":
+			if m.queryDetail {
+				break
+			}
 			m.tab = (m.tab + len(tabs) - 1) % len(tabs)
 			m.rebuild()
 			updateViewport = false
+		case "down":
+			if tabs[m.tab] == "Queries" && !m.queryDetail && m.snapshot != nil && len(m.snapshot.Queries) > 0 {
+				m.queryIndex = min(m.queryIndex+1, len(m.snapshot.Queries)-1)
+				m.rebuild()
+				m.ensureQuerySelectionVisible()
+				updateViewport = false
+			} else if !m.queryDetail {
+				m.tab = (m.tab + 1) % len(tabs)
+				m.rebuild()
+				updateViewport = false
+			}
+		case "up":
+			if tabs[m.tab] == "Queries" && !m.queryDetail && m.snapshot != nil && len(m.snapshot.Queries) > 0 {
+				m.queryIndex = max(0, m.queryIndex-1)
+				m.rebuild()
+				m.ensureQuerySelectionVisible()
+				updateViewport = false
+			} else if !m.queryDetail {
+				m.tab = (m.tab + len(tabs) - 1) % len(tabs)
+				m.rebuild()
+				updateViewport = false
+			}
+		case "enter":
+			if tabs[m.tab] == "Queries" && !m.queryDetail && m.snapshot != nil && len(m.snapshot.Queries) > 0 {
+				m.queryDetail = true
+				m.rebuild()
+				updateViewport = false
+			}
 		case "1", "2", "3", "4", "5", "6", "7":
+			m.queryDetail = false
 			m.tab = int(msg.Runes[0] - '1')
 			m.rebuild()
 			updateViewport = false
@@ -119,7 +156,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				commands = append(commands, m.exportCommand())
 			}
 		case "esc":
-			if m.exportPath != "" {
+			if m.queryDetail {
+				m.queryDetail = false
+				m.rebuild()
+				m.ensureQuerySelectionVisible()
+				updateViewport = false
+			} else if m.exportPath != "" {
 				m.exportPath = ""
 				m.resizeViewport()
 				m.rebuild()
@@ -143,6 +185,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Refresh failed: " + compact(msg.err.Error(), max(20, m.width-20))
 		} else {
 			m.snapshot = msg.context
+			if len(m.snapshot.Queries) == 0 {
+				m.queryIndex = 0
+				m.queryDetail = false
+			} else {
+				m.queryIndex = min(m.queryIndex, len(m.snapshot.Queries)-1)
+			}
 			m.refreshed = time.Now()
 			m.status = fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint)
 			m.rebuild()
@@ -318,6 +366,12 @@ func (m Model) footer() string {
 		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(lines)
 	}
 	keys := keyHint("arrows", "views") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("e", "export") + "  " + keyHint("?", "help") + "  " + keyHint("q", "quit")
+	if tabs[m.tab] == "Queries" {
+		keys = keyHint("↑/↓", "select") + "  " + keyHint("enter", "open") + "  " + keyHint("←/→", "views") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
+		if m.queryDetail {
+			keys = keyHint("esc", "queries") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
+		}
+	}
 	if m.help {
 		keys = keyHint("1–7", "jump") + "  " + keyHint("g/G", "top/bottom") + "  " + keyHint("pgup/dn", "page") + "  " + keyHint("e", "agent bundle")
 	}
@@ -326,7 +380,14 @@ func (m Model) footer() string {
 		status = "Read-only · SQL literals redacted"
 	}
 	if m.width < 96 {
-		keys = keyHint("arrows", "view") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
+		if tabs[m.tab] == "Queries" {
+			keys = keyHint("↑/↓", "select") + "  " + keyHint("enter", "open") + "  " + keyHint("←/→", "views")
+			if m.queryDetail {
+				keys = keyHint("esc", "queries") + "  " + keyHint("j/k", "scroll")
+			}
+		} else {
+			keys = keyHint("arrows", "view") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
+		}
 	}
 	line := padBetween(lipgloss.NewStyle().Foreground(muted).Render(compact(status, max(16, m.width/2))), keys, max(1, m.width-2))
 	return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
@@ -366,7 +427,11 @@ func (m *Model) rebuild() {
 	case "Findings":
 		content = findings(m.snapshot, m.viewport.Width)
 	case "Queries":
-		content = queries(m.snapshot, m.viewport.Width)
+		if m.queryDetail {
+			content = queryDetail(m.snapshot, m.viewport.Width, m.queryIndex)
+		} else {
+			content = queries(m.snapshot, m.viewport.Width, m.queryIndex)
+		}
 	case "Engine":
 		content = engine(m.snapshot, m.viewport.Width)
 	case "Tables":
@@ -378,6 +443,17 @@ func (m *Model) rebuild() {
 	}
 	m.viewport.SetContent(content)
 	m.viewport.GotoTop()
+}
+
+func (m *Model) ensureQuerySelectionVisible() {
+	// The query header occupies two lines. Keep the selected statement inside
+	// the viewport as the engineer walks a long digest list.
+	line := m.queryIndex + 2
+	if line < m.viewport.YOffset {
+		m.viewport.SetYOffset(line)
+	} else if line >= m.viewport.YOffset+m.viewport.Height {
+		m.viewport.SetYOffset(max(0, line-m.viewport.Height+1))
+	}
 }
 
 func (m Model) inspectCommand() tea.Cmd {
@@ -455,7 +531,7 @@ func overview(ctx *model.Context, width int) string {
 		topFinding = lipgloss.NewStyle().Foreground(color).Bold(true).Render("▌ "+strings.ToUpper(string(f.Severity))) + "  " +
 			lipgloss.NewStyle().Foreground(text).Bold(true).Render(f.Title) + "\n" +
 			lipgloss.NewStyle().Foreground(muted).Width(max(16, findingWidth-4)).Render(f.Summary) + "\n" +
-			lipgloss.NewStyle().Foreground(cyan).Render("Press 2 for remediation")
+			lipgloss.NewStyle().Foreground(cyan).Render("Press 5 for remediation")
 	}
 	findingBox := panelBox("PRIORITY SIGNAL", topFinding, findingWidth)
 	lower := lipgloss.JoinHorizontal(lipgloss.Top, pressureBox, " ", findingBox)
@@ -538,7 +614,7 @@ func findings(ctx *model.Context, width int) string {
 	return out.String()
 }
 
-func queries(ctx *model.Context, width int) string {
+func queries(ctx *model.Context, width, selected int) string {
 	if len(ctx.Queries) == 0 {
 		return empty("No statement digests available. Check Performance Schema consumers and privileges.")
 	}
@@ -548,34 +624,94 @@ func queries(ctx *model.Context, width int) string {
 	}
 	var out strings.Builder
 	wide := width >= 96
-	widths := []int{9, 7, 9, 12, 6, 10, max(24, width-53)}
-	headings := []string{"DB TIME", "CALLS", "MEAN", "EXAM/SENT", "TMP-D", "USER NOW", "STATEMENT"}
-	if !wide {
-		widths = []int{9, 8, 10, 13, max(24, width-40)}
-		headings = []string{"TOTAL", "CALLS", "MEAN", "ACTIVE USER", "STATEMENT"}
+	compactLayout := width < 68
+	widths := []int{2, 9, 8, 9, 11, 14, max(24, width-53)}
+	headings := []string{"", "DB TIME", "CALLS", "AVG", "ROWS EXAM", "USER", "QUERY"}
+	if compactLayout {
+		widths = []int{2, 9, 12, max(20, width-23)}
+		headings = []string{"", "DB TIME", "USER", "QUERY"}
+	} else if !wide {
+		widths = []int{2, 9, 8, 9, 13, max(24, width-41)}
+		headings = []string{"", "DB TIME", "CALLS", "AVG", "USER", "QUERY"}
 	}
 	out.WriteString(row(headings, widths, true) + "\n")
-	for _, query := range ctx.Queries {
+	for index, query := range ctx.Queries {
 		users := "—"
 		if len(query.ActiveUsers) > 0 {
 			users = strings.Join(query.ActiveUsers, ",")
 		}
-		values := []string{duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.MeanLatencyMillis),
-			humanCount(query.RowsExamined) + "/" + humanCount(query.RowsSent), humanCount(query.TmpDiskTables), users, query.Statement}
-		if !wide {
-			values = []string{duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.MeanLatencyMillis), users, query.Statement}
+		marker := " "
+		if index == selected {
+			marker = "›"
 		}
-		out.WriteString(row(values, widths, false) + "\n")
+		values := []string{marker, duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.MeanLatencyMillis),
+			humanCount(query.RowsExamined), users, query.Statement}
+		if compactLayout {
+			values = []string{marker, duration(query.TotalLatencyMillis), users, query.Statement}
+		} else if !wide {
+			values = []string{marker, duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.MeanLatencyMillis), users, query.Statement}
+		}
+		out.WriteString(selectableRow(values, widths, index == selected) + "\n")
 	}
-	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  user is point-in-time  ·  top row share %.1f%%  ·  literals removed", firstQueryShare(ctx.Queries, total))))
+	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  user is point-in-time  ·  selected share %.1f%%  ·  literals removed", queryShare(ctx.Queries, selected, total))))
 	return out.String()
 }
 
-func firstQueryShare(queries []model.Query, total float64) float64 {
-	if len(queries) == 0 || total <= 0 {
+func queryShare(queries []model.Query, selected int, total float64) float64 {
+	if selected < 0 || selected >= len(queries) || total <= 0 {
 		return 0
 	}
-	return queries[0].TotalLatencyMillis * 100 / total
+	return queries[selected].TotalLatencyMillis * 100 / total
+}
+
+func queryDetail(ctx *model.Context, width, selected int) string {
+	if selected < 0 || selected >= len(ctx.Queries) {
+		return empty("The selected query is no longer available. Press Esc to return to Queries.")
+	}
+	query := ctx.Queries[selected]
+	users := "not active in this snapshot"
+	if len(query.ActiveUsers) > 0 {
+		users = strings.Join(query.ActiveUsers, ", ")
+	}
+	var total float64
+	for _, item := range ctx.Queries {
+		total += item.TotalLatencyMillis
+	}
+
+	important := strings.Join([]string{
+		labelValue("USER", users),
+		labelValue("DATABASE", fallback(query.Schema, "all databases")),
+		labelValue("DB TIME", fmt.Sprintf("%s (%.1f%%)", duration(query.TotalLatencyMillis), queryShare(ctx.Queries, selected, total))),
+		labelValue("CALLS", humanCount(query.Calls)),
+		labelValue("AVG", duration(query.MeanLatencyMillis)),
+	}, "  ·  ")
+	var out strings.Builder
+	out.WriteString(panelBox(fmt.Sprintf("QUERY %d OF %d", selected+1, len(ctx.Queries)),
+		lipgloss.NewStyle().Width(max(20, width-4)).Render(important), width))
+	out.WriteString("\n" + sectionTitle("NORMALIZED SQL") + "\n")
+	out.WriteString(lipgloss.NewStyle().Foreground(text).Bold(true).Width(max(20, width-2)).Render(query.Statement) + "\n")
+
+	evidence := []string{
+		labelValue("ROWS EXAMINED", humanCount(query.RowsExamined)),
+		labelValue("ROWS SENT", humanCount(query.RowsSent)),
+		labelValue("NO INDEX CALLS", humanCount(query.NoIndexUsed)),
+		labelValue("TEMP TABLES", humanCount(query.TmpTables)),
+		labelValue("TEMP ON DISK", humanCount(query.TmpDiskTables)),
+	}
+	out.WriteString("\n" + sectionTitle("EXECUTION EVIDENCE") + "\n" +
+		lipgloss.NewStyle().Width(max(20, width-2)).Render(strings.Join(evidence, "  ·  ")) + "\n")
+	if query.FirstSeen != "" || query.LastSeen != "" {
+		out.WriteString("\n" + lipgloss.NewStyle().Width(max(20, width-2)).Render(labelValue("OBSERVED", fallback(query.FirstSeen, "—")+" → "+fallback(query.LastSeen, "—"))) + "\n")
+	}
+	if query.Digest != "" {
+		out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Width(max(20, width-2)).Render("DIGEST  "+query.Digest))
+	}
+	return out.String()
+}
+
+func labelValue(label, value string) string {
+	return lipgloss.NewStyle().Foreground(muted).Bold(true).Render(label+" ") +
+		lipgloss.NewStyle().Foreground(text).Render(value)
 }
 
 func engine(ctx *model.Context, width int) string {
@@ -791,6 +927,18 @@ func row(values []string, widths []int, header bool) string {
 			total += width
 		}
 		out.WriteString("\n" + lipgloss.NewStyle().Foreground(border).Render(strings.Repeat("─", total)))
+	}
+	return out.String()
+}
+
+func selectableRow(values []string, widths []int, selected bool) string {
+	style := lipgloss.NewStyle().Foreground(text)
+	if selected {
+		style = style.Foreground(cyan).Background(surfaceAlt).Bold(true)
+	}
+	var out strings.Builder
+	for i, value := range values {
+		out.WriteString(style.Width(widths[i]).MaxWidth(widths[i]).Render(compact(strings.ReplaceAll(value, "\n", " "), widths[i]-1)))
 	}
 	return out.String()
 }
