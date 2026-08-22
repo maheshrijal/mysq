@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,20 +32,21 @@ type exportMessage struct {
 var tabs = []string{"Overview", "Findings", "Queries", "Tables", "Connections", "Config"}
 
 type Model struct {
-	ctx       context.Context
-	inspect   Inspector
-	export    Exporter
-	snapshot  *model.Context
-	viewport  viewport.Model
-	spinner   spinner.Model
-	width     int
-	height    int
-	tab       int
-	loading   bool
-	help      bool
-	status    string
-	err       error
-	refreshed time.Time
+	ctx        context.Context
+	inspect    Inspector
+	export     Exporter
+	snapshot   *model.Context
+	viewport   viewport.Model
+	spinner    spinner.Model
+	width      int
+	height     int
+	tab        int
+	loading    bool
+	help       bool
+	status     string
+	exportPath string
+	err        error
+	refreshed  time.Time
 }
 
 var (
@@ -88,30 +90,44 @@ func (m Model) Init() tea.Cmd { return tea.Batch(m.spinner.Tick, m.inspectComman
 
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	var commands []tea.Cmd
+	updateViewport := true
 	switch msg := message.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
-		case "tab", "right", "l":
+		case "tab", "right", "down", "l":
 			m.tab = (m.tab + 1) % len(tabs)
 			m.rebuild()
-		case "shift+tab", "left", "h":
+			updateViewport = false
+		case "shift+tab", "left", "up", "h":
 			m.tab = (m.tab + len(tabs) - 1) % len(tabs)
 			m.rebuild()
+			updateViewport = false
 		case "1", "2", "3", "4", "5", "6":
 			m.tab = int(msg.Runes[0] - '1')
 			m.rebuild()
+			updateViewport = false
 		case "r":
 			if !m.loading {
+				m.exportPath = ""
+				m.resizeViewport()
 				m.loading = true
 				m.status = "Refreshing every diagnostic probe…"
 				commands = append(commands, m.inspectCommand(), m.spinner.Tick)
 			}
 		case "e":
 			if !m.loading && m.snapshot != nil {
+				m.exportPath = ""
+				m.resizeViewport()
 				m.status = "Writing agent bundle…"
 				commands = append(commands, m.exportCommand())
+			}
+		case "esc":
+			if m.exportPath != "" {
+				m.exportPath = ""
+				m.resizeViewport()
+				m.rebuild()
 			}
 		case "?":
 			m.help = !m.help
@@ -138,17 +154,23 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case exportMessage:
 		if msg.err != nil {
+			m.exportPath = ""
 			m.status = "Export failed: " + compact(msg.err.Error(), max(20, m.width-20))
 		} else {
+			m.exportPath = msg.path
 			m.status = "Agent bundle exported: " + msg.path
 		}
+		m.resizeViewport()
+		m.rebuild()
 	}
 
 	var command tea.Cmd
 	m.spinner, command = m.spinner.Update(message)
 	commands = append(commands, command)
-	m.viewport, command = m.viewport.Update(message)
-	commands = append(commands, command)
+	if updateViewport {
+		m.viewport, command = m.viewport.Update(message)
+		commands = append(commands, command)
+	}
 	return m, tea.Batch(commands...)
 }
 
@@ -163,12 +185,12 @@ func (m Model) View() string {
 	header := m.header()
 	footer := m.footer()
 	if m.width >= wideBreakpoint {
-		bodyHeight := max(8, m.height-2)
+		bodyHeight := max(8, m.height-1-m.footerHeight())
 		mainWidth := max(50, m.width-sidebarWidth-1)
 		body := lipgloss.JoinHorizontal(lipgloss.Top, m.sidebar(bodyHeight), " ", m.contentPanel(mainWidth, bodyHeight))
 		return canvas.Render(lipgloss.JoinVertical(lipgloss.Left, header, body, footer))
 	}
-	bodyHeight := max(8, m.height-3)
+	bodyHeight := max(8, m.height-2-m.footerHeight())
 	return canvas.Render(lipgloss.JoinVertical(lipgloss.Left, header, m.tabBar(), m.contentPanel(m.width, bodyHeight), footer))
 }
 
@@ -229,7 +251,14 @@ func (m Model) tabBar() string {
 }
 
 func (m Model) footer() string {
-	keys := keyHint("tab", "views") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("e", "export") + "  " + keyHint("?", "help") + "  " + keyHint("q", "quit")
+	if m.exportPath != "" {
+		title := lipgloss.NewStyle().Foreground(green).Bold(true).Render("✓ Agent bundle exported:")
+		dismiss := keyHint("esc", "dismiss")
+		path := lipgloss.NewStyle().Foreground(text).Render("↳ " + compactPath(m.exportPath, max(12, m.width-4)))
+		lines := padBetween(title, dismiss, max(1, m.width-2)) + "\n" + path
+		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(lines)
+	}
+	keys := keyHint("arrows", "views") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("e", "export") + "  " + keyHint("?", "help") + "  " + keyHint("q", "quit")
 	if m.help {
 		keys = keyHint("1–6", "jump") + "  " + keyHint("g/G", "top/bottom") + "  " + keyHint("pgup/dn", "page") + "  " + keyHint("e", "agent bundle")
 	}
@@ -238,17 +267,24 @@ func (m Model) footer() string {
 		status = "Read-only · SQL literals redacted"
 	}
 	if m.width < 96 {
-		keys = keyHint("tab", "view") + "  " + keyHint("r", "refresh") + "  " + keyHint("e", "export") + "  " + keyHint("q", "quit")
+		keys = keyHint("arrows", "view") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
 	}
 	line := padBetween(lipgloss.NewStyle().Foreground(muted).Render(compact(status, max(16, m.width/2))), keys, max(1, m.width-2))
 	return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
 }
 
+func (m Model) footerHeight() int {
+	if m.exportPath != "" {
+		return 2
+	}
+	return 1
+}
+
 func (m *Model) resizeViewport() {
-	bodyHeight := max(8, m.height-3)
+	bodyHeight := max(8, m.height-2-m.footerHeight())
 	mainWidth := m.width
 	if m.width >= wideBreakpoint {
-		bodyHeight = max(8, m.height-2)
+		bodyHeight = max(8, m.height-1-m.footerHeight())
 		mainWidth = max(50, m.width-sidebarWidth-1)
 	}
 	m.viewport.Width = max(24, mainWidth-4)
@@ -702,6 +738,29 @@ func compact(value string, width int) string {
 	}
 	runes := []rune(value)
 	return string(runes[:width-1]) + "…"
+}
+
+func compactMiddle(value string, width int) string {
+	runes := []rune(value)
+	if width <= 1 || len(runes) <= width {
+		return value
+	}
+	left := (width - 1) / 2
+	right := width - 1 - left
+	return string(runes[:left]) + "…" + string(runes[len(runes)-right:])
+}
+
+func compactPath(value string, width int) string {
+	if len([]rune(value)) <= width {
+		return value
+	}
+	base := filepath.Base(value)
+	baseWidth := len([]rune(base))
+	if baseWidth+2 >= width {
+		return compactMiddle(value, width)
+	}
+	directory := strings.TrimSuffix(value, base)
+	return compactMiddle(directory, width-baseWidth) + base
 }
 
 func padBetween(left, right string, width int) string {

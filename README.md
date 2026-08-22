@@ -60,9 +60,9 @@ mysqldot export --zip
 - Six navigable views: Overview, Findings, Queries, Tables, Connections, and Config.
 - A restrained adaptive palette that respects light and dark terminal backgrounds; color communicates health instead of decorating every surface.
 - A wide-screen navigation rail and owned diagnostic pane inspired by mature OSS TUIs, collapsing to a compact navigator in split panes.
-- Arrow, tab, number-key, page, and top/bottom navigation.
+- All four arrow keys, Tab/Shift-Tab, and number keys switch views; `j`/`k`, Page Up/Down, and `g`/`G` scroll within the active view.
 - `r` reruns every diagnostic probe and saves a new local snapshot.
-- `e` writes the complete native agent bundle directly from the terminal.
+- `e` writes the complete native agent bundle directly from the terminal and keeps its destination visible until dismissed with `Esc`.
 - Cards, gauges, tables, findings, and key hints reflow at terminal breakpoints; very small terminals get an explicit resize state instead of a broken layout.
 
 The TUI and static report are two renderers over the same diagnostic snapshot. They cannot disagree about health or findings.

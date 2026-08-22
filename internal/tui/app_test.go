@@ -103,3 +103,64 @@ func TestTinyTerminalShowsResizeState(t *testing.T) {
 		}
 	}
 }
+
+func TestArrowKeysNavigateViewsAndJKScrollsContent(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100}}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 30})
+	m = updated.(Model)
+
+	for _, step := range []struct {
+		key  tea.KeyType
+		want int
+	}{{tea.KeyRight, 1}, {tea.KeyDown, 2}, {tea.KeyLeft, 1}, {tea.KeyUp, 0}} {
+		updated, _ = m.Update(tea.KeyMsg{Type: step.key})
+		m = updated.(Model)
+		if m.tab != step.want {
+			t.Fatalf("%s selected tab %d, want %d", tea.KeyMsg{Type: step.key}.String(), m.tab, step.want)
+		}
+	}
+
+	m.viewport.SetContent(strings.Repeat("scrollable line\n", 100))
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if m.viewport.YOffset != 1 {
+		t.Fatalf("j scroll offset = %d, want 1", m.viewport.YOffset)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(Model)
+	if m.viewport.YOffset != 0 {
+		t.Fatalf("k scroll offset = %d, want 0", m.viewport.YOffset)
+	}
+}
+
+func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100}}
+	path := "/Users/mahesh/code/mysqldot/mysqldot-export-20260822-154220.547"
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(exportMessage{path: path})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "Agent bundle exported:") || !strings.Contains(view, path) {
+		t.Fatalf("export confirmation omitted destination:\n%s", view)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if view := m.View(); strings.Contains(view, path) {
+		t.Fatalf("escape did not dismiss export confirmation:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(exportMessage{path: path})
+	view = updated.(Model).View()
+	if !strings.Contains(view, "…") || !strings.Contains(view, "mysqldot-export-20260822-154220.547") {
+		t.Fatalf("narrow export confirmation lost bundle name:\n%s", view)
+	}
+}
