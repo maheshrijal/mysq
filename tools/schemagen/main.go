@@ -8,7 +8,7 @@ import (
 
 	"github.com/invopop/jsonschema"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 func main() {
@@ -17,7 +17,7 @@ func main() {
 	flag.Parse()
 	reflector := &jsonschema.Reflector{DoNotReference: false, ExpandedStruct: true}
 	schema := reflector.Reflect(&model.Context{})
-	schema.ID = "https://github.com/maheshrijal/mysqldot/schema/context-1.1.0.json"
+	schema.ID = "https://github.com/maheshrijal/mysq/schema/context-1.1.0.json"
 	data, err := json.MarshalIndent(schema, "", "  ")
 	if err != nil {
 		panic(err)

@@ -2,13 +2,13 @@
 
 ## Database boundary
 
-Run mysqldot with a dedicated monitoring account. The generated `mysqldot init` SQL grants only the core server privileges; database-level `SELECT` is an explicit per-schema choice for metadata visibility. Never use an application writer or administrator account.
+Run mysq with a dedicated monitoring account. The generated `mysq init` SQL grants only the core server privileges; database-level `SELECT` is an explicit per-schema choice for metadata visibility. Never use an application writer or administrator account.
 
 The collector contains read-only `SHOW` and `SELECT` statements, sets the session read-only, uses a single connection, and caps statement execution time. It creates no roles, tables, procedures, plugins, or extensions. `init` prints SQL and executes nothing.
 
 ## Credential handling
 
-Prefer `MYSQLDOT_DATABASE_URL` rather than a positional DSN so passwords do not enter shell history or the process list. DSNs are used only to establish a connection. They are absent from contexts, local history, rendered reports, logs, and exports.
+Prefer `MYSQ_DATABASE_URL` rather than a positional DSN so passwords do not enter shell history or the process list. DSNs are used only to establish a connection. They are absent from contexts, local history, rendered reports, logs, and exports.
 
 ## Diagnostic data
 

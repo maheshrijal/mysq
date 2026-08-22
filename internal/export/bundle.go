@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
-	"github.com/maheshrijal/mysqldot/internal/render"
-	contract "github.com/maheshrijal/mysqldot/schema"
+	"github.com/maheshrijal/mysq/internal/model"
+	"github.com/maheshrijal/mysq/internal/render"
+	contract "github.com/maheshrijal/mysq/schema"
 )
 
 type Options struct {
@@ -56,7 +56,7 @@ type artifact struct {
 
 func Write(ctx *model.Context, output string, options Options) (Result, error) {
 	if strings.TrimSpace(output) == "" {
-		output = fmt.Sprintf("mysqldot-export-%s", ctx.CollectedAt.Local().Format("20060102-150405"))
+		output = fmt.Sprintf("mysq-export-%s", ctx.CollectedAt.Local().Format("20060102-150405"))
 	}
 	abs, err := filepath.Abs(output)
 	if err != nil {
@@ -71,7 +71,7 @@ func Write(ctx *model.Context, output string, options Options) (Result, error) {
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create export parent: %w", err)
 	}
-	temp, err := os.MkdirTemp(parent, ".mysqldot-export-*")
+	temp, err := os.MkdirTemp(parent, ".mysq-export-*")
 	if err != nil {
 		return Result{}, fmt.Errorf("create temporary export: %w", err)
 	}
@@ -271,7 +271,7 @@ func variablesFile(values map[string]string) []byte {
 	}
 	sort.Strings(keys)
 	var out strings.Builder
-	out.WriteString("# Captured by mysqldot. This is evidence, not an apply-ready recommendation.\n[mysqld]\n")
+	out.WriteString("# Captured by mysq. This is evidence, not an apply-ready recommendation.\n[mysqld]\n")
 	for _, key := range keys {
 		fmt.Fprintf(&out, "%s=%s\n", key, strings.ReplaceAll(values[key], "\n", " "))
 	}
@@ -279,7 +279,7 @@ func variablesFile(values map[string]string) []byte {
 }
 
 func bundleReadme(ctx *model.Context) string {
-	return fmt.Sprintf(`# mysqldot agent bundle
+	return fmt.Sprintf(`# mysq agent bundle
 
 This bundle is an immutable, point-in-time MySQL diagnostic snapshot (`+"`%s`"+`). Start with `+"`summary.md`"+` for the findings, then use `+"`context.json`"+` when exact structured evidence is needed.
 

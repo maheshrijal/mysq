@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 type Store struct{ Root string }
@@ -45,14 +45,46 @@ func Open(path string) (*Store, error) {
 }
 
 func defaultRoot() (string, error) {
+	current, legacy, err := stateRoots()
+	if err != nil {
+		return "", err
+	}
+	if err := adoptLegacyState(current, legacy); err != nil {
+		return "", err
+	}
+	return filepath.Join(current, "snapshots"), nil
+}
+
+func stateRoots() (current string, legacy string, err error) {
 	if root := os.Getenv("XDG_STATE_HOME"); root != "" {
-		return filepath.Join(root, "mysqldot", "snapshots"), nil
+		return filepath.Join(root, "mysq"), filepath.Join(root, "mysqldot"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".local", "state", "mysqldot", "snapshots"), nil
+	base := filepath.Join(home, ".local", "state")
+	return filepath.Join(base, "mysq"), filepath.Join(base, "mysqldot"), nil
+}
+
+func adoptLegacyState(current, legacy string) error {
+	if _, err := os.Stat(current); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect current state directory: %w", err)
+	}
+	if _, err := os.Stat(legacy); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect legacy state directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(current), 0o700); err != nil {
+		return fmt.Errorf("prepare state migration: %w", err)
+	}
+	if err := os.Rename(legacy, current); err != nil {
+		return fmt.Errorf("migrate state from %s to %s: %w", legacy, current, err)
+	}
+	return nil
 }
 
 func (s *Store) Save(ctx *model.Context) (string, error) {

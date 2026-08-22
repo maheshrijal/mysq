@@ -1,6 +1,6 @@
 # Architecture
 
-mysqldot is organized around one deep diagnostic module: an inspection produces a complete `model.Context`, and every downstream behavior consumes it.
+mysq is organized around one deep diagnostic module: an inspection produces a complete `model.Context`, and every downstream behavior consumes it.
 
 ```text
 MySQL 8.x
@@ -30,4 +30,4 @@ The collector degrades individual optional probes, but server identity and two c
 
 An inspection uses one connection and samples `SHOW GLOBAL STATUS` twice around the configured interval. All other work happens before that rate window and is bounded catalog or Performance Schema access with fixed limits: 20 statement digests, 30 wait events, 30 memory consumers, 100 tables, 100 processes, 100 transactions, 100 metadata locks, and no application-row queries. `MAX_EXECUTION_TIME` is 10 seconds and the session is pinned read-only. Active user, process, transaction, and lock data is explicitly point-in-time and can change while the report is being consumed.
 
-Some Performance Schema summary tables grow with schema size. Their queries do not scan application data, but operators should still validate run time on unusually large fleets before aggressive scheduling. mysqldot is an on-demand diagnostic, not a monitoring daemon.
+Some Performance Schema summary tables grow with schema size. Their queries do not scan application data, but operators should still validate run time on unusually large fleets before aggressive scheduling. mysq is an on-demand diagnostic, not a monitoring daemon.

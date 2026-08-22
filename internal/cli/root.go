@@ -14,14 +14,14 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
-	"github.com/maheshrijal/mysqldot/internal/analyze"
-	"github.com/maheshrijal/mysqldot/internal/collect"
-	"github.com/maheshrijal/mysqldot/internal/compare"
-	bundle "github.com/maheshrijal/mysqldot/internal/export"
-	"github.com/maheshrijal/mysqldot/internal/history"
-	"github.com/maheshrijal/mysqldot/internal/model"
-	"github.com/maheshrijal/mysqldot/internal/render"
-	terminalui "github.com/maheshrijal/mysqldot/internal/tui"
+	"github.com/maheshrijal/mysq/internal/analyze"
+	"github.com/maheshrijal/mysq/internal/collect"
+	"github.com/maheshrijal/mysq/internal/compare"
+	bundle "github.com/maheshrijal/mysq/internal/export"
+	"github.com/maheshrijal/mysq/internal/history"
+	"github.com/maheshrijal/mysq/internal/model"
+	"github.com/maheshrijal/mysq/internal/render"
+	terminalui "github.com/maheshrijal/mysq/internal/tui"
 )
 
 type App struct {
@@ -46,12 +46,12 @@ func New(version string) *cobra.Command {
 func newRoot(version string, out, errOut io.Writer) *cobra.Command {
 	app := &App{Version: version, Out: out, Err: errOut}
 	root := &cobra.Command{
-		Use:           "mysqldot",
+		Use:           "mysq",
 		Short:         "MySQL diagnostics for humans and agents",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
-		Long: `mysqldot is a read-only, findings-first MySQL diagnostic.
+		Long: `mysq is a read-only, findings-first MySQL diagnostic.
 
 It samples MySQL's own status and Performance Schema, produces a polished terminal
 report, remembers local snapshots, and exports a secret-free evidence bundle for
@@ -104,7 +104,7 @@ func (a *App) tuiCommand() *cobra.Command {
 				return result, nil
 			}
 			export := func(ctx *model.Context) (string, error) {
-				output := fmt.Sprintf("mysqldot-export-%s", time.Now().Format("20060102-150405.000"))
+				output := fmt.Sprintf("mysq-export-%s", time.Now().Format("20060102-150405.000"))
 				result, err := bundle.Write(ctx, output, bundle.Options{})
 				return result.Directory, err
 			}
@@ -254,10 +254,10 @@ func (a *App) diffCommand() *cobra.Command {
 					return err
 				}
 				if len(items) == 0 {
-					return errors.New("no snapshots found; run mysqldot inspect first")
+					return errors.New("no snapshots found; run mysq inspect first")
 				}
 				if len(items) > 1 {
-					return errors.New("multiple databases are stored; pass --fingerprint from mysqldot snapshots list")
+					return errors.New("multiple databases are stored; pass --fingerprint from mysq snapshots list")
 				}
 				fingerprint = items[0].Fingerprint
 			}
@@ -318,7 +318,7 @@ func (a *App) initCommand() *cobra.Command {
 			if !regexp.MustCompile(`^[A-Za-z0-9_]+$`).MatchString(user) {
 				return errors.New("--user may contain only letters, numbers, and underscores")
 			}
-			fmt.Fprintf(a.Out, `-- mysqldot never executes this SQL. Review and replace the password first.
+			fmt.Fprintf(a.Out, `-- mysq never executes this SQL. Review and replace the password first.
 CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY 'REPLACE_WITH_A_LONG_RANDOM_PASSWORD';
 GRANT PROCESS, REPLICATION CLIENT ON *.* TO '%s'@'%%';
 GRANT SELECT ON performance_schema.* TO '%s'@'%%';
@@ -332,7 +332,7 @@ SHOW GRANTS FOR '%s'@'%%';
 			return nil
 		},
 	}
-	command.Flags().StringVar(&user, "user", "mysqldot_monitor", "monitoring username")
+	command.Flags().StringVar(&user, "user", "mysq_monitor", "monitoring username")
 	return command
 }
 

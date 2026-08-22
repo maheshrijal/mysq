@@ -4,6 +4,7 @@
 bin
 dist
 coverage.out
+mysq-export-*
 mysqldot-export-*
 *.log
 *.zip

@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 func TestTUIRendersAndNavigatesAllViews(t *testing.T) {
@@ -52,7 +52,7 @@ func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 		if lipgloss.Width(line) > 80 {
 			t.Fatalf("line width %d exceeds terminal:\n%s", lipgloss.Width(line), line)
 		}
-		if strings.Contains(line, "MYSQLDOT") && strings.Contains(line, "HEALTHY") {
+		if strings.Contains(line, "MYSQ") && strings.Contains(line, "HEALTHY") {
 			foundHeader = true
 		}
 	}
@@ -138,7 +138,7 @@ func TestArrowKeysNavigateViewsAndJKScrollsContent(t *testing.T) {
 
 func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100}}
-	path := "/Users/mahesh/code/mysqldot/mysqldot-export-20260822-154220.547"
+	path := "/Users/mahesh/code/mysq/mysq-export-20260822-154220.547"
 	m := New(context.Background(), nil, nil)
 	m.loading = false
 	m.snapshot = ctx
@@ -160,7 +160,7 @@ func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(exportMessage{path: path})
 	view = updated.(Model).View()
-	if !strings.Contains(view, "…") || !strings.Contains(view, "mysqldot-export-20260822-154220.547") {
+	if !strings.Contains(view, "…") || !strings.Contains(view, "mysq-export-20260822-154220.547") {
 		t.Fatalf("narrow export confirmation lost bundle name:\n%s", view)
 	}
 }

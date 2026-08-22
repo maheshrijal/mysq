@@ -18,7 +18,7 @@ func main() {
 	var dsn string
 	var duration time.Duration
 	var workers int
-	flag.StringVar(&dsn, "dsn", "loadgen:mysqldot-load-test@tcp(127.0.0.1:33306)/app?parseTime=true", "test MySQL DSN")
+	flag.StringVar(&dsn, "dsn", "loadgen:mysq-load-test@tcp(127.0.0.1:33306)/app?parseTime=true", "test MySQL DSN")
 	flag.DurationVar(&duration, "duration", 45*time.Second, "load duration")
 	flag.IntVar(&workers, "workers", 8, "concurrent OLTP workers")
 	flag.Parse()

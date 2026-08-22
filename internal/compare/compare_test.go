@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 func TestBuildFindsNewAndResolvedFindings(t *testing.T) {

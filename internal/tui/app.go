@@ -13,7 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 type Inspector func(context.Context) (*model.Context, error)
@@ -171,7 +171,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	if m.width == 0 {
-		return "Starting mysqldot…"
+		return "Starting mysq…"
 	}
 	canvas := lipgloss.NewStyle().Foreground(text).Width(m.width).Height(m.height)
 	if m.width < 52 || m.height < 18 {
@@ -184,7 +184,7 @@ func (m Model) View() string {
 }
 
 func (m Model) tooSmall() string {
-	message := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("◆ MYSQLDOT") + "\n\n" +
+	message := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("◆ MYSQ") + "\n\n" +
 		lipgloss.NewStyle().Foreground(text).Bold(true).Render("A little more room, please") + "\n" +
 		lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Need 52×18 · current %d×%d", m.width, m.height)) + "\n\n" +
 		keyHint("q", "quit")
@@ -193,7 +193,7 @@ func (m Model) tooSmall() string {
 }
 
 func (m Model) header() string {
-	brand := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("◆ MYSQLDOT")
+	brand := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("◆ MYSQ")
 	target := " MySQL intelligence"
 	if m.snapshot != nil {
 		target = fmt.Sprintf(" %s:%d/%s", m.snapshot.Server.Host, m.snapshot.Server.Port, fallback(m.snapshot.Server.Database, "all databases"))

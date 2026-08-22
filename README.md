@@ -1,13 +1,13 @@
-# mysqldot
+# mysq
 
 MySQL diagnostics for humans and agents.
 
-`mysqldot` is a single read-only CLI that turns MySQL's own status counters and Performance Schema into a findings-first health report. It has a polished interactive terminal, focused drill-down commands, local history and offline diffs, CI health gates, and a native evidence bundle designed for coding and operations agents.
+`mysq` is a single read-only CLI that turns MySQL's own status counters and Performance Schema into a findings-first health report. It has a polished interactive terminal, focused drill-down commands, local history and offline diffs, CI health gates, and a native evidence bundle designed for coding and operations agents.
 
 No collector, web server, cloud account, or database-side objects are required.
 
 ```text
-◆ MYSQLDOT  MySQL intelligence, from the terminal
+◆ MYSQ  MySQL intelligence, from the terminal
 ────────────────────────────────────────────────────────────────────────────────
 connected · 127.0.0.1:3306/app · MySQL 8.4.6 · primary · 1.0s sample
 
@@ -24,7 +24,7 @@ WARNING
 GOOD
 ● connections · buffer pool · replication · durability · instrumentation
 
-Details: mysqldot inspect --full   ·   Agent bundle: mysqldot export   ·   Interactive: mysqldot tui
+Details: mysq inspect --full   ·   Agent bundle: mysq export   ·   Interactive: mysq tui
 ```
 
 ## Quick start
@@ -33,29 +33,29 @@ Build it from this checkout with Go 1.25 or newer:
 
 ```bash
 make build
-./bin/mysqldot --help
+./bin/mysq --help
 ```
 
-After the repository is published, `go install github.com/maheshrijal/mysqldot/cmd/mysqldot@latest` installs the same binary.
+After the repository is published, `go install github.com/maheshrijal/mysq/cmd/mysq@latest` installs the same binary.
 
 Keep credentials out of shell history and the process list:
 
 ```bash
-export MYSQLDOT_DATABASE_URL='monitor:password@tcp(db.example:3306)/app?tls=true'
+export MYSQ_DATABASE_URL='monitor:password@tcp(db.example:3306)/app?tls=true'
 
-mysqldot inspect
-mysqldot inspect --full
-mysqldot tui
-mysqldot export --zip
+mysq inspect
+mysq inspect --full
+mysq tui
+mysq export --zip
 ```
 
-`mysql://monitor:password@db.example:3306/app?tls=true` URLs are accepted too. A positional connection takes precedence over `MYSQLDOT_DATABASE_URL`, which takes precedence over `DATABASE_URL`.
+`mysql://monitor:password@db.example:3306/app?tls=true` URLs are accepted too. A positional connection takes precedence over `MYSQ_DATABASE_URL`, which takes precedence over the legacy `MYSQLDOT_DATABASE_URL` and then `DATABASE_URL`.
 
 ## The terminal
 
-`mysqldot inspect` is the fast, findings-first read. `--full` adds engine I/O and redo, top waits, memory consumers, transactions, statements, tables, connections, locks, replication, and collection details.
+`mysq inspect` is the fast, findings-first read. `--full` adds engine I/O and redo, top waits, memory consumers, transactions, statements, tables, connections, locks, replication, and collection details.
 
-`mysqldot tui` opens the live interactive view:
+`mysq tui` opens the live interactive view:
 
 - Seven navigable views: Overview, Findings, Queries, Engine, Tables, Connections, and Config.
 - A restrained adaptive palette that respects light and dark terminal backgrounds; color communicates health instead of decorating every surface.
@@ -70,9 +70,9 @@ The TUI and static report are two renderers over the same diagnostic snapshot. T
 ## Agent-native export
 
 ```bash
-mysqldot export --out incident-2026-08-22 --zip
+mysq export --out incident-2026-08-22 --zip
 # Or collect, render, store, and export in one run:
-mysqldot inspect --full --export-dir incident-2026-08-22
+mysq inspect --full --export-dir incident-2026-08-22
 ```
 
 An export is written atomically and refuses to overwrite an existing path. It contains:
@@ -124,19 +124,21 @@ All focused commands support `--json`. `inspect --format` supports `text`, `json
 ### CI health gates
 
 ```bash
-mysqldot inspect --format json --no-store --fail-on warning > mysqldot.json
+mysq inspect --format json --no-store --fail-on warning > mysq.json
 ```
 
 Exit codes are stable: `0` passed, `1` warning/note gate, `2` critical gate, `3` connection or collection failure, and `64` invalid gate usage. Use `--no-store` for ephemeral CI databases.
 
 ### History and offline comparison
 
-Every `inspect` and TUI refresh saves a compressed local snapshot under `$XDG_STATE_HOME/mysqldot/snapshots` (otherwise `~/.local/state/mysqldot/snapshots`). The database fingerprint is derived from `server_uuid` and database name, not credentials.
+Every `inspect` and TUI refresh saves a compressed local snapshot under `$XDG_STATE_HOME/mysq/snapshots` (otherwise `~/.local/state/mysq/snapshots`). The database fingerprint is derived from `server_uuid` and database name, not credentials.
+
+On first use after upgrading from mysqldot, mysq moves the legacy state directory to the new location so existing snapshots remain available.
 
 ```bash
-mysqldot snapshots list
-mysqldot diff --since 1h
-mysqldot diff --fingerprint 9fe955c8c0732deb4b5dbc65 --since 24h --json
+mysq snapshots list
+mysq diff --since 1h
+mysq diff --fingerprint 9fe955c8c0732deb4b5dbc65 --since 24h --json
 ```
 
 `diff` is offline: it never opens a database connection.
@@ -146,18 +148,18 @@ mysqldot diff --fingerprint 9fe955c8c0732deb4b5dbc65 --since 24h --json
 Have an administrator review the generated SQL:
 
 ```bash
-mysqldot init --user mysqldot_monitor
+mysq init --user mysq_monitor
 ```
 
 The core grants are `PROCESS`, `REPLICATION CLIENT`, and `SELECT` on `performance_schema.*`. MySQL ties `information_schema` object visibility to privileges on the underlying application objects. Grant `SELECT` only on each database whose table and index metadata should be visible:
 
 ```sql
-GRANT SELECT ON app.* TO 'mysqldot_monitor'@'%';
+GRANT SELECT ON app.* TO 'mysq_monitor'@'%';
 ```
 
-That grant can read application rows, even though mysqldot never queries them. If that tradeoff is unacceptable, omit it: server, workload, process, lock, replication, and configuration diagnostics remain available, while missing table/index coverage is reported explicitly.
+That grant can read application rows, even though mysq never queries them. If that tradeoff is unacceptable, omit it: server, workload, process, lock, replication, and configuration diagnostics remain available, while missing table/index coverage is reported explicitly.
 
-The role is the primary safety boundary. mysqldot also sets `transaction_read_only=ON`, applies a 10-second statement execution limit, uses a single connection, and contains no mutating SQL in its collector.
+The role is the primary safety boundary. mysq also sets `transaction_read_only=ON`, applies a 10-second statement execution limit, uses a single connection, and contains no mutating SQL in its collector.
 
 ## What it checks
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 func TestInitPrintsSQLButDoesNotAcceptUnsafeUsername(t *testing.T) {

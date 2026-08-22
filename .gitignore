@@ -2,6 +2,9 @@
 /dist/
 /.tmp/
 /coverage.out
+/mysq-export-*/
+/.mysq/
+# Legacy names retained so pre-rename local artifacts stay ignored.
 /mysqldot-export-*/
 /.mysqldot/
 .DS_Store

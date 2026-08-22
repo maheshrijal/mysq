@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to mysqldot are documented here. The project follows Semantic Versioning.
+All notable changes to mysq are documented here. The project follows Semantic Versioning.
 
 ## [Unreleased]
 
@@ -17,6 +17,7 @@ All notable changes to mysqldot are documented here. The project follows Semanti
 
 ### Changed
 
+- Rename the project, executable, module, environment variable, local state, exports, Docker fixtures, and terminal branding from `mysqldot` to `mysq`; retain automatic snapshot migration and the legacy connection variable as compatibility paths.
 - Rebuilt the TUI visual system around an adaptive light/dark palette, semantic health colors, a browser-style tab strip, full-width responsive diagnostic panes, gauges, finding cards, and compact key hints.
 - Ignore MySQL server daemons such as `event_scheduler` when detecting long-running statements, preventing false critical health reports based on server uptime.
 - Make all four arrow keys navigate views consistently; retain `j`/`k` and paging keys for scrolling within a view.

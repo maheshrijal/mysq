@@ -19,7 +19,7 @@ jobs:
           cache: true
       - run: go vet ./...
       - run: go test -race -coverprofile=coverage.out ./...
-      - run: go build -trimpath ./cmd/mysqldot
+      - run: go build -trimpath ./cmd/mysq
 
   e2e:
     runs-on: ubuntu-latest

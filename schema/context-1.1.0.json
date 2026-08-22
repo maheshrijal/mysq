@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/maheshrijal/mysqldot/schema/context-1.1.0.json",
+  "$id": "https://github.com/maheshrijal/mysq/schema/context-1.1.0.json",
   "$defs": {
     "Capability": {
       "properties": {

@@ -1,11 +1,13 @@
 package history
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 func TestSaveLatestPairAndList(t *testing.T) {
@@ -34,5 +36,33 @@ func TestSaveLatestPairAndList(t *testing.T) {
 	items, err := store.List()
 	if err != nil || len(items) != 1 || items[0].Count != 3 {
 		t.Fatalf("items=%+v err=%v", items, err)
+	}
+}
+
+func TestOpenMigratesLegacyDefaultStore(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	legacySnapshots := filepath.Join(stateHome, "mysqldot", "snapshots")
+	if err := os.MkdirAll(legacySnapshots, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(legacySnapshots, "marker")
+	if err := os.WriteFile(marker, []byte("snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRoot := filepath.Join(stateHome, "mysq", "snapshots")
+	if store.Root != wantRoot {
+		t.Fatalf("root = %q, want %q", store.Root, wantRoot)
+	}
+	if _, err := os.Stat(filepath.Join(wantRoot, "marker")); err != nil {
+		t.Fatalf("legacy snapshot was not migrated: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateHome, "mysqldot")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy state directory still exists: %v", err)
 	}
 }

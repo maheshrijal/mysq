@@ -7,7 +7,7 @@ import (
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 func TestResolveConnectionURLPreservesDriverOptions(t *testing.T) {
@@ -30,6 +30,29 @@ func TestResolveConnectionURLPreservesDriverOptions(t *testing.T) {
 func TestResolveConnectionRejectsInvalidPort(t *testing.T) {
 	if _, err := ResolveConnection("mysql://observer@localhost:70000/app"); err == nil {
 		t.Fatal("expected invalid port error")
+	}
+}
+
+func TestResolveConnectionEnvironmentCompatibility(t *testing.T) {
+	t.Setenv("MYSQ_DATABASE_URL", "")
+	t.Setenv("MYSQLDOT_DATABASE_URL", "legacy@tcp(legacy-db:3306)/app")
+	t.Setenv("DATABASE_URL", "fallback@tcp(fallback-db:3306)/app")
+
+	target, err := ResolveConnection("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Host != "legacy-db" {
+		t.Fatalf("legacy environment variable was not honored: %+v", target)
+	}
+
+	t.Setenv("MYSQ_DATABASE_URL", "current@tcp(current-db:3306)/app")
+	target, err = ResolveConnection("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Host != "current-db" {
+		t.Fatalf("MYSQ_DATABASE_URL did not take precedence: %+v", target)
 	}
 }
 

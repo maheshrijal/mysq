@@ -1,11 +1,11 @@
 version: 2
 
-project_name: mysqldot
+project_name: mysq
 
 builds:
-  - id: mysqldot
-    main: ./cmd/mysqldot
-    binary: mysqldot
+  - id: mysq
+    main: ./cmd/mysq
+    binary: mysq
     env:
       - CGO_ENABLED=0
     ldflags:

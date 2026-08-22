@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 func TestTextRendersFindingsFirstWithoutANSI(t *testing.T) {
@@ -19,7 +19,7 @@ func TestTextRendersFindingsFirstWithoutANSI(t *testing.T) {
 	if err := Text(&out, ctx, Options{Width: 96}); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"mysqldot", "Database health", "WARNING", "Watch this", "Agent bundle"} {
+	for _, expected := range []string{"mysq", "Database health", "WARNING", "Watch this", "Agent bundle"} {
 		if !strings.Contains(out.String(), expected) {
 			t.Fatalf("output missing %q:\n%s", expected, out.String())
 		}

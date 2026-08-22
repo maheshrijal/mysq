@@ -10,7 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 type Options struct {
@@ -30,7 +30,7 @@ func Text(w io.Writer, ctx *model.Context, options Options) error {
 	p := newPalette(options.Color)
 	var out strings.Builder
 
-	title := p.cyan.Bold(true).Render("◆ MYSQLDOT") + p.muted.Render("  MySQL intelligence, from the terminal")
+	title := p.cyan.Bold(true).Render("◆ MYSQ") + p.muted.Render("  MySQL intelligence, from the terminal")
 	out.WriteString(title + "\n")
 	out.WriteString(p.border.Render(strings.Repeat("─", min(options.Width, 104))) + "\n")
 	access := "primary"
@@ -82,7 +82,7 @@ func Text(w io.Writer, ctx *model.Context, options Options) error {
 	if options.Full {
 		out.WriteString(renderFull(ctx, p, options.Width))
 	} else {
-		out.WriteString(p.muted.Render("Details: mysqldot inspect --full   ·   Agent bundle: mysqldot export   ·   Interactive: mysqldot tui") + "\n")
+		out.WriteString(p.muted.Render("Details: mysq inspect --full   ·   Agent bundle: mysq export   ·   Interactive: mysq tui") + "\n")
 	}
 	_, err := io.WriteString(w, out.String())
 	return err

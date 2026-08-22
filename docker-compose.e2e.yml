@@ -1,4 +1,4 @@
-name: mysqldot-e2e
+name: mysq-e2e
 
 services:
   mysql:
@@ -9,10 +9,10 @@ services:
       - --slow-query-log=ON
       - --long-query-time=0.1
     environment:
-      MYSQL_ROOT_PASSWORD: mysqldot-root-test
+      MYSQL_ROOT_PASSWORD: mysq-root-test
       MYSQL_DATABASE: app
     ports:
-      - "127.0.0.1:${MYSQLDOT_MYSQL_PORT:-33306}:3306"
+      - "127.0.0.1:${MYSQ_MYSQL_PORT:-33306}:3306"
     tmpfs:
       - /var/lib/mysql:size=1g
     volumes:

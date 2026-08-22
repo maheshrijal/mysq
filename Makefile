@@ -1,7 +1,7 @@
 .PHONY: build test test-race e2e check
 
 build:
-	go build -trimpath -o bin/mysqldot ./cmd/mysqldot
+	go build -trimpath -o bin/mysq ./cmd/mysq
 
 test:
 	go test ./...
@@ -15,4 +15,4 @@ e2e:
 check:
 	go vet ./...
 	go test -race ./...
-	go build -trimpath -o bin/mysqldot ./cmd/mysqldot
+	go build -trimpath -o bin/mysq ./cmd/mysq

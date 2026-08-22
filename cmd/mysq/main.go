@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/maheshrijal/mysqldot/internal/cli"
+	"github.com/maheshrijal/mysq/internal/cli"
 )
 
 var version = "dev"
@@ -17,7 +17,7 @@ func main() {
 		if errors.As(err, &exit) {
 			code = exit.Code
 		}
-		fmt.Fprintln(os.Stderr, "mysqldot:", err)
+		fmt.Fprintln(os.Stderr, "mysq:", err)
 		os.Exit(code)
 	}
 }

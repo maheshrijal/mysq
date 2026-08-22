@@ -1,9 +1,9 @@
-CREATE USER 'mysqldot_monitor'@'%' IDENTIFIED BY 'mysqldot-monitor-test';
-GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'mysqldot_monitor'@'%';
-GRANT SELECT ON performance_schema.* TO 'mysqldot_monitor'@'%';
-GRANT SELECT ON app.* TO 'mysqldot_monitor'@'%';
+CREATE USER 'mysq_monitor'@'%' IDENTIFIED BY 'mysq-monitor-test';
+GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'mysq_monitor'@'%';
+GRANT SELECT ON performance_schema.* TO 'mysq_monitor'@'%';
+GRANT SELECT ON app.* TO 'mysq_monitor'@'%';
 
-CREATE USER 'loadgen'@'%' IDENTIFIED BY 'mysqldot-load-test';
+CREATE USER 'loadgen'@'%' IDENTIFIED BY 'mysq-load-test';
 GRANT ALL PRIVILEGES ON app.* TO 'loadgen'@'%';
 
 USE app;

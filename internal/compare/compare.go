@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 type Report struct {
@@ -100,7 +100,7 @@ func Build(baseline, current *model.Context) Report {
 }
 
 func Text(report Report) string {
-	result := fmt.Sprintf("mysqldot diff · %s → %s · %.0fs\n\nHealth score: %+d\n",
+	result := fmt.Sprintf("mysq diff · %s → %s · %.0fs\n\nHealth score: %+d\n",
 		report.BaselineAt.Format(time.RFC3339), report.CurrentAt.Format(time.RFC3339), report.ElapsedSeconds, report.HealthScoreDelta)
 	for _, metric := range report.Metrics {
 		result += fmt.Sprintf("  %-28s %9.2f → %-9.2f  (%+.2f %s)\n", metric.Name, metric.Baseline, metric.Current, metric.Delta, metric.Unit)

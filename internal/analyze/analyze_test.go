@@ -3,7 +3,7 @@ package analyze
 import (
 	"testing"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 func TestApplyFindsCriticalConnectionPressureAndMissingPrimaryKey(t *testing.T) {

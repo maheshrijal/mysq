@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 var subsystems = []string{

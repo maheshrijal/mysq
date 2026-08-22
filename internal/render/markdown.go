@@ -5,12 +5,12 @@ import (
 	"io"
 	"strings"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 func Markdown(w io.Writer, ctx *model.Context) error {
 	var out strings.Builder
-	fmt.Fprintf(&out, "# mysqldot report\n\n")
+	fmt.Fprintf(&out, "# mysq report\n\n")
 	fmt.Fprintf(&out, "Collected `%s` from `%s:%d/%s` running %s %s. Snapshot `%s`.\n\n",
 		ctx.CollectedAt.Format("2006-01-02T15:04:05Z"), ctx.Server.Host, ctx.Server.Port,
 		ctx.Server.Database, ctx.Server.Flavor, ctx.Server.Version, ctx.Fingerprint)

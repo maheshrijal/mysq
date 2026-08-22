@@ -18,8 +18,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	mysqlDriver "github.com/go-sql-driver/mysql"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
-	"github.com/maheshrijal/mysqldot/internal/sanitize"
+	"github.com/maheshrijal/mysq/internal/model"
+	"github.com/maheshrijal/mysq/internal/sanitize"
 )
 
 type Collector struct {
@@ -48,13 +48,18 @@ func New(version string) *Collector {
 func ResolveConnection(argument string) (Target, error) {
 	raw := strings.TrimSpace(argument)
 	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("MYSQ_DATABASE_URL"))
+	}
+	// MYSQLDOT_DATABASE_URL is the pre-rename variable. Keep reading it so
+	// existing shell profiles and automation continue to connect safely.
+	if raw == "" {
 		raw = strings.TrimSpace(os.Getenv("MYSQLDOT_DATABASE_URL"))
 	}
 	if raw == "" {
 		raw = strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	}
 	if raw == "" {
-		return Target{}, errors.New("no MySQL connection supplied: pass a DSN or set MYSQLDOT_DATABASE_URL")
+		return Target{}, errors.New("no MySQL connection supplied: pass a DSN or set MYSQ_DATABASE_URL")
 	}
 
 	if strings.HasPrefix(raw, "mysql://") {

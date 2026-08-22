@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/maheshrijal/mysqldot/internal/model"
-	"github.com/maheshrijal/mysqldot/internal/sanitize"
+	"github.com/maheshrijal/mysq/internal/model"
+	"github.com/maheshrijal/mysq/internal/sanitize"
 )
 
 type manifest struct {
@@ -57,7 +57,7 @@ func verifyContext(path string) {
 		log.Fatalf("insufficient engine coverage: waits=%d memory=%d redo_capacity=%d buffer_data=%d", len(ctx.WaitEvents), len(ctx.MemoryConsumers), ctx.Metrics.RedoCapacityBytes, ctx.Metrics.BufferPoolDataBytes)
 	}
 	for _, process := range ctx.Processes {
-		if strings.Contains(process.Statement, "mysqldot-load-test") {
+		if strings.Contains(process.Statement, "mysq-load-test") {
 			log.Fatal("process statement leaked a literal")
 		}
 	}

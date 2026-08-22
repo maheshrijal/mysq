@@ -1,4 +1,4 @@
-module github.com/maheshrijal/mysqldot
+module github.com/maheshrijal/mysq
 
 go 1.25.0
 
