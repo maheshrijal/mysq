@@ -164,3 +164,37 @@ func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 		t.Fatalf("narrow export confirmation lost bundle name:\n%s", view)
 	}
 }
+
+func TestTopTabsReclaimWidthAndWindowOnNarrowTerminals(t *testing.T) {
+	statement := "SELECT account_id, status, amount FROM app.orders WHERE account_id = ?"
+	ctx := &model.Context{
+		Health:   model.Health{Score: 88, Warnings: 1},
+		Metrics:  model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100},
+		Findings: []model.Finding{{Severity: model.SeverityWarning}},
+		Queries:  []model.Query{{Statement: statement, Calls: 10, TotalLatencyMillis: 100}},
+		Tables:   []model.Table{{Schema: "app", Name: "orders", HasPrimaryKey: true}},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 32})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "VIEWS") || !strings.Contains(view, "1 Overview") || !strings.Contains(view, "6 Config") {
+		t.Fatalf("wide layout did not render the full top tab strip:\n%s", view)
+	}
+	if !strings.Contains(view, statement) {
+		t.Fatalf("full-width query pane still truncated valuable SQL:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 72, Height: 28})
+	m = updated.(Model)
+	view = m.View()
+	if !strings.Contains(view, "2 Findings") || !strings.Contains(view, "3 QUERIES") || !strings.Contains(view, "4 Tables") {
+		t.Fatalf("narrow tab window omitted neighboring tabs:\n%s", view)
+	}
+	if strings.Contains(view, "1 Overview") || strings.Contains(view, "6 Config") {
+		t.Fatalf("narrow tab window rendered off-screen tabs:\n%s", view)
+	}
+}

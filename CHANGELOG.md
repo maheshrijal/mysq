@@ -17,7 +17,7 @@ All notable changes to mysqldot are documented here. The project follows Semanti
 
 ### Changed
 
-- Rebuilt the TUI visual system around an adaptive light/dark palette, semantic health colors, wide-screen navigation rail, responsive diagnostic panes, gauges, finding cards, and compact key hints.
+- Rebuilt the TUI visual system around an adaptive light/dark palette, semantic health colors, a browser-style tab strip, full-width responsive diagnostic panes, gauges, finding cards, and compact key hints.
 - Ignore MySQL server daemons such as `event_scheduler` when detecting long-running statements, preventing false critical health reports based on server uptime.
 - Make all four arrow keys navigate views consistently; retain `j`/`k` and paging keys for scrolling within a view.
 - Keep the complete agent-bundle destination visible in a persistent export confirmation instead of truncating it behind footer shortcuts.

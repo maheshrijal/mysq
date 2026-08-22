@@ -17,13 +17,13 @@ expect {
 # Exercise every arrow direction against the view navigator. Content scrolling
 # remains on j/k and paging keys.
 send "\033\[C"
-expect -re {● FINDINGS}
+expect -re {● 2 FINDINGS}
 send "\033\[B"
-expect -re {● QUERIES}
+expect -re {● 3 QUERIES}
 send "\033\[D"
-expect -re {● FINDINGS}
+expect -re {● 2 FINDINGS}
 send "\033\[A"
-expect -re {● OVERVIEW}
+expect -re {● 1 OVERVIEW}
 send "\t"
 send "\t"
 send "e"

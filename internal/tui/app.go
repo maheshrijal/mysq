@@ -64,11 +64,6 @@ var (
 	cyan       = lipgloss.AdaptiveColor{Light: "#1E66F5", Dark: "#7AA2F7"}
 )
 
-const (
-	wideBreakpoint = 110
-	sidebarWidth   = 23
-)
-
 func Run(ctx context.Context, inspect Inspector, export Exporter) error {
 	model := New(ctx, inspect, export)
 	program := tea.NewProgram(model, tea.WithAltScreen())
@@ -184,12 +179,6 @@ func (m Model) View() string {
 	}
 	header := m.header()
 	footer := m.footer()
-	if m.width >= wideBreakpoint {
-		bodyHeight := max(8, m.height-1-m.footerHeight())
-		mainWidth := max(50, m.width-sidebarWidth-1)
-		body := lipgloss.JoinHorizontal(lipgloss.Top, m.sidebar(bodyHeight), " ", m.contentPanel(mainWidth, bodyHeight))
-		return canvas.Render(lipgloss.JoinVertical(lipgloss.Left, header, body, footer))
-	}
 	bodyHeight := max(8, m.height-2-m.footerHeight())
 	return canvas.Render(lipgloss.JoinVertical(lipgloss.Left, header, m.tabBar(), m.contentPanel(m.width, bodyHeight), footer))
 }
@@ -233,21 +222,89 @@ func (m Model) header() string {
 }
 
 func (m Model) tabBar() string {
-	if m.width < 82 {
-		current := fmt.Sprintf("‹  %d/%d  %s  ›", m.tab+1, len(tabs), tabs[m.tab])
-		return lipgloss.NewStyle().Foreground(cyan).Bold(true).Padding(0, 1).Width(max(1, m.width)).Render(current)
+	available := max(1, m.width-2)
+	all := make([]int, len(tabs))
+	for i := range tabs {
+		all[i] = i
 	}
-	items := make([]string, 0, len(tabs))
-	for i, name := range tabs {
-		label := fmt.Sprintf("%d %s", i+1, name)
+	if m.tabsWidth(all) <= available {
+		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(m.renderTabs(all, false))
+	}
+
+	window := uniqueTabIndices((m.tab+len(tabs)-1)%len(tabs), m.tab, (m.tab+1)%len(tabs))
+	if m.tabsWidth(window)+4 <= available {
+		line := "‹ " + m.renderTabs(window, false) + " ›"
+		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
+	}
+	label := fmt.Sprintf("‹  %d/%d  %s", m.tab+1, len(tabs), tabs[m.tab])
+	if count := m.tabCount(m.tab); count != "" {
+		label += "  (" + count + ")"
+	}
+	label += "  ›"
+	return lipgloss.NewStyle().Background(surfaceAlt).Foreground(cyan).Bold(true).Padding(0, 1).Width(max(1, m.width)).Render(label)
+}
+
+func (m Model) renderTabs(indices []int, measureOnly bool) string {
+	items := make([]string, 0, len(indices))
+	for _, index := range indices {
+		label := fmt.Sprintf("%d %s", index+1, tabs[index])
+		if count := m.tabCount(index); count != "" {
+			label += " (" + count + ")"
+		}
+		if measureOnly {
+			items = append(items, " "+label+" ")
+			continue
+		}
 		style := lipgloss.NewStyle().Foreground(muted).Padding(0, 1)
-		if i == m.tab {
-			label = "● " + name
-			style = style.Foreground(cyan).Bold(true)
+		if index == m.tab {
+			label = fmt.Sprintf("● %d %s", index+1, strings.ToUpper(tabs[index]))
+			if count := m.tabCount(index); count != "" {
+				label += " (" + count + ")"
+			}
+			style = style.Foreground(cyan).Background(surface).Bold(true)
 		}
 		items = append(items, style.Render(label))
 	}
-	return lipgloss.NewStyle().Padding(0, 1).Width(max(1, m.width)).Render(strings.Join(items, " "))
+	divider := lipgloss.NewStyle().Foreground(border).Render("│")
+	if measureOnly {
+		divider = "│"
+	}
+	return strings.Join(items, divider)
+}
+
+func (m Model) tabsWidth(indices []int) int {
+	return lipgloss.Width(m.renderTabs(indices, true))
+}
+
+func (m Model) tabCount(index int) string {
+	if m.snapshot == nil {
+		return ""
+	}
+	switch tabs[index] {
+	case "Findings":
+		return fmt.Sprint(len(m.snapshot.Findings))
+	case "Queries":
+		return fmt.Sprint(len(m.snapshot.Queries))
+	case "Tables":
+		return fmt.Sprint(len(m.snapshot.Tables))
+	case "Connections":
+		return fmt.Sprint(len(m.snapshot.Processes))
+	default:
+		return ""
+	}
+}
+
+func uniqueTabIndices(values ...int) []int {
+	seen := make(map[int]bool, len(values))
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }
 
 func (m Model) footer() string {
@@ -282,52 +339,13 @@ func (m Model) footerHeight() int {
 
 func (m *Model) resizeViewport() {
 	bodyHeight := max(8, m.height-2-m.footerHeight())
-	mainWidth := m.width
-	if m.width >= wideBreakpoint {
-		bodyHeight = max(8, m.height-1-m.footerHeight())
-		mainWidth = max(50, m.width-sidebarWidth-1)
-	}
-	m.viewport.Width = max(24, mainWidth-4)
-	m.viewport.Height = max(4, bodyHeight-4)
-}
-
-func (m Model) sidebar(height int) string {
-	innerWidth := sidebarWidth - 4
-	var content strings.Builder
-	content.WriteString(lipgloss.NewStyle().Foreground(muted).Bold(true).Render("VIEWS") + "\n\n")
-	for i, name := range tabs {
-		prefix := "  "
-		style := lipgloss.NewStyle().Foreground(muted).Width(innerWidth)
-		if i == m.tab {
-			prefix = "▌ "
-			style = style.Foreground(cyan).Background(surface).Bold(true)
-		}
-		content.WriteString(style.Render(fmt.Sprintf("%s%d  %s", prefix, i+1, name)) + "\n")
-	}
-	if m.snapshot != nil && height >= 24 {
-		content.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Bold(true).Render("TARGET") + "\n\n")
-		content.WriteString(lipgloss.NewStyle().Foreground(text).Bold(true).Render(fallback(m.snapshot.Server.Database, "all databases")) + "\n")
-		content.WriteString(lipgloss.NewStyle().Foreground(muted).Render(compact(m.snapshot.Server.Flavor+" "+m.snapshot.Server.Version, innerWidth)) + "\n")
-		content.WriteString(lipgloss.NewStyle().Foreground(muted).Render("uptime "+humanDuration(m.snapshot.Server.UptimeSeconds)) + "\n")
-	}
-	if height >= 31 {
-		content.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Bold(true).Render("SAFETY") + "\n\n")
-		content.WriteString(lipgloss.NewStyle().Foreground(green).Render("● read-only session") + "\n")
-		content.WriteString(lipgloss.NewStyle().Foreground(muted).Render("  literals redacted"))
-	}
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
-		Padding(0, 1).Width(sidebarWidth - 2).Height(max(1, height-2)).Render(content.String())
+	m.viewport.Width = max(24, m.width-4)
+	m.viewport.Height = max(4, bodyHeight-2)
 }
 
 func (m Model) contentPanel(width, height int) string {
-	innerWidth := max(24, width-4)
-	title := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("● " + strings.ToUpper(tabs[m.tab]))
-	subtitle := viewSubtitle(m)
-	titleLine := padBetween(title, lipgloss.NewStyle().Foreground(muted).Render(subtitle), innerWidth)
-	rule := lipgloss.NewStyle().Foreground(border).Render(strings.Repeat("─", innerWidth))
-	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, rule, m.viewport.View())
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
-		Padding(0, 1).Width(width - 2).Height(max(1, height-2)).Render(content)
+		Padding(0, 1).Width(width - 2).Height(max(1, height-2)).Render(m.viewport.View())
 }
 
 func (m *Model) rebuild() {
@@ -443,7 +461,51 @@ func overview(ctx *model.Context, width int) string {
 
 	identity := lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("%s %s · uptime %s · %.1fs collection window",
 		ctx.Server.Flavor, ctx.Server.Version, humanDuration(ctx.Server.UptimeSeconds), float64(ctx.IntervalMillis)/1000))
-	return postureBox + "\n" + cards + "\n" + lower + "\n" + identity
+	return postureBox + "\n" + cards + "\n" + lower + "\n" + engineSignals(ctx, width) + "\n" + identity
+}
+
+func engineSignals(ctx *model.Context, width int) string {
+	type signal struct {
+		label string
+		value string
+		color lipgloss.TerminalColor
+	}
+	signals := []signal{
+		{"Rows read", fmt.Sprintf("%.1f/s", ctx.Metrics.RowsReadPerSecond), cyan},
+		{"Rows written", fmt.Sprintf("%.1f/s", ctx.Metrics.RowsWrittenPerSecond), cyan},
+		{"Table cache", fmt.Sprintf("%.2f%%", ctx.Metrics.TableCacheHitPercent), colorForLow(ctx.Metrics.TableCacheHitPercent, 99, 95)},
+		{"Disk temp tables", fmt.Sprintf("%.1f%%", ctx.Metrics.TempDiskTablePercent), colorForPercent(ctx.Metrics.TempDiskTablePercent, 10, 25)},
+		{"Open files", fmt.Sprintf("%.1f%%", ctx.Metrics.OpenFilesUsedPercent), colorForPercent(ctx.Metrics.OpenFilesUsedPercent, 75, 90)},
+		{"Purge history", humanCount(ctx.Metrics.HistoryListLength), colorForHistory(ctx.Metrics.HistoryListLength)},
+	}
+	columns := 3
+	if width < 88 {
+		columns = 2
+	}
+	innerWidth := max(18, width-4)
+	rows := make([]string, 0, (len(signals)+columns-1)/columns)
+	divider := lipgloss.NewStyle().Foreground(border).Render(" │ ")
+	usableWidth := max(columns*6, innerWidth-(columns-1)*3)
+	for start := 0; start < len(signals); start += columns {
+		cells := make([]string, 0, columns)
+		for column := 0; column < columns; column++ {
+			index := start + column
+			cellWidth := usableWidth / columns
+			if column == columns-1 {
+				cellWidth = usableWidth - (columns-1)*(usableWidth/columns)
+			}
+			if index >= len(signals) {
+				cells = append(cells, strings.Repeat(" ", cellWidth))
+				continue
+			}
+			item := signals[index]
+			label := lipgloss.NewStyle().Foreground(muted).Render(strings.ToUpper(item.label))
+			value := lipgloss.NewStyle().Foreground(item.color).Bold(true).Render(item.value)
+			cells = append(cells, lipgloss.NewStyle().Width(cellWidth).Render(padBetween(label, value, max(1, cellWidth-1))))
+		}
+		rows = append(rows, strings.Join(cells, divider))
+	}
+	return panelBox("ENGINE SIGNALS", strings.Join(rows, "\n"), width)
 }
 
 func findings(ctx *model.Context, width int) string {
@@ -481,13 +543,14 @@ func queries(ctx *model.Context, width int) string {
 		total += query.TotalLatencyMillis
 	}
 	var out strings.Builder
-	out.WriteString(row([]string{"TOTAL", "SHARE", "CALLS", "MEAN", "ROWS", "STATEMENT"}, []int{10, 8, 9, 11, 10, max(28, width-55)}, true) + "\n")
+	widths := []int{10, 8, 9, 11, 10, max(28, width-48)}
+	out.WriteString(row([]string{"TOTAL", "SHARE", "CALLS", "MEAN", "ROWS", "STATEMENT"}, widths, true) + "\n")
 	for _, query := range ctx.Queries {
 		share := 0.0
 		if total > 0 {
 			share = query.TotalLatencyMillis * 100 / total
 		}
-		out.WriteString(row([]string{duration(query.TotalLatencyMillis), fmt.Sprintf("%.1f%%", share), humanCount(query.Calls), fmt.Sprintf("%.2fms", query.MeanLatencyMillis), humanCount(query.RowsExamined), query.Statement}, []int{10, 8, 9, 11, 10, max(28, width-55)}, false) + "\n")
+		out.WriteString(row([]string{duration(query.TotalLatencyMillis), fmt.Sprintf("%.1f%%", share), humanCount(query.Calls), fmt.Sprintf("%.2fms", query.MeanLatencyMillis), humanCount(query.RowsExamined), query.Statement}, widths, false) + "\n")
 	}
 	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Sorted by database time  ·  digest-normalized  ·  SQL literals removed"))
 	return out.String()
@@ -778,31 +841,6 @@ func keyHint(key, label string) string {
 	keyStyle := lipgloss.NewStyle().Foreground(cyan).Bold(true)
 	labelStyle := lipgloss.NewStyle().Foreground(muted)
 	return keyStyle.Render(key) + " " + labelStyle.Render(label)
-}
-
-func viewSubtitle(m Model) string {
-	if m.loading {
-		return "collecting live signals"
-	}
-	if m.snapshot == nil {
-		return "waiting for a snapshot"
-	}
-	switch tabs[m.tab] {
-	case "Overview":
-		return fmt.Sprintf("%d findings · %.1fs sample", len(m.snapshot.Findings), float64(m.snapshot.IntervalMillis)/1000)
-	case "Findings":
-		return fmt.Sprintf("%d actionable signals", len(m.snapshot.Findings))
-	case "Queries":
-		return fmt.Sprintf("%d normalized digests", len(m.snapshot.Queries))
-	case "Tables":
-		return fmt.Sprintf("%d visible tables", len(m.snapshot.Tables))
-	case "Connections":
-		return fmt.Sprintf("%d sessions · %d waits", len(m.snapshot.Processes), len(m.snapshot.Locks))
-	case "Config":
-		return "effective runtime values"
-	default:
-		return ""
-	}
 }
 
 func fallback(value, alternative string) string {
