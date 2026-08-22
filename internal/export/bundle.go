@@ -162,7 +162,7 @@ func buildArtifacts(ctx *model.Context) ([]artifact, error) {
 	}
 	items = append(items, artifact{name: "summary.md", mediaType: "text/markdown", description: "Human and agent-readable findings-first report", data: markdown.Bytes()})
 	items = append(items, artifact{name: "README.md", mediaType: "text/markdown", description: "Bundle contract and safe-use notes", data: []byte(bundleReadme(ctx))})
-	items = append(items, artifact{name: "schema/context-1.0.0.json", mediaType: "application/schema+json", description: "JSON Schema for context.json", data: contract.ContextV1()})
+	items = append(items, artifact{name: "schema/context-1.1.0.json", mediaType: "application/schema+json", description: "JSON Schema for context.json", data: contract.ContextLatest()})
 	items = append(items, artifact{name: "raw/innodb-status.txt", mediaType: "text/plain", description: "Redacted SHOW ENGINE INNODB STATUS output", data: []byte(ctx.InnoDBStatus)})
 	items = append(items, artifact{name: "variables.cnf", mediaType: "text/plain", description: "Sorted server variables in option-file syntax", data: variablesFile(ctx.Variables)})
 
@@ -184,7 +184,8 @@ func csvFiles(ctx *model.Context) ([]artifact, error) {
 	for _, item := range ctx.Queries {
 		queries = append(queries, []string{item.Digest, item.Schema, item.Statement, strconv.FormatUint(item.Calls, 10),
 			formatFloat(item.TotalLatencyMillis), formatFloat(item.MeanLatencyMillis), strconv.FormatUint(item.RowsExamined, 10),
-			strconv.FormatUint(item.RowsSent, 10), strconv.FormatUint(item.NoIndexUsed, 10), strconv.FormatUint(item.TmpDiskTables, 10)})
+			strconv.FormatUint(item.RowsSent, 10), strconv.FormatUint(item.NoIndexUsed, 10), strconv.FormatUint(item.TmpTables, 10),
+			strconv.FormatUint(item.TmpDiskTables, 10), item.FirstSeen, item.LastSeen, strings.Join(item.ActiveUsers, ",")})
 	}
 	tables := make([][]string, 0, len(ctx.Tables))
 	for _, item := range ctx.Tables {
@@ -199,8 +200,9 @@ func csvFiles(ctx *model.Context) ([]artifact, error) {
 	}
 	processes := make([][]string, 0, len(ctx.Processes))
 	for _, item := range ctx.Processes {
-		processes = append(processes, []string{strconv.FormatUint(item.ID, 10), item.User, item.Host, item.Database,
-			item.Command, strconv.FormatUint(item.Seconds, 10), item.State, item.Statement})
+		processes = append(processes, []string{strconv.FormatUint(item.ID, 10), strconv.FormatUint(item.ThreadID, 10), item.User, item.Host, item.Database,
+			item.Command, strconv.FormatUint(item.Seconds, 10), item.State, item.Digest, item.WaitEvent,
+			formatFloat(item.StatementLatencyMillis), item.Statement})
 	}
 	connectionGroups := make([][]string, 0, len(ctx.ConnectionGroups))
 	for _, item := range ctx.ConnectionGroups {
@@ -210,14 +212,38 @@ func csvFiles(ctx *model.Context) ([]artifact, error) {
 	for _, item := range ctx.Locks {
 		locks = append(locks, []string{item.WaitingTransaction, item.BlockingTransaction, item.Schema, item.Table, item.Index, item.LockType, item.LockMode})
 	}
+	transactions := make([][]string, 0, len(ctx.Transactions))
+	for _, item := range ctx.Transactions {
+		transactions = append(transactions, []string{item.ID, item.State, item.StartedAt, strconv.FormatUint(item.AgeSeconds, 10),
+			strconv.FormatUint(item.ProcessID, 10), item.User, item.Host, strconv.FormatUint(item.RowsLocked, 10),
+			strconv.FormatUint(item.RowsModified, 10), strconv.FormatUint(item.TablesInUse, 10), strconv.FormatUint(item.TablesLocked, 10), item.Statement})
+	}
+	metadataLocks := make([][]string, 0, len(ctx.MetadataLocks))
+	for _, item := range ctx.MetadataLocks {
+		metadataLocks = append(metadataLocks, []string{strconv.FormatUint(item.ThreadID, 10), strconv.FormatUint(item.ProcessID, 10),
+			item.User, item.Host, item.ObjectType, item.Schema, item.Object, item.LockType, item.Duration, item.Status})
+	}
+	waits := make([][]string, 0, len(ctx.WaitEvents))
+	for _, item := range ctx.WaitEvents {
+		waits = append(waits, []string{item.Name, item.Class, strconv.FormatUint(item.Count, 10), formatFloat(item.TotalLatencyMillis),
+			formatFloat(item.MeanLatencyMicros), formatFloat(item.MaxLatencyMillis)})
+	}
+	memory := make([][]string, 0, len(ctx.MemoryConsumers))
+	for _, item := range ctx.MemoryConsumers {
+		memory = append(memory, []string{item.Name, strconv.FormatUint(item.CurrentBytes, 10), strconv.FormatUint(item.HighBytes, 10), strconv.FormatUint(item.Allocations, 10)})
+	}
 
 	specs := []csvSpec{
-		{"queries.csv", "Normalized statement digest statistics", []string{"digest", "schema", "statement", "calls", "total_latency_ms", "mean_latency_ms", "rows_examined", "rows_sent", "no_index_used", "tmp_disk_tables"}, queries},
+		{"queries.csv", "Normalized statement digest statistics", []string{"digest", "schema", "statement", "calls", "total_latency_ms", "mean_latency_ms", "rows_examined", "rows_sent", "no_index_used", "tmp_tables", "tmp_disk_tables", "first_seen", "last_seen", "active_users"}, queries},
 		{"tables.csv", "Table size and I/O statistics", []string{"schema", "table", "engine", "estimated_rows", "data_bytes", "index_bytes", "total_bytes", "reads", "writes", "has_primary_key"}, tables},
 		{"indexes.csv", "Index definitions and usage counters", []string{"schema", "table", "index", "columns", "unique", "visible", "cardinality", "reads", "writes"}, indexes},
-		{"processes.csv", "Redacted process-list snapshot", []string{"id", "user", "host", "database", "command", "seconds", "state", "statement"}, processes},
+		{"processes.csv", "Redacted active-session snapshot", []string{"id", "thread_id", "user", "host", "database", "command", "seconds", "state", "digest", "wait_event", "statement_latency_ms", "statement"}, processes},
 		{"connections.csv", "Connection counts grouped by user, host, and user-host pair", []string{"kind", "key", "total", "active", "sleeping", "other"}, connectionGroups},
 		{"locks.csv", "Active InnoDB row lock waits", []string{"waiting_transaction", "blocking_transaction", "schema", "table", "index", "lock_type", "lock_mode"}, locks},
+		{"transactions.csv", "Active InnoDB transaction snapshot", []string{"transaction", "state", "started_at", "age_seconds", "process_id", "user", "host", "rows_locked", "rows_modified", "tables_in_use", "tables_locked", "statement"}, transactions},
+		{"metadata-locks.csv", "Active and pending metadata locks", []string{"thread_id", "process_id", "user", "host", "object_type", "schema", "object", "lock_type", "duration", "status"}, metadataLocks},
+		{"wait-events.csv", "Top Performance Schema wait events", []string{"event", "class", "count", "total_latency_ms", "mean_latency_us", "max_latency_ms"}, waits},
+		{"memory-consumers.csv", "Top MySQL memory consumers", []string{"consumer", "current_bytes", "high_bytes", "allocations"}, memory},
 	}
 	result := make([]artifact, 0, len(specs))
 	for _, spec := range specs {

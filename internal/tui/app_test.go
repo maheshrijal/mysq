@@ -27,7 +27,7 @@ func TestTUIRendersAndNavigatesAllViews(t *testing.T) {
 	if view := m.View(); !strings.Contains(view, "12.0 qps") || !strings.Contains(view, "DATABASE POSTURE") || !strings.Contains(view, "PRIORITY SIGNAL") {
 		t.Fatalf("overview missing content:\n%s", view)
 	}
-	for _, expected := range []string{"Test finding", "SELECT * FROM t", "app.t", "No other connections", "performance_schema"} {
+	for _, expected := range []string{"Test finding", "SELECT * FROM t", "INNODB I/O AND REDO", "app.t", "No other connections", "performance_schema"} {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 		m = updated.(Model)
 		if view := m.View(); !strings.Contains(view, expected) {
@@ -171,7 +171,7 @@ func TestTopTabsReclaimWidthAndWindowOnNarrowTerminals(t *testing.T) {
 		Health:   model.Health{Score: 88, Warnings: 1},
 		Metrics:  model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100},
 		Findings: []model.Finding{{Severity: model.SeverityWarning}},
-		Queries:  []model.Query{{Statement: statement, Calls: 10, TotalLatencyMillis: 100}},
+		Queries:  []model.Query{{Statement: statement, Calls: 10, TotalLatencyMillis: 100, ActiveUsers: []string{"checkout"}}},
 		Tables:   []model.Table{{Schema: "app", Name: "orders", HasPrimaryKey: true}},
 	}
 	m := New(context.Background(), nil, nil)
@@ -181,20 +181,23 @@ func TestTopTabsReclaimWidthAndWindowOnNarrowTerminals(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 32})
 	m = updated.(Model)
 	view := m.View()
-	if strings.Contains(view, "VIEWS") || !strings.Contains(view, "1 Overview") || !strings.Contains(view, "6 Config") {
+	if strings.Contains(view, "VIEWS") || !strings.Contains(view, "1 Overview") || !strings.Contains(view, "7 Config") {
 		t.Fatalf("wide layout did not render the full top tab strip:\n%s", view)
 	}
 	if !strings.Contains(view, statement) {
 		t.Fatalf("full-width query pane still truncated valuable SQL:\n%s", view)
 	}
+	if !strings.Contains(view, "checkout") {
+		t.Fatalf("query pane omitted the currently observed database user:\n%s", view)
+	}
 
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 72, Height: 28})
 	m = updated.(Model)
 	view = m.View()
-	if !strings.Contains(view, "2 Findings") || !strings.Contains(view, "3 QUERIES") || !strings.Contains(view, "4 Tables") {
+	if !strings.Contains(view, "2 Findings") || !strings.Contains(view, "3 QUERIES") || !strings.Contains(view, "4 Engine") {
 		t.Fatalf("narrow tab window omitted neighboring tabs:\n%s", view)
 	}
-	if strings.Contains(view, "1 Overview") || strings.Contains(view, "6 Config") {
+	if strings.Contains(view, "1 Overview") || strings.Contains(view, "7 Config") {
 		t.Fatalf("narrow tab window rendered off-screen tabs:\n%s", view)
 	}
 }

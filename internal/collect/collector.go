@@ -248,11 +248,32 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		var probeErr error
 		result.Processes, probeErr = c.collectProcesses(ctx, conn)
 		result.ConnectionGroups = summarizeProcesses(result.Processes)
+		attributeActiveUsers(result.Queries, result.Processes)
 		return probeErr
 	})
 	c.probe(ctx, result, "row lock waits", func() error {
 		var probeErr error
 		result.Locks, probeErr = c.collectLocks(ctx, conn)
+		return probeErr
+	})
+	c.probe(ctx, result, "active transactions", func() error {
+		var probeErr error
+		result.Transactions, probeErr = c.collectTransactions(ctx, conn)
+		return probeErr
+	})
+	c.probe(ctx, result, "metadata locks", func() error {
+		var probeErr error
+		result.MetadataLocks, probeErr = c.collectMetadataLocks(ctx, conn)
+		return probeErr
+	})
+	c.probe(ctx, result, "wait events", func() error {
+		var probeErr error
+		result.WaitEvents, probeErr = c.collectWaitEvents(ctx, conn)
+		return probeErr
+	})
+	c.probe(ctx, result, "memory consumers", func() error {
+		var probeErr error
+		result.MemoryConsumers, probeErr = c.collectMemoryConsumers(ctx, conn)
 		return probeErr
 	})
 	c.probe(ctx, result, "replication", func() error {
@@ -455,6 +476,35 @@ func deriveMetrics(first, second, variables map[string]string, elapsed time.Dura
 		ConnectionsCurrent:    connections,
 		ConnectionsMax:        maxConnections,
 		ThreadsRunning:        unsigned(second["Threads_running"]),
+		DataReadsPerSecond:    perSecond("Innodb_data_reads"),
+		DataWritesPerSecond:   perSecond("Innodb_data_writes"),
+		DataFsyncsPerSecond:   perSecond("Innodb_data_fsyncs"),
+		RedoBytesPerSecond:    perSecond("Innodb_os_log_written"),
+		RedoWritesPerSecond:   perSecond("Innodb_log_writes"),
+		RedoFsyncsPerSecond:   perSecond("Innodb_os_log_fsyncs"),
+		NetworkInBytesPerSec:  perSecond("Bytes_received"),
+		NetworkOutBytesPerSec: perSecond("Bytes_sent"),
+		FullScansPerSecond:    perSecond("Select_scan"),
+		SortMergePassesPerSec: perSecond("Sort_merge_passes"),
+		BufferPoolWaitsPerSec: perSecond("Innodb_buffer_pool_wait_free"),
+		PendingReads:          unsigned(second["Innodb_data_pending_reads"]),
+		PendingWrites:         unsigned(second["Innodb_data_pending_writes"]),
+		PendingFsyncs:         unsigned(second["Innodb_data_pending_fsyncs"]),
+		BufferPoolDataBytes:   unsigned(second["Innodb_buffer_pool_bytes_data"]),
+		BufferPoolDirtyBytes:  unsigned(second["Innodb_buffer_pool_bytes_dirty"]),
+		RedoCurrentLSN:        unsigned(second["Innodb_redo_log_current_lsn"]),
+		RedoFlushedLSN:        unsigned(second["Innodb_redo_log_flushed_to_disk_lsn"]),
+		RedoCheckpointLSN:     unsigned(second["Innodb_redo_log_checkpoint_lsn"]),
+		RedoCapacityBytes:     unsigned(second["Innodb_redo_log_capacity_resized"]),
+	}
+	if metrics.RedoCapacityBytes == 0 {
+		metrics.RedoCapacityBytes = unsigned(variables["innodb_redo_log_capacity"])
+	}
+	if metrics.RedoCurrentLSN >= metrics.RedoCheckpointLSN {
+		metrics.RedoCheckpointAgeBytes = metrics.RedoCurrentLSN - metrics.RedoCheckpointLSN
+	}
+	if metrics.RedoCapacityBytes > 0 {
+		metrics.RedoCheckpointAgePct = float64(metrics.RedoCheckpointAgeBytes) * 100 / float64(metrics.RedoCapacityBytes)
 	}
 	if maxConnections > 0 {
 		metrics.ConnectionsUsedPercent = float64(connections) * 100 / float64(maxConnections)
@@ -503,9 +553,10 @@ func fingerprint(server model.Server) string {
 
 func (c *Collector) collectQueries(ctx context.Context, conn *sql.Conn) ([]model.Query, error) {
 	statement := `SELECT COALESCE(DIGEST,''), COALESCE(SCHEMA_NAME,''), COALESCE(DIGEST_TEXT,''),
-        COUNT_STAR, SUM_TIMER_WAIT / 1000000000, AVG_TIMER_WAIT / 1000000000,
-        SUM_ROWS_EXAMINED, SUM_ROWS_SENT, SUM_NO_INDEX_USED, SUM_CREATED_TMP_DISK_TABLES
-      FROM performance_schema.events_statements_summary_by_digest
+		COUNT_STAR, SUM_TIMER_WAIT / 1000000000, AVG_TIMER_WAIT / 1000000000,
+		SUM_ROWS_EXAMINED, SUM_ROWS_SENT, SUM_NO_INDEX_USED, SUM_CREATED_TMP_TABLES,
+		SUM_CREATED_TMP_DISK_TABLES, COALESCE(CAST(FIRST_SEEN AS CHAR),''), COALESCE(CAST(LAST_SEEN AS CHAR),'')
+	  FROM performance_schema.events_statements_summary_by_digest
       WHERE DIGEST IS NOT NULL AND DIGEST_TEXT IS NOT NULL
       ORDER BY SUM_TIMER_WAIT DESC LIMIT ?`
 	rows, err := conn.QueryContext(ctx, statement, c.QueryLimit)
@@ -518,7 +569,8 @@ func (c *Collector) collectQueries(ctx context.Context, conn *sql.Conn) ([]model
 		var item model.Query
 		if err := rows.Scan(&item.Digest, &item.Schema, &item.Statement, &item.Calls,
 			&item.TotalLatencyMillis, &item.MeanLatencyMillis, &item.RowsExamined,
-			&item.RowsSent, &item.NoIndexUsed, &item.TmpDiskTables); err != nil {
+			&item.RowsSent, &item.NoIndexUsed, &item.TmpTables, &item.TmpDiskTables,
+			&item.FirstSeen, &item.LastSeen); err != nil {
 			return nil, err
 		}
 		item.Statement = sanitize.SQL(item.Statement)
@@ -591,10 +643,19 @@ func (c *Collector) collectIndexes(ctx context.Context, conn *sql.Conn) ([]model
 }
 
 func (c *Collector) collectProcesses(ctx context.Context, conn *sql.Conn) ([]model.Process, error) {
-	statement := `SELECT ID, USER, HOST, COALESCE(DB,''), COMMAND, TIME, COALESCE(STATE,''), COALESCE(INFO,'')
-		FROM performance_schema.processlist
-      WHERE ID <> CONNECTION_ID()
-      ORDER BY TIME DESC LIMIT 100`
+	statement := `SELECT t.PROCESSLIST_ID, t.THREAD_ID, COALESCE(t.PROCESSLIST_USER,''),
+		COALESCE(t.PROCESSLIST_HOST,''), COALESCE(t.PROCESSLIST_DB,''),
+		COALESCE(t.PROCESSLIST_COMMAND,''), COALESCE(t.PROCESSLIST_TIME,0),
+		COALESCE(t.PROCESSLIST_STATE,''), COALESCE(es.DIGEST,''),
+		COALESCE(ew.EVENT_NAME,''), COALESCE(es.TIMER_WAIT,0) / 1000000000,
+		COALESCE(es.DIGEST_TEXT, t.PROCESSLIST_INFO, '')
+	  FROM performance_schema.threads t
+	  LEFT JOIN performance_schema.events_statements_current es ON es.THREAD_ID=t.THREAD_ID
+	  LEFT JOIN performance_schema.events_waits_current ew ON ew.THREAD_ID=t.THREAD_ID
+	  WHERE t.TYPE='FOREGROUND' AND t.PROCESSLIST_ID IS NOT NULL
+		AND t.PROCESSLIST_USER IS NOT NULL
+		AND t.PROCESSLIST_ID <> CONNECTION_ID()
+	  ORDER BY t.PROCESSLIST_TIME DESC LIMIT 100`
 	rows, err := conn.QueryContext(ctx, statement)
 	if err != nil {
 		return nil, err
@@ -603,14 +664,34 @@ func (c *Collector) collectProcesses(ctx context.Context, conn *sql.Conn) ([]mod
 	processes := make([]model.Process, 0)
 	for rows.Next() {
 		var item model.Process
-		if err := rows.Scan(&item.ID, &item.User, &item.Host, &item.Database, &item.Command,
-			&item.Seconds, &item.State, &item.Statement); err != nil {
+		if err := rows.Scan(&item.ID, &item.ThreadID, &item.User, &item.Host, &item.Database,
+			&item.Command, &item.Seconds, &item.State, &item.Digest, &item.WaitEvent,
+			&item.StatementLatencyMillis, &item.Statement); err != nil {
 			return nil, err
 		}
 		item.Statement = sanitize.SQL(item.Statement)
 		processes = append(processes, item)
 	}
 	return processes, rows.Err()
+}
+
+func attributeActiveUsers(queries []model.Query, processes []model.Process) {
+	users := make(map[string]map[string]bool)
+	for _, process := range processes {
+		if process.Digest == "" || process.User == "" || strings.EqualFold(process.Command, "Sleep") {
+			continue
+		}
+		if users[process.Digest] == nil {
+			users[process.Digest] = make(map[string]bool)
+		}
+		users[process.Digest][process.User] = true
+	}
+	for index := range queries {
+		for user := range users[queries[index].Digest] {
+			queries[index].ActiveUsers = append(queries[index].ActiveUsers, user)
+		}
+		sort.Strings(queries[index].ActiveUsers)
+	}
 }
 
 func summarizeProcesses(processes []model.Process) []model.ConnectionGroup {
@@ -681,6 +762,113 @@ func (c *Collector) collectLocks(ctx context.Context, conn *sql.Conn) ([]model.L
 		locks = append(locks, item)
 	}
 	return locks, rows.Err()
+}
+
+func (c *Collector) collectTransactions(ctx context.Context, conn *sql.Conn) ([]model.Transaction, error) {
+	statement := `SELECT COALESCE(trx.TRX_ID,''), COALESCE(trx.TRX_STATE,''),
+		COALESCE(CAST(trx.TRX_STARTED AS CHAR),''),
+		COALESCE(TIMESTAMPDIFF(SECOND, trx.TRX_STARTED, NOW()),0),
+		COALESCE(trx.TRX_MYSQL_THREAD_ID,0), COALESCE(t.PROCESSLIST_USER,''),
+		COALESCE(t.PROCESSLIST_HOST,''), COALESCE(trx.TRX_ROWS_LOCKED,0),
+		COALESCE(trx.TRX_ROWS_MODIFIED,0), COALESCE(trx.TRX_TABLES_IN_USE,0),
+		COALESCE(trx.TRX_TABLES_LOCKED,0), COALESCE(trx.TRX_QUERY,'')
+	  FROM information_schema.INNODB_TRX trx
+	  LEFT JOIN performance_schema.threads t ON t.PROCESSLIST_ID=trx.TRX_MYSQL_THREAD_ID
+	  ORDER BY trx.TRX_STARTED LIMIT 100`
+	rows, err := conn.QueryContext(ctx, statement)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	transactions := make([]model.Transaction, 0)
+	for rows.Next() {
+		var item model.Transaction
+		if err := rows.Scan(&item.ID, &item.State, &item.StartedAt, &item.AgeSeconds,
+			&item.ProcessID, &item.User, &item.Host, &item.RowsLocked, &item.RowsModified,
+			&item.TablesInUse, &item.TablesLocked, &item.Statement); err != nil {
+			return nil, err
+		}
+		item.Statement = sanitize.SQL(item.Statement)
+		transactions = append(transactions, item)
+	}
+	return transactions, rows.Err()
+}
+
+func (c *Collector) collectMetadataLocks(ctx context.Context, conn *sql.Conn) ([]model.MetadataLock, error) {
+	statement := `SELECT ml.OWNER_THREAD_ID, COALESCE(t.PROCESSLIST_ID,0),
+		COALESCE(t.PROCESSLIST_USER,''), COALESCE(t.PROCESSLIST_HOST,''),
+		COALESCE(ml.OBJECT_TYPE,''), COALESCE(ml.OBJECT_SCHEMA,''),
+		COALESCE(ml.OBJECT_NAME,''), COALESCE(ml.LOCK_TYPE,''),
+		COALESCE(ml.LOCK_DURATION,''), COALESCE(ml.LOCK_STATUS,'')
+	  FROM performance_schema.metadata_locks ml
+	  LEFT JOIN performance_schema.threads t ON t.THREAD_ID=ml.OWNER_THREAD_ID
+	  WHERE t.PROCESSLIST_ID IS NOT NULL AND t.PROCESSLIST_ID <> CONNECTION_ID()
+		AND (ml.LOCK_STATUS='PENDING' OR COALESCE(t.PROCESSLIST_COMMAND,'') <> 'Sleep')
+	  ORDER BY ml.LOCK_STATUS='PENDING' DESC, t.PROCESSLIST_TIME DESC
+	  LIMIT 100`
+	rows, err := conn.QueryContext(ctx, statement)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	locks := make([]model.MetadataLock, 0)
+	for rows.Next() {
+		var item model.MetadataLock
+		if err := rows.Scan(&item.ThreadID, &item.ProcessID, &item.User, &item.Host,
+			&item.ObjectType, &item.Schema, &item.Object, &item.LockType, &item.Duration,
+			&item.Status); err != nil {
+			return nil, err
+		}
+		locks = append(locks, item)
+	}
+	return locks, rows.Err()
+}
+
+func (c *Collector) collectWaitEvents(ctx context.Context, conn *sql.Conn) ([]model.WaitEvent, error) {
+	statement := `SELECT EVENT_NAME,
+		SUBSTRING_INDEX(SUBSTRING_INDEX(EVENT_NAME,'/',2),'/',-1), COUNT_STAR,
+		SUM_TIMER_WAIT / 1000000000, AVG_TIMER_WAIT / 1000000,
+		MAX_TIMER_WAIT / 1000000000
+	  FROM performance_schema.events_waits_summary_global_by_event_name
+	  WHERE COUNT_STAR > 0 AND EVENT_NAME <> 'idle' AND EVENT_NAME NOT LIKE 'idle/%'
+	  ORDER BY SUM_TIMER_WAIT DESC LIMIT 30`
+	rows, err := conn.QueryContext(ctx, statement)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	waits := make([]model.WaitEvent, 0)
+	for rows.Next() {
+		var item model.WaitEvent
+		if err := rows.Scan(&item.Name, &item.Class, &item.Count, &item.TotalLatencyMillis,
+			&item.MeanLatencyMicros, &item.MaxLatencyMillis); err != nil {
+			return nil, err
+		}
+		waits = append(waits, item)
+	}
+	return waits, rows.Err()
+}
+
+func (c *Collector) collectMemoryConsumers(ctx context.Context, conn *sql.Conn) ([]model.MemoryConsumer, error) {
+	statement := `SELECT EVENT_NAME, CURRENT_NUMBER_OF_BYTES_USED,
+		HIGH_NUMBER_OF_BYTES_USED, CURRENT_COUNT_USED
+	  FROM performance_schema.memory_summary_global_by_event_name
+	  WHERE CURRENT_NUMBER_OF_BYTES_USED > 0
+	  ORDER BY CURRENT_NUMBER_OF_BYTES_USED DESC LIMIT 30`
+	rows, err := conn.QueryContext(ctx, statement)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	consumers := make([]model.MemoryConsumer, 0)
+	for rows.Next() {
+		var item model.MemoryConsumer
+		if err := rows.Scan(&item.Name, &item.CurrentBytes, &item.HighBytes, &item.Allocations); err != nil {
+			return nil, err
+		}
+		consumers = append(consumers, item)
+	}
+	return consumers, rows.Err()
 }
 
 func (c *Collector) collectReplication(ctx context.Context, conn *sql.Conn) (*model.Replication, error) {

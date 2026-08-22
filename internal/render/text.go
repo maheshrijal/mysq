@@ -139,6 +139,25 @@ func renderFull(ctx *model.Context, p palette, width int) string {
 	}
 	out.WriteString(table([]string{"subsystem", "status", "value", "note"}, rows, []int{20, 10, 18, 35}, p))
 
+	section("ENGINE ACTIVITY")
+	engineRows := [][]string{
+		{"data I/O", fmt.Sprintf("%.1f reads/s", ctx.Metrics.DataReadsPerSecond), fmt.Sprintf("%.1f writes/s", ctx.Metrics.DataWritesPerSecond), fmt.Sprintf("%.1f fsyncs/s", ctx.Metrics.DataFsyncsPerSecond)},
+		{"pending I/O", fmt.Sprint(ctx.Metrics.PendingReads) + " reads", fmt.Sprint(ctx.Metrics.PendingWrites) + " writes", fmt.Sprint(ctx.Metrics.PendingFsyncs) + " fsyncs"},
+		{"redo", humanBytes(uint64(ctx.Metrics.RedoBytesPerSecond)) + "/s", humanBytes(ctx.Metrics.RedoCheckpointAgeBytes) + " checkpoint age", fmt.Sprintf("%.2f%% of %s", ctx.Metrics.RedoCheckpointAgePct, humanBytes(ctx.Metrics.RedoCapacityBytes))},
+		{"buffer pool", humanBytes(ctx.Metrics.BufferPoolDataBytes) + " data", humanBytes(ctx.Metrics.BufferPoolDirtyBytes) + " dirty", fmt.Sprintf("%.2f waits/s", ctx.Metrics.BufferPoolWaitsPerSec)},
+		{"network", humanBytes(uint64(ctx.Metrics.NetworkInBytesPerSec)) + "/s in", humanBytes(uint64(ctx.Metrics.NetworkOutBytesPerSec)) + "/s out", fmt.Sprintf("%.2f full scans/s", ctx.Metrics.FullScansPerSecond)},
+	}
+	out.WriteString(table([]string{"area", "primary", "secondary", "related"}, engineRows, []int{16, 24, 30, 32}, p))
+
+	if len(ctx.WaitEvents) > 0 {
+		section("TOP WAIT EVENTS")
+		waitRows := make([][]string, 0, min(10, len(ctx.WaitEvents)))
+		for _, item := range ctx.WaitEvents[:min(10, len(ctx.WaitEvents))] {
+			waitRows = append(waitRows, []string{humanCount(item.Count), duration(item.TotalLatencyMillis), fmt.Sprintf("%.1fµs", item.MeanLatencyMicros), duration(item.MaxLatencyMillis), item.Name})
+		}
+		out.WriteString(table([]string{"count", "total", "mean", "max", "event"}, waitRows, []int{10, 12, 12, 12, 56}, p))
+	}
+
 	if len(ctx.Queries) > 0 {
 		section("TOP STATEMENT DIGESTS")
 		queryRows := make([][]string, 0, min(10, len(ctx.Queries)))
@@ -151,12 +170,16 @@ func renderFull(ctx *model.Context, p palette, width int) string {
 			if total > 0 {
 				share = query.TotalLatencyMillis * 100 / total
 			}
+			users := "—"
+			if len(query.ActiveUsers) > 0 {
+				users = strings.Join(query.ActiveUsers, ",")
+			}
 			queryRows = append(queryRows, []string{
 				duration(query.TotalLatencyMillis), fmt.Sprintf("%.1f%%", share), humanCount(query.Calls),
-				fmt.Sprintf("%.2fms", query.MeanLatencyMillis), truncate(query.Statement, 52),
+				fmt.Sprintf("%.2fms", query.MeanLatencyMillis), users, truncate(query.Statement, 40),
 			})
 		}
-		out.WriteString(table([]string{"total", "share", "calls", "mean", "statement"}, queryRows, []int{10, 8, 10, 11, 54}, p))
+		out.WriteString(table([]string{"total", "share", "calls", "mean", "user now", "statement"}, queryRows, []int{10, 8, 10, 11, 14, 41}, p))
 		out.WriteString(p.muted.Render("Statement text is normalized; literals are never exported.") + "\n")
 	}
 
@@ -174,6 +197,24 @@ func renderFull(ctx *model.Context, p palette, width int) string {
 			})
 		}
 		out.WriteString(table([]string{"size", "rows", "reads", "writes", "pk", "table"}, tableRows, []int{11, 10, 10, 10, 5, 42}, p))
+	}
+
+	if len(ctx.Transactions) > 0 {
+		section("ACTIVE TRANSACTIONS")
+		transactionRows := make([][]string, 0, min(10, len(ctx.Transactions)))
+		for _, item := range ctx.Transactions[:min(10, len(ctx.Transactions))] {
+			transactionRows = append(transactionRows, []string{item.ID, item.User, fmt.Sprintf("%ds", item.AgeSeconds), humanCount(item.RowsLocked), humanCount(item.RowsModified), truncate(item.Statement, 44)})
+		}
+		out.WriteString(table([]string{"trx", "user", "age", "locked", "modified", "statement"}, transactionRows, []int{14, 14, 8, 10, 11, 45}, p))
+	}
+
+	if len(ctx.MemoryConsumers) > 0 {
+		section("TOP MYSQL MEMORY CONSUMERS")
+		memoryRows := make([][]string, 0, min(10, len(ctx.MemoryConsumers)))
+		for _, item := range ctx.MemoryConsumers[:min(10, len(ctx.MemoryConsumers))] {
+			memoryRows = append(memoryRows, []string{humanBytes(item.CurrentBytes), humanBytes(item.HighBytes), humanCount(item.Allocations), item.Name})
+		}
+		out.WriteString(table([]string{"current", "high water", "allocations", "consumer"}, memoryRows, []int{14, 14, 14, 60}, p))
 	}
 
 	active := activeProcesses(ctx.Processes)

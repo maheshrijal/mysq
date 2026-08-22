@@ -53,6 +53,9 @@ func verifyContext(path string) {
 	if len(ctx.Queries) == 0 || len(ctx.Tables) < 3 || len(ctx.Indexes) == 0 || len(ctx.Processes) == 0 || len(ctx.ConnectionGroups) == 0 || len(ctx.Findings) == 0 {
 		log.Fatalf("insufficient coverage: queries=%d tables=%d indexes=%d processes=%d connection_groups=%d findings=%d", len(ctx.Queries), len(ctx.Tables), len(ctx.Indexes), len(ctx.Processes), len(ctx.ConnectionGroups), len(ctx.Findings))
 	}
+	if len(ctx.WaitEvents) == 0 || len(ctx.MemoryConsumers) == 0 || ctx.Metrics.RedoCapacityBytes == 0 || ctx.Metrics.BufferPoolDataBytes == 0 {
+		log.Fatalf("insufficient engine coverage: waits=%d memory=%d redo_capacity=%d buffer_data=%d", len(ctx.WaitEvents), len(ctx.MemoryConsumers), ctx.Metrics.RedoCapacityBytes, ctx.Metrics.BufferPoolDataBytes)
+	}
 	for _, process := range ctx.Processes {
 		if strings.Contains(process.Statement, "mysqldot-load-test") {
 			log.Fatal("process statement leaked a literal")
@@ -75,7 +78,7 @@ func verifyBundle(directory string) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		log.Fatal(err)
 	}
-	if !m.SecretFree || len(m.Files) != 16 {
+	if !m.SecretFree || len(m.Files) != 20 {
 		log.Fatalf("invalid manifest: secret_free=%t files=%d", m.SecretFree, len(m.Files))
 	}
 	for _, file := range m.Files {

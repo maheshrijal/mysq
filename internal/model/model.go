@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-const SchemaVersion = "1.0.0"
+const SchemaVersion = "1.1.0"
 
 type Context struct {
 	SchemaVersion    string            `json:"schema_version"`
@@ -20,6 +20,10 @@ type Context struct {
 	Processes        []Process         `json:"processes"`
 	ConnectionGroups []ConnectionGroup `json:"connection_groups"`
 	Locks            []LockWait        `json:"locks"`
+	Transactions     []Transaction     `json:"transactions"`
+	MetadataLocks    []MetadataLock    `json:"metadata_locks"`
+	WaitEvents       []WaitEvent       `json:"wait_events"`
+	MemoryConsumers  []MemoryConsumer  `json:"memory_consumers"`
 	Replication      *Replication      `json:"replication,omitempty"`
 	Variables        map[string]string `json:"variables"`
 	GlobalStatus     map[string]string `json:"global_status"`
@@ -71,6 +75,28 @@ type Metrics struct {
 	TableCacheHitPercent   float64 `json:"table_cache_hit_percent"`
 	OpenFilesUsedPercent   float64 `json:"open_files_used_percent"`
 	HistoryListLength      uint64  `json:"history_list_length"`
+	DataReadsPerSecond     float64 `json:"data_reads_per_second"`
+	DataWritesPerSecond    float64 `json:"data_writes_per_second"`
+	DataFsyncsPerSecond    float64 `json:"data_fsyncs_per_second"`
+	RedoBytesPerSecond     float64 `json:"redo_bytes_per_second"`
+	RedoWritesPerSecond    float64 `json:"redo_writes_per_second"`
+	RedoFsyncsPerSecond    float64 `json:"redo_fsyncs_per_second"`
+	NetworkInBytesPerSec   float64 `json:"network_in_bytes_per_second"`
+	NetworkOutBytesPerSec  float64 `json:"network_out_bytes_per_second"`
+	FullScansPerSecond     float64 `json:"full_scans_per_second"`
+	SortMergePassesPerSec  float64 `json:"sort_merge_passes_per_second"`
+	BufferPoolWaitsPerSec  float64 `json:"buffer_pool_waits_per_second"`
+	PendingReads           uint64  `json:"pending_reads"`
+	PendingWrites          uint64  `json:"pending_writes"`
+	PendingFsyncs          uint64  `json:"pending_fsyncs"`
+	BufferPoolDataBytes    uint64  `json:"buffer_pool_data_bytes"`
+	BufferPoolDirtyBytes   uint64  `json:"buffer_pool_dirty_bytes"`
+	RedoCurrentLSN         uint64  `json:"redo_current_lsn"`
+	RedoFlushedLSN         uint64  `json:"redo_flushed_lsn"`
+	RedoCheckpointLSN      uint64  `json:"redo_checkpoint_lsn"`
+	RedoCheckpointAgeBytes uint64  `json:"redo_checkpoint_age_bytes"`
+	RedoCapacityBytes      uint64  `json:"redo_capacity_bytes"`
+	RedoCheckpointAgePct   float64 `json:"redo_checkpoint_age_percent"`
 }
 
 type Severity string
@@ -93,16 +119,20 @@ type Finding struct {
 }
 
 type Query struct {
-	Digest             string  `json:"digest"`
-	Schema             string  `json:"schema"`
-	Statement          string  `json:"statement"`
-	Calls              uint64  `json:"calls"`
-	TotalLatencyMillis float64 `json:"total_latency_ms"`
-	MeanLatencyMillis  float64 `json:"mean_latency_ms"`
-	RowsExamined       uint64  `json:"rows_examined"`
-	RowsSent           uint64  `json:"rows_sent"`
-	NoIndexUsed        uint64  `json:"no_index_used"`
-	TmpDiskTables      uint64  `json:"tmp_disk_tables"`
+	Digest             string   `json:"digest"`
+	Schema             string   `json:"schema"`
+	Statement          string   `json:"statement"`
+	Calls              uint64   `json:"calls"`
+	TotalLatencyMillis float64  `json:"total_latency_ms"`
+	MeanLatencyMillis  float64  `json:"mean_latency_ms"`
+	RowsExamined       uint64   `json:"rows_examined"`
+	RowsSent           uint64   `json:"rows_sent"`
+	NoIndexUsed        uint64   `json:"no_index_used"`
+	TmpTables          uint64   `json:"tmp_tables"`
+	TmpDiskTables      uint64   `json:"tmp_disk_tables"`
+	FirstSeen          string   `json:"first_seen,omitempty"`
+	LastSeen           string   `json:"last_seen,omitempty"`
+	ActiveUsers        []string `json:"active_users,omitempty"`
 }
 
 type Table struct {
@@ -137,14 +167,18 @@ type Index struct {
 }
 
 type Process struct {
-	ID        uint64 `json:"id"`
-	User      string `json:"user"`
-	Host      string `json:"host"`
-	Database  string `json:"database,omitempty"`
-	Command   string `json:"command"`
-	Seconds   uint64 `json:"seconds"`
-	State     string `json:"state,omitempty"`
-	Statement string `json:"statement,omitempty"`
+	ID                     uint64  `json:"id"`
+	ThreadID               uint64  `json:"thread_id"`
+	User                   string  `json:"user"`
+	Host                   string  `json:"host"`
+	Database               string  `json:"database,omitempty"`
+	Command                string  `json:"command"`
+	Seconds                uint64  `json:"seconds"`
+	State                  string  `json:"state,omitempty"`
+	Digest                 string  `json:"digest,omitempty"`
+	WaitEvent              string  `json:"wait_event,omitempty"`
+	StatementLatencyMillis float64 `json:"statement_latency_ms"`
+	Statement              string  `json:"statement,omitempty"`
 }
 
 type ConnectionGroup struct {
@@ -164,6 +198,50 @@ type LockWait struct {
 	Index               string `json:"index,omitempty"`
 	LockType            string `json:"lock_type,omitempty"`
 	LockMode            string `json:"lock_mode,omitempty"`
+}
+
+type Transaction struct {
+	ID           string `json:"id"`
+	State        string `json:"state"`
+	StartedAt    string `json:"started_at,omitempty"`
+	AgeSeconds   uint64 `json:"age_seconds"`
+	ProcessID    uint64 `json:"process_id"`
+	User         string `json:"user,omitempty"`
+	Host         string `json:"host,omitempty"`
+	RowsLocked   uint64 `json:"rows_locked"`
+	RowsModified uint64 `json:"rows_modified"`
+	TablesInUse  uint64 `json:"tables_in_use"`
+	TablesLocked uint64 `json:"tables_locked"`
+	Statement    string `json:"statement,omitempty"`
+}
+
+type MetadataLock struct {
+	ThreadID   uint64 `json:"thread_id"`
+	ProcessID  uint64 `json:"process_id"`
+	User       string `json:"user,omitempty"`
+	Host       string `json:"host,omitempty"`
+	ObjectType string `json:"object_type"`
+	Schema     string `json:"schema,omitempty"`
+	Object     string `json:"object,omitempty"`
+	LockType   string `json:"lock_type"`
+	Duration   string `json:"duration"`
+	Status     string `json:"status"`
+}
+
+type WaitEvent struct {
+	Name               string  `json:"name"`
+	Class              string  `json:"class"`
+	Count              uint64  `json:"count"`
+	TotalLatencyMillis float64 `json:"total_latency_ms"`
+	MeanLatencyMicros  float64 `json:"mean_latency_us"`
+	MaxLatencyMillis   float64 `json:"max_latency_ms"`
+}
+
+type MemoryConsumer struct {
+	Name         string `json:"name"`
+	CurrentBytes uint64 `json:"current_bytes"`
+	HighBytes    uint64 `json:"high_bytes"`
+	Allocations  uint64 `json:"allocations"`
 }
 
 type Replication struct {

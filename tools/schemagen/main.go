@@ -13,11 +13,11 @@ import (
 
 func main() {
 	var output string
-	flag.StringVar(&output, "out", "schema/context-1.0.0.json", "output path")
+	flag.StringVar(&output, "out", "schema/context-1.1.0.json", "output path")
 	flag.Parse()
 	reflector := &jsonschema.Reflector{DoNotReference: false, ExpandedStruct: true}
 	schema := reflector.Reflect(&model.Context{})
-	schema.ID = "https://github.com/maheshrijal/mysqldot/schema/context-1.0.0.json"
+	schema.ID = "https://github.com/maheshrijal/mysqldot/schema/context-1.1.0.json"
 	data, err := json.MarshalIndent(schema, "", "  ")
 	if err != nil {
 		panic(err)

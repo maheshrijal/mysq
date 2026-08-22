@@ -53,11 +53,11 @@ mysqldot export --zip
 
 ## The terminal
 
-`mysqldot inspect` is the fast, findings-first read. `--full` adds a subsystem board and the highest-value statement, table, connection, lock, replication, and collection details.
+`mysqldot inspect` is the fast, findings-first read. `--full` adds engine I/O and redo, top waits, memory consumers, transactions, statements, tables, connections, locks, replication, and collection details.
 
 `mysqldot tui` opens the live interactive view:
 
-- Six navigable views: Overview, Findings, Queries, Tables, Connections, and Config.
+- Seven navigable views: Overview, Findings, Queries, Engine, Tables, Connections, and Config.
 - A restrained adaptive palette that respects light and dark terminal backgrounds; color communicates health instead of decorating every surface.
 - A compact browser-style tab strip with live counts and full-width diagnostic content, collapsing to neighboring tabs in narrow split panes.
 - All four arrow keys, Tab/Shift-Tab, and number keys switch views; `j`/`k`, Page Up/Down, and `g`/`G` scroll within the active view.
@@ -81,11 +81,13 @@ An export is written atomically and refuses to overwrite an existing path. It co
 |---|---|
 | `summary.md` | Findings-first narrative for a human or agent |
 | `context.json` | Complete versioned diagnostic contract |
-| `schema/context-1.0.0.json` | JSON Schema for validation and tool generation |
+| `schema/context-1.1.0.json` | JSON Schema for validation and tool generation |
 | `findings.json` / `metrics.json` | Small deterministic reasoning inputs |
 | `queries.csv` | Normalized statement digests and cost |
 | `tables.csv` / `indexes.csv` | Storage, I/O, keys, and usage evidence |
 | `processes.csv` / `connections.csv` / `locks.csv` | Redacted concurrency snapshot and user/host grouping |
+| `transactions.csv` / `metadata-locks.csv` | Active transaction and metadata-lock evidence |
+| `wait-events.csv` / `memory-consumers.csv` | Performance Schema waits and MySQL memory allocation |
 | `variables.cnf` | Sorted captured configuration; evidence, not an apply file |
 | `raw/innodb-status.txt` | Redacted InnoDB monitor output |
 | `raw/global-status.json` | End-of-sample counters |
@@ -104,7 +106,12 @@ The bundle is secret-free by construction. SQL string and numeric literals are r
 | `tables` | Table size, estimated rows, I/O, and primary-key state |
 | `indexes` | Index columns, uniqueness, visibility, and read/write counters |
 | `processes` | Redacted process-list snapshot |
+| `transactions` | Active InnoDB transactions, age, ownership, rows, and normalized SQL |
 | `locks` | Active InnoDB row-lock wait graph edges |
+| `metadata-locks` | Active and pending metadata locks with owners and objects |
+| `waits` | Top Performance Schema wait events by total latency |
+| `memory` | Top MySQL memory consumers and high-water allocation |
+| `engine` | Sampled InnoDB I/O, redo/checkpoint, buffer, network, and scan metrics |
 | `variables` | Sorted global configuration |
 | `replication` | Replica thread state, lag, GTID sets, and redacted errors |
 | `export` | Atomic JSON/Markdown/CSV/TXT agent bundle, optionally zipped |
@@ -156,9 +163,12 @@ The role is the primary safety boundary. mysqldot also sets `transaction_read_on
 
 - Connection saturation, running threads, aborted clients, QPS/TPS, and row throughput.
 - InnoDB buffer hit/use/dirty ratios, purge history, redo waits, row-lock churn, and active blockers.
+- Physical I/O and fsync rates, pending I/O, redo generation and checkpoint age, buffer-pool bytes, network throughput, scans, and sorts.
+- Top Performance Schema wait events and memory consumers, preserving cumulative count, total, mean, max, current, and high-water values.
 - Statement digests by total latency, no-index execution, examined/sent rows, and disk temp tables.
+- Current SQL attribution by database user, client host, database, digest, statement state, and wait event when instrumentation provides it.
 - Table storage and I/O, missing primary keys, duplicate definitions, and review-only unused-index candidates.
-- Process duration and normalized current statements.
+- Process duration, active InnoDB transactions, current row locks, and active or pending metadata locks.
 - Replica thread health, lag, GTID positions, and last errors.
 - Crash durability (`innodb_flush_log_at_trx_commit`, `sync_binlog`) and important operational settings.
 - Probe capabilities, making partial visibility explicit rather than silently treating missing data as healthy.

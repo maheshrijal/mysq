@@ -21,6 +21,12 @@ func Markdown(w io.Writer, ctx *model.Context) error {
 		ctx.Metrics.QueriesPerSecond, ctx.Metrics.TransactionsPerSecond,
 		ctx.Metrics.ConnectionsCurrent, ctx.Metrics.ConnectionsMax, ctx.Metrics.ThreadsRunning,
 		ctx.Metrics.BufferPoolHitPercent, ctx.Metrics.TempDiskTablePercent)
+	fmt.Fprintf(&out, "| Data reads/s | Data writes/s | Fsyncs/s | Redo/s | Checkpoint age | Pending I/O |\n")
+	fmt.Fprintf(&out, "|---:|---:|---:|---:|---:|---:|\n")
+	fmt.Fprintf(&out, "| %.2f | %.2f | %.2f | %s | %s (%.2f%%) | %d/%d/%d |\n\n",
+		ctx.Metrics.DataReadsPerSecond, ctx.Metrics.DataWritesPerSecond, ctx.Metrics.DataFsyncsPerSecond,
+		humanBytes(uint64(ctx.Metrics.RedoBytesPerSecond)), humanBytes(ctx.Metrics.RedoCheckpointAgeBytes),
+		ctx.Metrics.RedoCheckpointAgePct, ctx.Metrics.PendingReads, ctx.Metrics.PendingWrites, ctx.Metrics.PendingFsyncs)
 	if len(ctx.Findings) == 0 {
 		out.WriteString("No actionable findings were detected in the collected signals.\n")
 	} else {
@@ -30,9 +36,20 @@ func Markdown(w io.Writer, ctx *model.Context) error {
 		}
 	}
 	if len(ctx.Queries) > 0 {
-		out.WriteString("## Top statements\n\n| Total | Calls | Mean | Digest | Statement |\n|---:|---:|---:|---|---|\n")
+		out.WriteString("## Top statements\n\n| Total | Calls | Mean | Active user | Digest | Statement |\n|---:|---:|---:|---|---|---|\n")
 		for _, query := range ctx.Queries[:min(10, len(ctx.Queries))] {
-			fmt.Fprintf(&out, "| %s | %d | %.2fms | `%s` | `%s` |\n", duration(query.TotalLatencyMillis), query.Calls, query.MeanLatencyMillis, query.Digest, escapeMarkdown(query.Statement))
+			users := "—"
+			if len(query.ActiveUsers) > 0 {
+				users = strings.Join(query.ActiveUsers, ", ")
+			}
+			fmt.Fprintf(&out, "| %s | %d | %.2fms | %s | `%s` | `%s` |\n", duration(query.TotalLatencyMillis), query.Calls, query.MeanLatencyMillis, users, query.Digest, escapeMarkdown(query.Statement))
+		}
+		out.WriteByte('\n')
+	}
+	if len(ctx.WaitEvents) > 0 {
+		out.WriteString("## Top wait events\n\n| Event | Count | Total | Mean | Max |\n|---|---:|---:|---:|---:|\n")
+		for _, wait := range ctx.WaitEvents[:min(10, len(ctx.WaitEvents))] {
+			fmt.Fprintf(&out, "| `%s` | %d | %s | %.1fµs | %s |\n", wait.Name, wait.Count, duration(wait.TotalLatencyMillis), wait.MeanLatencyMicros, duration(wait.MaxLatencyMillis))
 		}
 		out.WriteByte('\n')
 	}

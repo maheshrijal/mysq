@@ -34,11 +34,33 @@ func TestResolveConnectionRejectsInvalidPort(t *testing.T) {
 }
 
 func TestDeriveMetricsRemovesSamplingQuery(t *testing.T) {
-	first := map[string]string{"Questions": "100", "Innodb_rows_read": "10"}
-	second := map[string]string{"Questions": "101", "Innodb_rows_read": "30"}
+	first := map[string]string{"Questions": "100", "Innodb_rows_read": "10", "Innodb_data_reads": "50", "Innodb_os_log_written": "1000"}
+	second := map[string]string{
+		"Questions": "101", "Innodb_rows_read": "30", "Innodb_data_reads": "54", "Innodb_os_log_written": "2024",
+		"Innodb_redo_log_current_lsn": "5000", "Innodb_redo_log_checkpoint_lsn": "4000",
+		"Innodb_redo_log_capacity_resized": "10000", "Innodb_data_pending_reads": "2",
+	}
 	metrics := deriveMetrics(first, second, map[string]string{}, time.Second)
-	if metrics.QueriesPerSecond != 0 || metrics.RowsReadPerSecond != 20 {
+	if metrics.QueriesPerSecond != 0 || metrics.RowsReadPerSecond != 20 || metrics.DataReadsPerSecond != 4 ||
+		metrics.RedoBytesPerSecond != 1024 || metrics.RedoCheckpointAgeBytes != 1000 || metrics.RedoCheckpointAgePct != 10 || metrics.PendingReads != 2 {
 		t.Fatalf("unexpected rates: %+v", metrics)
+	}
+}
+
+func TestAttributeActiveUsersToDigestWithoutGuessing(t *testing.T) {
+	queries := []model.Query{{Digest: "A"}, {Digest: "B"}}
+	processes := []model.Process{
+		{Digest: "A", User: "worker", Command: "Query"},
+		{Digest: "A", User: "api", Command: "Query"},
+		{Digest: "A", User: "api", Command: "Query"},
+		{Digest: "B", User: "reporting", Command: "Sleep"},
+	}
+	attributeActiveUsers(queries, processes)
+	if got := strings.Join(queries[0].ActiveUsers, ","); got != "api,worker" {
+		t.Fatalf("active users = %q, want api,worker", got)
+	}
+	if len(queries[1].ActiveUsers) != 0 {
+		t.Fatalf("sleeping user was attributed to digest: %+v", queries[1].ActiveUsers)
 	}
 }
 
