@@ -60,7 +60,7 @@ mysq export --zip
 - Seven navigable views: Overview, Connections, Queries, Engine, Findings, Tables, and Config.
 - A restrained adaptive palette that respects light and dark terminal backgrounds; color communicates health instead of decorating every surface.
 - A compact browser-style tab strip with live counts and full-width diagnostic content, collapsing to neighboring tabs in narrow split panes.
-- Left/Right, Tab/Shift-Tab, and number keys switch views. In Queries, Up/Down selects a statement, Enter opens its full normalized SQL and execution evidence, and Esc returns to the selected row. `j`/`k`, Page Up/Down, and `g`/`G` scroll long content.
+- Left/Right, Tab/Shift-Tab, and number keys switch views. Up/Down scrolls long views such as Engine; `j`/`k`, Page Up/Down, and `g`/`G` remain available. In Queries, Up/Down selects a statement, Enter opens its full normalized SQL and execution evidence, and Esc returns to the selected row.
 - `r` reruns every diagnostic probe and saves a new local snapshot.
 - `e` writes the complete native agent bundle directly from the terminal and keeps its destination visible until dismissed with `Esc`.
 - Cards, gauges, tables, findings, and key hints reflow at terminal breakpoints; very small terminals get an explicit resize state instead of a broken layout.

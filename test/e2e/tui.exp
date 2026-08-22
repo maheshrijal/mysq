@@ -1,6 +1,7 @@
 #!/usr/bin/expect -f
 
 set timeout 25
+log_user 0
 set binary [lindex $argv 0]
 set dsn [lindex $argv 1]
 spawn -noecho $binary tui $dsn --interval 250ms
@@ -15,10 +16,10 @@ expect {
   eof { exit 11 }
 }
 # Exercise horizontal view navigation, vertical query selection, and the
-# Enter/Esc query detail workflow. Content scrolling remains on j/k and pages.
+# Enter/Esc query detail workflow.
 send "\033\[C"
 expect -re {● 2 CONNECTIONS}
-send "\033\[B"
+send "\033\[C"
 expect -re {● 3 QUERIES}
 # Queries use vertical arrows for row selection and Enter/Esc for detail.
 send "\033\[B"
@@ -28,8 +29,18 @@ send "\033"
 expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
 send "\033\[D"
 expect -re {● 2 CONNECTIONS}
-send "\033\[A"
+send "\033\[D"
 expect -re {● 1 OVERVIEW}
+# Engine is longer than the viewport. Vertical arrows scroll its content and
+# must not switch tabs.
+send "4"
+expect -re {● 4 ENGINE}
+for {set i 0} {$i < 30} {incr i} {
+  send "\033\[B"
+}
+expect -re {MYSQL FILE I/O|MYSQL ERRORS AND WARNINGS}
+send "\033\[A"
+expect -re {● 4 ENGINE}
 send "\t"
 send "\t"
 send "e"

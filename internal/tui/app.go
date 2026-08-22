@@ -113,20 +113,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.rebuild()
 				m.ensureQuerySelectionVisible()
 				updateViewport = false
-			} else if !m.queryDetail {
-				m.tab = (m.tab + 1) % len(tabs)
-				m.rebuild()
-				updateViewport = false
 			}
 		case "up":
 			if tabs[m.tab] == "Queries" && !m.queryDetail && m.snapshot != nil && len(m.snapshot.Queries) > 0 {
 				m.queryIndex = max(0, m.queryIndex-1)
 				m.rebuild()
 				m.ensureQuerySelectionVisible()
-				updateViewport = false
-			} else if !m.queryDetail {
-				m.tab = (m.tab + len(tabs) - 1) % len(tabs)
-				m.rebuild()
 				updateViewport = false
 			}
 		case "enter":
@@ -365,11 +357,11 @@ func (m Model) footer() string {
 		lines := padBetween(title, dismiss, max(1, m.width-2)) + "\n" + path
 		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(lines)
 	}
-	keys := keyHint("arrows", "views") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("e", "export") + "  " + keyHint("?", "help") + "  " + keyHint("q", "quit")
+	keys := keyHint("←/→", "views") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("e", "export") + "  " + keyHint("?", "help") + "  " + keyHint("q", "quit")
 	if tabs[m.tab] == "Queries" {
 		keys = keyHint("↑/↓", "select") + "  " + keyHint("enter", "open") + "  " + keyHint("←/→", "views") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
 		if m.queryDetail {
-			keys = keyHint("esc", "queries") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
+			keys = keyHint("esc", "queries") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
 		}
 	}
 	if m.help {
@@ -383,10 +375,10 @@ func (m Model) footer() string {
 		if tabs[m.tab] == "Queries" {
 			keys = keyHint("↑/↓", "select") + "  " + keyHint("enter", "open") + "  " + keyHint("←/→", "views")
 			if m.queryDetail {
-				keys = keyHint("esc", "queries") + "  " + keyHint("j/k", "scroll")
+				keys = keyHint("esc", "queries") + "  " + keyHint("↑/↓", "scroll")
 			}
 		} else {
-			keys = keyHint("arrows", "view") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
+			keys = keyHint("←/→", "view") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("q", "quit")
 		}
 	}
 	line := padBetween(lipgloss.NewStyle().Foreground(muted).Render(compact(status, max(16, m.width/2))), keys, max(1, m.width-2))

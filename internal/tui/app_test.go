@@ -106,26 +106,37 @@ func TestTinyTerminalShowsResizeState(t *testing.T) {
 	}
 }
 
-func TestArrowKeysNavigateViewsAndJKScrollsContent(t *testing.T) {
+func TestHorizontalArrowsNavigateViewsAndVerticalKeysScrollContent(t *testing.T) {
 	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100}}
 	m := New(context.Background(), nil, nil)
 	m.loading = false
 	m.snapshot = ctx
+	m.tab = 3
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 30})
 	m = updated.(Model)
 
-	for _, step := range []struct {
-		key  tea.KeyType
-		want int
-	}{{tea.KeyRight, 1}, {tea.KeyDown, 2}, {tea.KeyLeft, 1}, {tea.KeyUp, 0}} {
-		updated, _ = m.Update(tea.KeyMsg{Type: step.key})
-		m = updated.(Model)
-		if m.tab != step.want {
-			t.Fatalf("%s selected tab %d, want %d", tea.KeyMsg{Type: step.key}.String(), m.tab, step.want)
-		}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(Model)
+	if m.tab != 4 {
+		t.Fatalf("right selected tab %d, want 4", m.tab)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if m.tab != 3 {
+		t.Fatalf("left selected tab %d, want 3", m.tab)
 	}
 
 	m.viewport.SetContent(strings.Repeat("scrollable line\n", 100))
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	if m.tab != 3 || m.viewport.YOffset != 1 {
+		t.Fatalf("down selected tab=%d offset=%d, want tab=3 offset=1", m.tab, m.viewport.YOffset)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(Model)
+	if m.tab != 3 || m.viewport.YOffset != 0 {
+		t.Fatalf("up selected tab=%d offset=%d, want tab=3 offset=0", m.tab, m.viewport.YOffset)
+	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	m = updated.(Model)
 	if m.viewport.YOffset != 1 {
