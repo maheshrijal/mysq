@@ -72,7 +72,12 @@ func analyzeWorkload(ctx *model.Context, add func(model.Finding)) {
 	count := 0
 	objects := make([]string, 0)
 	for _, process := range ctx.Processes {
-		if strings.EqualFold(process.Command, "Sleep") || process.Seconds < 5 {
+		// MySQL exposes long-lived server threads such as event_scheduler in
+		// processlist with Command=Daemon. They are not statements. Requiring
+		// normalized statement text avoids turning server uptime into a false
+		// critical finding while still covering Query/Execute-style work.
+		if process.Seconds < 5 || strings.TrimSpace(process.Statement) == "" ||
+			strings.EqualFold(process.Command, "Sleep") || strings.EqualFold(process.Command, "Daemon") {
 			continue
 		}
 		count++

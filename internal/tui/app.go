@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -47,16 +48,23 @@ type Model struct {
 }
 
 var (
-	background = lipgloss.Color("#0B1018")
-	surface    = lipgloss.Color("#121A26")
-	border     = lipgloss.Color("#2A3546")
-	muted      = lipgloss.Color("#758094")
-	text       = lipgloss.Color("#E7EDF5")
-	green      = lipgloss.Color("#59E39D")
-	yellow     = lipgloss.Color("#F4C95D")
-	red        = lipgloss.Color("#FF6B6B")
-	cyan       = lipgloss.Color("#62D0FF")
-	purple     = lipgloss.Color("#B7A4FF")
+	// The palette deliberately leaves the terminal background alone. Adaptive
+	// foregrounds keep the UI legible in both light and dark terminals while the
+	// Tokyo Night/Catppuccin-inspired accents remain restrained and semantic.
+	surface    = lipgloss.AdaptiveColor{Light: "#E6E9EF", Dark: "#24283B"}
+	surfaceAlt = lipgloss.AdaptiveColor{Light: "#DCE0E8", Dark: "#1F2335"}
+	border     = lipgloss.AdaptiveColor{Light: "#BCC0CC", Dark: "#3B4261"}
+	muted      = lipgloss.AdaptiveColor{Light: "#7C7F93", Dark: "#737AA2"}
+	text       = lipgloss.AdaptiveColor{Light: "#4C4F69", Dark: "#C0CAF5"}
+	green      = lipgloss.AdaptiveColor{Light: "#40A02B", Dark: "#9ECE6A"}
+	yellow     = lipgloss.AdaptiveColor{Light: "#DF8E1D", Dark: "#E0AF68"}
+	red        = lipgloss.AdaptiveColor{Light: "#D20F39", Dark: "#F7768E"}
+	cyan       = lipgloss.AdaptiveColor{Light: "#1E66F5", Dark: "#7AA2F7"}
+)
+
+const (
+	wideBreakpoint = 110
+	sidebarWidth   = 23
 )
 
 func Run(ctx context.Context, inspect Inspector, export Exporter) error {
@@ -115,8 +123,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.viewport.Width = max(40, msg.Width-4)
-		m.viewport.Height = max(8, msg.Height-11)
+		m.resizeViewport()
 		m.rebuild()
 	case inspectMessage:
 		m.loading = false
@@ -149,24 +156,41 @@ func (m Model) View() string {
 	if m.width == 0 {
 		return "Starting mysqldot…"
 	}
-	canvas := lipgloss.NewStyle().Background(background).Foreground(text).Width(m.width).Height(m.height)
+	canvas := lipgloss.NewStyle().Foreground(text).Width(m.width).Height(m.height)
+	if m.width < 52 || m.height < 18 {
+		return canvas.Render(m.tooSmall())
+	}
 	header := m.header()
-	tabBar := m.tabBar()
-	content := m.viewport.View()
 	footer := m.footer()
-	return canvas.Render(lipgloss.JoinVertical(lipgloss.Left, header, tabBar, content, footer))
+	if m.width >= wideBreakpoint {
+		bodyHeight := max(8, m.height-2)
+		mainWidth := max(50, m.width-sidebarWidth-1)
+		body := lipgloss.JoinHorizontal(lipgloss.Top, m.sidebar(bodyHeight), " ", m.contentPanel(mainWidth, bodyHeight))
+		return canvas.Render(lipgloss.JoinVertical(lipgloss.Left, header, body, footer))
+	}
+	bodyHeight := max(8, m.height-3)
+	return canvas.Render(lipgloss.JoinVertical(lipgloss.Left, header, m.tabBar(), m.contentPanel(m.width, bodyHeight), footer))
+}
+
+func (m Model) tooSmall() string {
+	message := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("◆ MYSQLDOT") + "\n\n" +
+		lipgloss.NewStyle().Foreground(text).Bold(true).Render("A little more room, please") + "\n" +
+		lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Need 52×18 · current %d×%d", m.width, m.height)) + "\n\n" +
+		keyHint("q", "quit")
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(1, 2).Width(max(8, m.width-2)).Render(message)
 }
 
 func (m Model) header() string {
-	brand := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("◆ mysqldot")
-	tagline := ""
-	if m.width >= 100 {
-		tagline = lipgloss.NewStyle().Foreground(muted).Render("  live MySQL intelligence")
+	brand := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("◆ MYSQLDOT")
+	target := " MySQL intelligence"
+	if m.snapshot != nil {
+		target = fmt.Sprintf(" %s:%d/%s", m.snapshot.Server.Host, m.snapshot.Server.Port, fallback(m.snapshot.Server.Database, "all databases"))
 	}
-	left := brand + tagline
-	right := ""
+	left := brand + lipgloss.NewStyle().Foreground(muted).Render(target)
+	right := lipgloss.NewStyle().Foreground(muted).Render("starting")
 	if m.loading {
-		right = m.spinner.View() + " collecting"
+		right = m.spinner.View() + lipgloss.NewStyle().Foreground(muted).Render(" collecting")
 	} else if m.snapshot != nil {
 		scoreColor := green
 		if m.snapshot.Health.Critical > 0 {
@@ -174,36 +198,100 @@ func (m Model) header() string {
 		} else if m.snapshot.Health.Warnings > 0 {
 			scoreColor = yellow
 		}
-		right = lipgloss.NewStyle().Foreground(scoreColor).Bold(true).Render(fmt.Sprintf("health %d/100", m.snapshot.Health.Score))
+		state := "HEALTHY"
+		if m.snapshot.Health.Critical > 0 {
+			state = "CRITICAL"
+		} else if m.snapshot.Health.Warnings > 0 {
+			state = "ATTENTION"
+		}
+		right = lipgloss.NewStyle().Foreground(scoreColor).Bold(true).Render(fmt.Sprintf("● %s  %d", state, m.snapshot.Health.Score))
 	}
-	gap := strings.Repeat(" ", max(1, m.width-lipgloss.Width(left)-lipgloss.Width(right)-4))
-	return lipgloss.NewStyle().Background(surface).BorderBottom(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(border).
-		Padding(1, 2).Width(max(1, m.width-4)).Render(left + gap + right)
+	line := padBetween(left, right, max(1, m.width-2))
+	return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
 }
 
 func (m Model) tabBar() string {
+	if m.width < 82 {
+		current := fmt.Sprintf("‹  %d/%d  %s  ›", m.tab+1, len(tabs), tabs[m.tab])
+		return lipgloss.NewStyle().Foreground(cyan).Bold(true).Padding(0, 1).Width(max(1, m.width)).Render(current)
+	}
 	items := make([]string, 0, len(tabs))
 	for i, name := range tabs {
+		label := fmt.Sprintf("%d %s", i+1, name)
 		style := lipgloss.NewStyle().Foreground(muted).Padding(0, 1)
 		if i == m.tab {
-			style = style.Foreground(background).Background(cyan).Bold(true)
+			label = "● " + name
+			style = style.Foreground(cyan).Bold(true)
 		}
-		items = append(items, style.Render(fmt.Sprintf("%d %s", i+1, name)))
+		items = append(items, style.Render(label))
 	}
-	return lipgloss.NewStyle().Background(background).Padding(1, 2, 0).Render(strings.Join(items, " "))
+	return lipgloss.NewStyle().Padding(0, 1).Width(max(1, m.width)).Render(strings.Join(items, " "))
 }
 
 func (m Model) footer() string {
-	keys := "tab/←→ navigate  ↑↓ scroll  r refresh  e export  ? help  q quit"
+	keys := keyHint("tab", "views") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("e", "export") + "  " + keyHint("?", "help") + "  " + keyHint("q", "quit")
 	if m.help {
-		keys = "1–6 jump to view  g/G top/bottom  pgup/pgdn page  r reruns every probe  e writes JSON/Markdown/CSV/TXT bundle"
+		keys = keyHint("1–6", "jump") + "  " + keyHint("g/G", "top/bottom") + "  " + keyHint("pgup/dn", "page") + "  " + keyHint("e", "agent bundle")
 	}
 	status := m.status
 	if status == "" {
-		status = "Read-only collection · SQL literals redacted before display or export"
+		status = "Read-only · SQL literals redacted"
 	}
-	return lipgloss.NewStyle().Background(surface).BorderTop(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(border).
-		Foreground(muted).Padding(0, 2).Width(max(1, m.width-4)).Render(compact(status, max(20, m.width-4)) + "\n" + keys)
+	if m.width < 96 {
+		keys = keyHint("tab", "view") + "  " + keyHint("r", "refresh") + "  " + keyHint("e", "export") + "  " + keyHint("q", "quit")
+	}
+	line := padBetween(lipgloss.NewStyle().Foreground(muted).Render(compact(status, max(16, m.width/2))), keys, max(1, m.width-2))
+	return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
+}
+
+func (m *Model) resizeViewport() {
+	bodyHeight := max(8, m.height-3)
+	mainWidth := m.width
+	if m.width >= wideBreakpoint {
+		bodyHeight = max(8, m.height-2)
+		mainWidth = max(50, m.width-sidebarWidth-1)
+	}
+	m.viewport.Width = max(24, mainWidth-4)
+	m.viewport.Height = max(4, bodyHeight-4)
+}
+
+func (m Model) sidebar(height int) string {
+	innerWidth := sidebarWidth - 4
+	var content strings.Builder
+	content.WriteString(lipgloss.NewStyle().Foreground(muted).Bold(true).Render("VIEWS") + "\n\n")
+	for i, name := range tabs {
+		prefix := "  "
+		style := lipgloss.NewStyle().Foreground(muted).Width(innerWidth)
+		if i == m.tab {
+			prefix = "▌ "
+			style = style.Foreground(cyan).Background(surface).Bold(true)
+		}
+		content.WriteString(style.Render(fmt.Sprintf("%s%d  %s", prefix, i+1, name)) + "\n")
+	}
+	if m.snapshot != nil && height >= 24 {
+		content.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Bold(true).Render("TARGET") + "\n\n")
+		content.WriteString(lipgloss.NewStyle().Foreground(text).Bold(true).Render(fallback(m.snapshot.Server.Database, "all databases")) + "\n")
+		content.WriteString(lipgloss.NewStyle().Foreground(muted).Render(compact(m.snapshot.Server.Flavor+" "+m.snapshot.Server.Version, innerWidth)) + "\n")
+		content.WriteString(lipgloss.NewStyle().Foreground(muted).Render("uptime "+humanDuration(m.snapshot.Server.UptimeSeconds)) + "\n")
+	}
+	if height >= 31 {
+		content.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Bold(true).Render("SAFETY") + "\n\n")
+		content.WriteString(lipgloss.NewStyle().Foreground(green).Render("● read-only session") + "\n")
+		content.WriteString(lipgloss.NewStyle().Foreground(muted).Render("  literals redacted"))
+	}
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(sidebarWidth - 2).Height(max(1, height-2)).Render(content.String())
+}
+
+func (m Model) contentPanel(width, height int) string {
+	innerWidth := max(24, width-4)
+	title := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("● " + strings.ToUpper(tabs[m.tab]))
+	subtitle := viewSubtitle(m)
+	titleLine := padBetween(title, lipgloss.NewStyle().Foreground(muted).Render(subtitle), innerWidth)
+	rule := lipgloss.NewStyle().Foreground(border).Render(strings.Repeat("─", innerWidth))
+	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, rule, m.viewport.View())
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(width - 2).Height(max(1, height-2)).Render(content)
 }
 
 func (m *Model) rebuild() {
@@ -220,15 +308,15 @@ func (m *Model) rebuild() {
 	case "Overview":
 		content = overview(m.snapshot, m.viewport.Width)
 	case "Findings":
-		content = findings(m.snapshot)
+		content = findings(m.snapshot, m.viewport.Width)
 	case "Queries":
 		content = queries(m.snapshot, m.viewport.Width)
 	case "Tables":
-		content = tablesView(m.snapshot)
+		content = tablesView(m.snapshot, m.viewport.Width)
 	case "Connections":
 		content = connections(m.snapshot, m.viewport.Width)
 	case "Config":
-		content = config(m.snapshot)
+		content = config(m.snapshot, m.viewport.Width)
 	}
 	m.viewport.SetContent(content)
 	m.viewport.GotoTop()
@@ -252,63 +340,97 @@ func (m Model) exportCommand() tea.Cmd {
 }
 
 func overview(ctx *model.Context, width int) string {
-	cardWidth := max(15, (width-10)/4)
-	if width < 110 {
-		cardWidth = max(24, (width-5)/2)
+	healthColor := green
+	posture := "Operational"
+	postureNote := "No critical conditions detected"
+	if ctx.Health.Critical > 0 {
+		healthColor = red
+		posture = "Critical"
+		postureNote = "Immediate action is recommended"
+	} else if ctx.Health.Warnings > 0 {
+		healthColor = yellow
+		posture = "Needs attention"
+		postureNote = fmt.Sprintf("%d warning signals need review", ctx.Health.Warnings)
 	}
-	card := func(label, value, note string, color lipgloss.Color) string {
-		return lipgloss.NewStyle().Background(surface).Border(lipgloss.RoundedBorder()).BorderForeground(border).
-			Padding(0, 1).Width(cardWidth).Render(
-			lipgloss.NewStyle().Foreground(muted).Render(strings.ToUpper(label)) + "\n" +
-				lipgloss.NewStyle().Foreground(color).Bold(true).Render(value) + "\n" +
-				lipgloss.NewStyle().Foreground(muted).Render(note))
+	postureLine := lipgloss.NewStyle().Foreground(healthColor).Bold(true).Render("● "+posture) +
+		lipgloss.NewStyle().Foreground(muted).Render("  "+postureNote)
+	score := lipgloss.NewStyle().Foreground(healthColor).Bold(true).Render(fmt.Sprintf("%d/100", ctx.Health.Score))
+	postureBox := panelBox("DATABASE POSTURE", padBetween(postureLine, score, max(20, width-4)), width)
+
+	cardColumns := 4
+	if width < 88 {
+		cardColumns = 2
 	}
-	throughput := card("Throughput", fmt.Sprintf("%.1f qps", ctx.Metrics.QueriesPerSecond), fmt.Sprintf("%.1f transactions/s", ctx.Metrics.TransactionsPerSecond), cyan)
-	connectionCard := card("Connections", fmt.Sprintf("%d / %d", ctx.Metrics.ConnectionsCurrent, ctx.Metrics.ConnectionsMax), fmt.Sprintf("%.1f%% used", ctx.Metrics.ConnectionsUsedPercent), colorForPercent(ctx.Metrics.ConnectionsUsedPercent, 75, 90))
-	bufferCard := card("Buffer pool", fmt.Sprintf("%.2f%%", ctx.Metrics.BufferPoolHitPercent), fmt.Sprintf("%.1f%% used · %.1f%% dirty", ctx.Metrics.BufferPoolUsedPercent, ctx.Metrics.BufferPoolDirtyPercent), colorForLow(ctx.Metrics.BufferPoolHitPercent, 99, 95))
-	concurrency := card("Concurrency", fmt.Sprintf("%d running", ctx.Metrics.ThreadsRunning), fmt.Sprintf("%d lock waits", len(ctx.Locks)), colorForCount(len(ctx.Locks)))
+	cardWidth := max(20, (width-(cardColumns-1))/cardColumns)
+	throughput := kpiCard("Throughput", fmt.Sprintf("%.1f qps", ctx.Metrics.QueriesPerSecond), fmt.Sprintf("%.1f tx/s", ctx.Metrics.TransactionsPerSecond), cyan, cardWidth)
+	connectionCard := kpiCard("Connections", fmt.Sprintf("%d / %d", ctx.Metrics.ConnectionsCurrent, ctx.Metrics.ConnectionsMax), fmt.Sprintf("%.1f%% capacity", ctx.Metrics.ConnectionsUsedPercent), colorForPercent(ctx.Metrics.ConnectionsUsedPercent, 75, 90), cardWidth)
+	bufferCard := kpiCard("Buffer pool", fmt.Sprintf("%.2f%% hit", ctx.Metrics.BufferPoolHitPercent), fmt.Sprintf("%.1f%% used · %.1f%% dirty", ctx.Metrics.BufferPoolUsedPercent, ctx.Metrics.BufferPoolDirtyPercent), colorForLow(ctx.Metrics.BufferPoolHitPercent, 99, 95), cardWidth)
+	concurrency := kpiCard("Concurrency", fmt.Sprintf("%d running", ctx.Metrics.ThreadsRunning), fmt.Sprintf("%d row-lock waits", len(ctx.Locks)), colorForCount(len(ctx.Locks)), cardWidth)
 	cards := lipgloss.JoinHorizontal(lipgloss.Top, throughput, " ", connectionCard, " ", bufferCard, " ", concurrency)
-	if width < 110 {
+	if cardColumns == 2 {
 		cards = lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.JoinHorizontal(lipgloss.Top, throughput, " ", connectionCard),
 			lipgloss.JoinHorizontal(lipgloss.Top, bufferCard, " ", concurrency),
 		)
 	}
-	identity := lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("%s:%d/%s  ·  %s %s  ·  uptime %s  ·  %.1fs sample",
-		ctx.Server.Host, ctx.Server.Port, ctx.Server.Database, ctx.Server.Flavor, ctx.Server.Version,
-		humanDuration(ctx.Server.UptimeSeconds), float64(ctx.IntervalMillis)/1000))
 
-	statusRows := []string{
-		metricLine("Rows read", fmt.Sprintf("%.1f/s", ctx.Metrics.RowsReadPerSecond), cyan),
-		metricLine("Rows written", fmt.Sprintf("%.1f/s", ctx.Metrics.RowsWrittenPerSecond), purple),
-		metricLine("Temporary tables on disk", fmt.Sprintf("%.1f%%", ctx.Metrics.TempDiskTablePercent), colorForPercent(ctx.Metrics.TempDiskTablePercent, 10, 25)),
-		metricLine("Table cache hit", fmt.Sprintf("%.2f%%", ctx.Metrics.TableCacheHitPercent), colorForLow(ctx.Metrics.TableCacheHitPercent, 99, 95)),
-		metricLine("Open files", fmt.Sprintf("%.1f%%", ctx.Metrics.OpenFilesUsedPercent), colorForPercent(ctx.Metrics.OpenFilesUsedPercent, 75, 90)),
-		metricLine("Purge history list", fmt.Sprintf("%d", ctx.Metrics.HistoryListLength), colorForHistory(ctx.Metrics.HistoryListLength)),
+	pressureWidth := width
+	findingWidth := width
+	if width >= 82 {
+		pressureWidth = (width - 1) * 56 / 100
+		findingWidth = width - pressureWidth - 1
 	}
+	pressureInner := max(20, pressureWidth-4)
+	pressure := strings.Join([]string{
+		gaugeLine("Connection slots", ctx.Metrics.ConnectionsUsedPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.ConnectionsUsedPercent), colorForPercent(ctx.Metrics.ConnectionsUsedPercent, 75, 90), pressureInner),
+		gaugeLine("Buffer pool used", ctx.Metrics.BufferPoolUsedPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.BufferPoolUsedPercent), cyan, pressureInner),
+		gaugeLine("Dirty pages", ctx.Metrics.BufferPoolDirtyPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.BufferPoolDirtyPercent), colorForPercent(ctx.Metrics.BufferPoolDirtyPercent, 40, 75), pressureInner),
+		gaugeLine("Disk temp tables", ctx.Metrics.TempDiskTablePercent, fmt.Sprintf("%.1f%%", ctx.Metrics.TempDiskTablePercent), colorForPercent(ctx.Metrics.TempDiskTablePercent, 10, 25), pressureInner),
+	}, "\n")
+	pressureBox := panelBox("WORKLOAD PRESSURE", pressure, pressureWidth)
 
-	top := "No actionable findings."
+	topFinding := lipgloss.NewStyle().Foreground(green).Render("● No actionable findings") + "\n" +
+		lipgloss.NewStyle().Foreground(muted).Render("All collected subsystems are within policy.")
 	if len(ctx.Findings) > 0 {
 		f := ctx.Findings[0]
-		top = lipgloss.NewStyle().Foreground(severityColor(f.Severity)).Bold(true).Render(strings.ToUpper(string(f.Severity))+" · "+f.Title) + "\n" +
-			lipgloss.NewStyle().Foreground(muted).Render(f.Summary)
+		color := severityColor(f.Severity)
+		topFinding = lipgloss.NewStyle().Foreground(color).Bold(true).Render("▌ "+strings.ToUpper(string(f.Severity))) + "  " +
+			lipgloss.NewStyle().Foreground(text).Bold(true).Render(f.Title) + "\n" +
+			lipgloss.NewStyle().Foreground(muted).Width(max(16, findingWidth-4)).Render(f.Summary) + "\n" +
+			lipgloss.NewStyle().Foreground(cyan).Render("Press 2 for remediation")
 	}
-	return "\n" + identity + "\n\n" + cards + "\n\n" + sectionTitle("LIVE SIGNALS") + "\n" + strings.Join(statusRows, "\n") + "\n\n" + sectionTitle("TOP FINDING") + "\n" + top
+	findingBox := panelBox("PRIORITY SIGNAL", topFinding, findingWidth)
+	lower := lipgloss.JoinHorizontal(lipgloss.Top, pressureBox, " ", findingBox)
+	if width < 82 {
+		lower = lipgloss.JoinVertical(lipgloss.Left, pressureBox, findingBox)
+	}
+
+	identity := lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("%s %s · uptime %s · %.1fs collection window",
+		ctx.Server.Flavor, ctx.Server.Version, humanDuration(ctx.Server.UptimeSeconds), float64(ctx.IntervalMillis)/1000))
+	return postureBox + "\n" + cards + "\n" + lower + "\n" + identity
 }
 
-func findings(ctx *model.Context) string {
+func findings(ctx *model.Context, width int) string {
 	if len(ctx.Findings) == 0 {
-		return "\n" + lipgloss.NewStyle().Foreground(green).Bold(true).Render("● All checked subsystems are healthy.")
+		body := lipgloss.NewStyle().Foreground(green).Bold(true).Render("● All checked subsystems are healthy") + "\n" +
+			lipgloss.NewStyle().Foreground(muted).Render("No critical, warning, or informational findings were produced by this snapshot.")
+		return panelBox("CLEAR", body, width)
 	}
 	var out strings.Builder
-	for _, finding := range ctx.Findings {
+	for index, finding := range ctx.Findings {
 		color := severityColor(finding.Severity)
-		badge := lipgloss.NewStyle().Foreground(background).Background(color).Bold(true).Padding(0, 1).Render(strings.ToUpper(string(finding.Severity)))
-		out.WriteString("\n" + badge + "  " + lipgloss.NewStyle().Foreground(text).Bold(true).Render(finding.Title) + "\n")
-		out.WriteString(lipgloss.NewStyle().Foreground(muted).Render(finding.Summary) + "\n")
-		out.WriteString(lipgloss.NewStyle().Foreground(cyan).Render("→ "+finding.Recommendation) + "\n")
+		meta := lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%02d  %s", index+1, strings.ToUpper(string(finding.Severity)))) +
+			lipgloss.NewStyle().Foreground(muted).Render("  "+strings.ToUpper(finding.Subsystem)+"  ·  "+finding.ID)
+		body := meta + "\n" + lipgloss.NewStyle().Foreground(text).Bold(true).Render(finding.Title) + "\n" +
+			lipgloss.NewStyle().Foreground(muted).Width(max(16, width-4)).Render(finding.Summary) + "\n\n" +
+			lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("ACTION  ") +
+			lipgloss.NewStyle().Foreground(text).Width(max(16, width-12)).Render(finding.Recommendation)
 		if len(finding.Objects) > 0 {
-			out.WriteString(lipgloss.NewStyle().Foreground(muted).Render("objects: "+strings.Join(finding.Objects, ", ")) + "\n")
+			body += "\n" + lipgloss.NewStyle().Foreground(muted).Render("OBJECTS  "+strings.Join(finding.Objects, "  ·  "))
+		}
+		out.WriteString(panelBox("FINDING", body, width))
+		if index < len(ctx.Findings)-1 {
+			out.WriteString("\n")
 		}
 	}
 	return out.String()
@@ -323,7 +445,7 @@ func queries(ctx *model.Context, width int) string {
 		total += query.TotalLatencyMillis
 	}
 	var out strings.Builder
-	out.WriteString("\n" + row([]string{"TOTAL", "SHARE", "CALLS", "MEAN", "ROWS", "STATEMENT"}, []int{10, 8, 9, 11, 10, max(28, width-55)}, true) + "\n")
+	out.WriteString(row([]string{"TOTAL", "SHARE", "CALLS", "MEAN", "ROWS", "STATEMENT"}, []int{10, 8, 9, 11, 10, max(28, width-55)}, true) + "\n")
 	for _, query := range ctx.Queries {
 		share := 0.0
 		if total > 0 {
@@ -331,22 +453,23 @@ func queries(ctx *model.Context, width int) string {
 		}
 		out.WriteString(row([]string{duration(query.TotalLatencyMillis), fmt.Sprintf("%.1f%%", share), humanCount(query.Calls), fmt.Sprintf("%.2fms", query.MeanLatencyMillis), humanCount(query.RowsExamined), query.Statement}, []int{10, 8, 9, 11, 10, max(28, width-55)}, false) + "\n")
 	}
-	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Ranked by total latency. Statements are digest-normalized and contain no literals."))
+	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Sorted by database time  ·  digest-normalized  ·  SQL literals removed"))
 	return out.String()
 }
 
-func tablesView(ctx *model.Context) string {
+func tablesView(ctx *model.Context, width int) string {
 	if len(ctx.Tables) == 0 {
 		return empty("No application tables are visible to the monitoring user.")
 	}
 	var out strings.Builder
-	out.WriteString("\n" + row([]string{"SIZE", "ROWS", "READS", "WRITES", "PK", "TABLE"}, []int{12, 11, 11, 11, 5, 45}, true) + "\n")
+	widths := []int{12, 11, 11, 11, 5, max(20, width-50)}
+	out.WriteString(row([]string{"SIZE", "ROWS", "READS", "WRITES", "PK", "TABLE"}, widths, true) + "\n")
 	for _, table := range ctx.Tables {
 		pk := "yes"
 		if !table.HasPrimaryKey {
 			pk = "NO"
 		}
-		out.WriteString(row([]string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), humanCount(table.Writes), pk, table.Schema + "." + table.Name}, []int{12, 11, 11, 11, 5, 45}, false) + "\n")
+		out.WriteString(row([]string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), humanCount(table.Writes), pk, table.Schema + "." + table.Name}, widths, false) + "\n")
 	}
 	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Rows are InnoDB estimates. I/O counters are since Performance Schema reset."))
 	return out.String()
@@ -355,21 +478,31 @@ func tablesView(ctx *model.Context) string {
 func connections(ctx *model.Context, width int) string {
 	var out strings.Builder
 	if len(ctx.ConnectionGroups) > 0 {
-		out.WriteString("\n" + sectionTitle("CONNECTION BREAKDOWN") + "\n")
-		out.WriteString(row([]string{"GROUP", "VALUE", "TOTAL", "ACTIVE", "SLEEPING", "OTHER"}, []int{12, 32, 9, 9, 10, 8}, true) + "\n")
+		out.WriteString(sectionTitle("CONNECTION BREAKDOWN") + "\n")
+		groupWidths := []int{10, max(18, width-42), 8, 8, 8, 8}
+		out.WriteString(row([]string{"GROUP", "VALUE", "TOTAL", "ACTIVE", "SLEEP", "OTHER"}, groupWidths, true) + "\n")
 		shown := 0
 		for _, group := range ctx.ConnectionGroups {
 			if group.Kind == "user_host" || shown >= 12 {
 				continue
 			}
-			out.WriteString(row([]string{group.Kind, group.Key, fmt.Sprint(group.Total), fmt.Sprint(group.Active), fmt.Sprint(group.Sleeping), fmt.Sprint(group.Other)}, []int{12, 32, 9, 9, 10, 8}, false) + "\n")
+			out.WriteString(row([]string{group.Kind, group.Key, fmt.Sprint(group.Total), fmt.Sprint(group.Active), fmt.Sprint(group.Sleeping), fmt.Sprint(group.Other)}, groupWidths, false) + "\n")
 			shown++
 		}
 		out.WriteString("\n" + sectionTitle("PROCESS SNAPSHOT") + "\n")
 	}
-	out.WriteString("\n" + row([]string{"ID", "USER", "HOST", "TIME", "COMMAND", "STATE", "STATEMENT"}, []int{8, 13, 18, 8, 10, 18, max(28, width-78)}, true) + "\n")
-	for _, process := range ctx.Processes {
-		out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), process.Command, process.State, process.Statement}, []int{8, 13, 18, 8, 10, 18, max(28, width-78)}, false) + "\n")
+	if width < 100 {
+		processWidths := []int{8, 12, 8, 10, 16, max(22, width-54)}
+		out.WriteString("\n" + row([]string{"ID", "USER", "TIME", "COMMAND", "STATE", "STATEMENT"}, processWidths, true) + "\n")
+		for _, process := range ctx.Processes {
+			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), process.Command, process.State, process.Statement}, processWidths, false) + "\n")
+		}
+	} else {
+		processWidths := []int{8, 13, 18, 8, 10, 18, max(28, width-75)}
+		out.WriteString("\n" + row([]string{"ID", "USER", "HOST", "TIME", "COMMAND", "STATE", "STATEMENT"}, processWidths, true) + "\n")
+		for _, process := range ctx.Processes {
+			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), process.Command, process.State, process.Statement}, processWidths, false) + "\n")
+		}
 	}
 	if len(ctx.Processes) == 0 {
 		out.WriteString("\nNo other connections are visible.")
@@ -383,7 +516,7 @@ func connections(ctx *model.Context, width int) string {
 	return out.String()
 }
 
-func config(ctx *model.Context) string {
+func config(ctx *model.Context, width int) string {
 	important := []string{
 		"innodb_buffer_pool_size", "innodb_buffer_pool_instances", "innodb_flush_log_at_trx_commit", "innodb_log_buffer_size",
 		"innodb_redo_log_capacity", "sync_binlog", "binlog_format", "gtid_mode", "max_connections", "thread_cache_size",
@@ -391,10 +524,12 @@ func config(ctx *model.Context) string {
 		"performance_schema", "skip_name_resolve", "slow_query_log", "long_query_time", "transaction_isolation", "sql_mode",
 	}
 	var out strings.Builder
-	out.WriteString("\n" + row([]string{"VARIABLE", "VALUE"}, []int{38, 70}, true) + "\n")
+	nameWidth := min(36, max(24, width/3))
+	widths := []int{nameWidth, max(24, width-nameWidth)}
+	out.WriteString(row([]string{"VARIABLE", "EFFECTIVE VALUE"}, widths, true) + "\n")
 	for _, key := range important {
 		if value, ok := ctx.Variables[key]; ok {
-			out.WriteString(row([]string{key, value}, []int{38, 70}, false) + "\n")
+			out.WriteString(row([]string{key, value}, widths, false) + "\n")
 		}
 	}
 	unavailable := make([]string, 0)
@@ -412,7 +547,7 @@ func config(ctx *model.Context) string {
 func row(values []string, widths []int, header bool) string {
 	style := lipgloss.NewStyle().Foreground(text)
 	if header {
-		style = style.Foreground(muted).Bold(true)
+		style = style.Foreground(cyan).Background(surfaceAlt).Bold(true)
 	}
 	var out strings.Builder
 	for i, value := range values {
@@ -428,12 +563,39 @@ func row(values []string, widths []int, header bool) string {
 	return out.String()
 }
 
-func metricLine(label, value string, color lipgloss.Color) string {
-	return lipgloss.NewStyle().Foreground(muted).Width(32).Render(label) + lipgloss.NewStyle().Foreground(color).Bold(true).Render(value)
+func panelBox(title, body string, width int) string {
+	heading := lipgloss.NewStyle().Foreground(muted).Bold(true).Render(title)
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(max(3, width-2)).Render(heading + "\n" + body)
+}
+
+func kpiCard(label, value, note string, color lipgloss.TerminalColor, width int) string {
+	innerWidth := max(12, width-4)
+	body := lipgloss.NewStyle().Foreground(muted).Bold(true).Render(strings.ToUpper(label)) + "\n" +
+		lipgloss.NewStyle().Foreground(color).Bold(true).Render(value) + "\n" +
+		lipgloss.NewStyle().Foreground(muted).Render(compact(note, innerWidth))
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(max(3, width-2)).Render(body)
+}
+
+func gaugeLine(label string, percent float64, value string, color lipgloss.TerminalColor, width int) string {
+	labelWidth := min(18, max(10, width/3))
+	valueWidth := max(6, lipgloss.Width(value))
+	barWidth := max(5, width-labelWidth-valueWidth-2)
+	return lipgloss.NewStyle().Foreground(muted).Width(labelWidth).Render(compact(label, labelWidth-1)) +
+		miniBar(percent, barWidth, color) + "  " +
+		lipgloss.NewStyle().Foreground(color).Bold(true).Width(valueWidth).Align(lipgloss.Right).Render(value)
+}
+
+func miniBar(percent float64, width int, color lipgloss.TerminalColor) string {
+	percent = minFloat(100, maxFloat(0, percent))
+	filled := int(math.Round(percent / 100 * float64(width)))
+	return lipgloss.NewStyle().Foreground(color).Render(strings.Repeat("━", filled)) +
+		lipgloss.NewStyle().Foreground(border).Render(strings.Repeat("─", max(0, width-filled)))
 }
 
 func sectionTitle(value string) string {
-	return lipgloss.NewStyle().Foreground(cyan).Bold(true).Render(value)
+	return lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("▌ " + value)
 }
 func empty(value string) string { return "\n" + lipgloss.NewStyle().Foreground(muted).Render(value) }
 func errorView(err error) string {
@@ -441,7 +603,7 @@ func errorView(err error) string {
 		lipgloss.NewStyle().Foreground(muted).Render(err.Error()) + "\n\nPress r to retry or q to quit."
 }
 
-func severityColor(severity model.Severity) lipgloss.Color {
+func severityColor(severity model.Severity) lipgloss.TerminalColor {
 	switch severity {
 	case model.SeverityCritical:
 		return red
@@ -452,7 +614,7 @@ func severityColor(severity model.Severity) lipgloss.Color {
 	}
 }
 
-func colorForPercent(value, warning, critical float64) lipgloss.Color {
+func colorForPercent(value, warning, critical float64) lipgloss.TerminalColor {
 	if value >= critical {
 		return red
 	}
@@ -462,7 +624,7 @@ func colorForPercent(value, warning, critical float64) lipgloss.Color {
 	return green
 }
 
-func colorForLow(value, warning, critical float64) lipgloss.Color {
+func colorForLow(value, warning, critical float64) lipgloss.TerminalColor {
 	if value < critical {
 		return red
 	}
@@ -472,14 +634,14 @@ func colorForLow(value, warning, critical float64) lipgloss.Color {
 	return green
 }
 
-func colorForCount(value int) lipgloss.Color {
+func colorForCount(value int) lipgloss.TerminalColor {
 	if value > 0 {
 		return red
 	}
 	return green
 }
 
-func colorForHistory(value uint64) lipgloss.Color {
+func colorForHistory(value uint64) lipgloss.TerminalColor {
 	if value >= 1_000_000 {
 		return red
 	}
@@ -542,8 +704,78 @@ func compact(value string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
+func padBetween(left, right string, width int) string {
+	leftWidth := lipgloss.Width(left)
+	rightWidth := lipgloss.Width(right)
+	if leftWidth+rightWidth >= width {
+		available := max(1, width-rightWidth-1)
+		left = compact(left, available)
+		leftWidth = lipgloss.Width(left)
+	}
+	return left + strings.Repeat(" ", max(1, width-leftWidth-rightWidth)) + right
+}
+
+func keyHint(key, label string) string {
+	keyStyle := lipgloss.NewStyle().Foreground(cyan).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(muted)
+	return keyStyle.Render(key) + " " + labelStyle.Render(label)
+}
+
+func viewSubtitle(m Model) string {
+	if m.loading {
+		return "collecting live signals"
+	}
+	if m.snapshot == nil {
+		return "waiting for a snapshot"
+	}
+	switch tabs[m.tab] {
+	case "Overview":
+		return fmt.Sprintf("%d findings · %.1fs sample", len(m.snapshot.Findings), float64(m.snapshot.IntervalMillis)/1000)
+	case "Findings":
+		return fmt.Sprintf("%d actionable signals", len(m.snapshot.Findings))
+	case "Queries":
+		return fmt.Sprintf("%d normalized digests", len(m.snapshot.Queries))
+	case "Tables":
+		return fmt.Sprintf("%d visible tables", len(m.snapshot.Tables))
+	case "Connections":
+		return fmt.Sprintf("%d sessions · %d waits", len(m.snapshot.Processes), len(m.snapshot.Locks))
+	case "Config":
+		return "effective runtime values"
+	default:
+		return ""
+	}
+}
+
+func fallback(value, alternative string) string {
+	if value == "" {
+		return alternative
+	}
+	return value
+}
+
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
 		return a
 	}
 	return b

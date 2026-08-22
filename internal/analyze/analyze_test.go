@@ -43,3 +43,29 @@ func TestApplyTreatsUnusedIndexesAsReviewOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyIgnoresLongLivedServerDaemons(t *testing.T) {
+	ctx := &model.Context{
+		Server:    model.Server{PerformanceSchema: true},
+		Metrics:   model.Metrics{BufferPoolHitPercent: 100},
+		Variables: map[string]string{"innodb_flush_log_at_trx_commit": "1", "skip_name_resolve": "ON"},
+		Processes: []model.Process{
+			{ID: 5, User: "event_scheduler", Command: "Daemon", State: "Waiting on empty queue", Seconds: 21_600},
+			{ID: 9, User: "app", Command: "Query", Statement: "SELECT SLEEP(?)", Seconds: 10},
+		},
+	}
+	Apply(ctx)
+	for _, finding := range ctx.Findings {
+		if finding.ID != "long_running_statements" {
+			continue
+		}
+		if finding.Severity != model.SeverityWarning {
+			t.Fatalf("severity = %s, want warning; daemon must not make it critical", finding.Severity)
+		}
+		if got := finding.Evidence["count"]; got != 1 {
+			t.Fatalf("count = %v, want 1", got)
+		}
+		return
+	}
+	t.Fatal("expected long_running_statements finding for active query")
+}

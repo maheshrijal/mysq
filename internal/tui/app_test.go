@@ -24,7 +24,7 @@ func TestTUIRendersAndNavigatesAllViews(t *testing.T) {
 	m.snapshot = ctx
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 38})
 	m = updated.(Model)
-	if view := m.View(); !strings.Contains(view, "12.0 qps") || !strings.Contains(view, "TOP FINDING") {
+	if view := m.View(); !strings.Contains(view, "12.0 qps") || !strings.Contains(view, "DATABASE POSTURE") || !strings.Contains(view, "PRIORITY SIGNAL") {
 		t.Fatalf("overview missing content:\n%s", view)
 	}
 	for _, expected := range []string{"Test finding", "SELECT * FROM t", "app.t", "No other connections", "performance_schema"} {
@@ -52,7 +52,7 @@ func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 		if lipgloss.Width(line) > 80 {
 			t.Fatalf("line width %d exceeds terminal:\n%s", lipgloss.Width(line), line)
 		}
-		if strings.Contains(line, "mysqldot") && strings.Contains(line, "health") {
+		if strings.Contains(line, "MYSQLDOT") && strings.Contains(line, "HEALTHY") {
 			foundHeader = true
 		}
 	}
@@ -63,5 +63,43 @@ func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 	firstLine := strings.Split(header, "\n")[0]
 	if !strings.Contains(firstLine, "TOTAL") || !strings.Contains(firstLine, "SHARE") || !strings.Contains(firstLine, "CALLS") {
 		t.Fatalf("table header wrapped vertically: %q", header)
+	}
+}
+
+func TestResponsiveChromeNeverExceedsTerminal(t *testing.T) {
+	ctx := &model.Context{
+		Fingerprint: "abc", Server: model.Server{Host: "database.internal", Port: 3306, Database: "application", Flavor: "MySQL", Version: "8.4.0"},
+		Health: model.Health{Score: 76, Warnings: 2}, Metrics: model.Metrics{ConnectionsCurrent: 12, ConnectionsMax: 100, BufferPoolHitPercent: 99.7},
+		Findings: []model.Finding{{ID: "schema.missing-primary-key", Severity: model.SeverityWarning, Subsystem: "schema", Title: "A long finding title remains readable", Summary: "Evidence remains readable without forcing the layout beyond the terminal edge.", Recommendation: "Add an explicit primary key."}},
+	}
+	for _, size := range []tea.WindowSizeMsg{{Width: 60, Height: 24}, {Width: 80, Height: 30}, {Width: 109, Height: 32}, {Width: 110, Height: 32}, {Width: 150, Height: 42}} {
+		m := New(context.Background(), nil, nil)
+		m.loading = false
+		m.snapshot = ctx
+		updated, _ := m.Update(size)
+		view := updated.(Model).View()
+		lines := strings.Split(view, "\n")
+		if len(lines) > size.Height {
+			t.Fatalf("%dx%d rendered %d lines", size.Width, size.Height, len(lines))
+		}
+		for _, line := range lines {
+			if got := lipgloss.Width(line); got > size.Width {
+				t.Fatalf("%dx%d rendered line width %d:\n%s", size.Width, size.Height, got, line)
+			}
+		}
+	}
+}
+
+func TestTinyTerminalShowsResizeState(t *testing.T) {
+	m := New(context.Background(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+	view := updated.(Model).View()
+	if !strings.Contains(view, "A little more room") || !strings.Contains(view, "40×12") {
+		t.Fatalf("missing resize state:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > 40 {
+			t.Fatalf("tiny layout rendered width %d:\n%s", got, line)
+		}
 	}
 }

@@ -4,6 +4,11 @@ set timeout 25
 set binary [lindex $argv 0]
 set dsn [lindex $argv 1]
 spawn -noecho $binary tui $dsn --interval 250ms
+# Give Bubble Tea a deterministic initial viewport even when this harness is
+# launched by a headless CI runner with no inherited terminal dimensions.
+set spawn_tty [exp_open -leaveopen -i $spawn_id]
+exec stty rows 38 columns 130 <@ $spawn_tty
+close $spawn_tty
 expect {
   -re {Refreshed [0-9:]+ .* snapshot [0-9a-f]+} {}
   timeout { exit 10 }

@@ -30,7 +30,7 @@ func Text(w io.Writer, ctx *model.Context, options Options) error {
 	p := newPalette(options.Color)
 	var out strings.Builder
 
-	title := p.cyan.Bold(true).Render("◆ mysqldot") + p.muted.Render("  MySQL diagnostics for humans and agents")
+	title := p.cyan.Bold(true).Render("◆ MYSQLDOT") + p.muted.Render("  MySQL intelligence, from the terminal")
 	out.WriteString(title + "\n")
 	out.WriteString(p.border.Render(strings.Repeat("─", min(options.Width, 104))) + "\n")
 	access := "primary"
@@ -89,21 +89,21 @@ func Text(w io.Writer, ctx *model.Context, options Options) error {
 }
 
 func newPalette(color bool) palette {
-	style := func(value string) lipgloss.Style {
+	style := func(light, dark string) lipgloss.Style {
 		result := lipgloss.NewStyle()
 		if color {
-			result = result.Foreground(lipgloss.Color(value))
+			result = result.Foreground(lipgloss.AdaptiveColor{Light: light, Dark: dark})
 		}
 		return result
 	}
 	return palette{
-		muted:  style("#7A8494"),
-		text:   style("#E6EDF3"),
-		green:  style("#5EE0A0"),
-		yellow: style("#F4C95D"),
-		red:    style("#FF6B6B"),
-		cyan:   style("#63C5EA"),
-		border: style("#343B49"),
+		muted:  style("#7C7F93", "#737AA2"),
+		text:   style("#4C4F69", "#C0CAF5"),
+		green:  style("#40A02B", "#9ECE6A"),
+		yellow: style("#DF8E1D", "#E0AF68"),
+		red:    style("#D20F39", "#F7768E"),
+		cyan:   style("#1E66F5", "#7AA2F7"),
+		border: style("#BCC0CC", "#3B4261"),
 	}
 }
 

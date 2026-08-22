@@ -7,7 +7,7 @@ MySQL diagnostics for humans and agents.
 No collector, web server, cloud account, or database-side objects are required.
 
 ```text
-◆ mysqldot  MySQL diagnostics for humans and agents
+◆ MYSQLDOT  MySQL intelligence, from the terminal
 ────────────────────────────────────────────────────────────────────────────────
 connected · 127.0.0.1:3306/app · MySQL 8.4.6 · primary · 1.0s sample
 
@@ -58,10 +58,12 @@ mysqldot export --zip
 `mysqldot tui` opens the live interactive view:
 
 - Six navigable views: Overview, Findings, Queries, Tables, Connections, and Config.
+- A restrained adaptive palette that respects light and dark terminal backgrounds; color communicates health instead of decorating every surface.
+- A wide-screen navigation rail and owned diagnostic pane inspired by mature OSS TUIs, collapsing to a compact navigator in split panes.
 - Arrow, tab, number-key, page, and top/bottom navigation.
 - `r` reruns every diagnostic probe and saves a new local snapshot.
 - `e` writes the complete native agent bundle directly from the terminal.
-- Layout adapts to terminal size; long tables scroll inside a stable header and footer.
+- Cards, gauges, tables, findings, and key hints reflow at terminal breakpoints; very small terminals get an explicit resize state instead of a broken layout.
 
 The TUI and static report are two renderers over the same diagnostic snapshot. They cannot disagree about health or findings.
 

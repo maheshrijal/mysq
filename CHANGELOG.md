@@ -14,3 +14,8 @@ All notable changes to mysqldot are documented here. The project follows Semanti
 - Compressed local snapshot history and offline metric/finding/query diffs.
 - Docker-only MySQL 8.4 load and PTY end-to-end test harness.
 - Static Docker image and cross-platform GoReleaser configuration.
+
+### Changed
+
+- Rebuilt the TUI visual system around an adaptive light/dark palette, semantic health colors, wide-screen navigation rail, responsive diagnostic panes, gauges, finding cards, and compact key hints.
+- Ignore MySQL server daemons such as `event_scheduler` when detecting long-running statements, preventing false critical health reports based on server uptime.
