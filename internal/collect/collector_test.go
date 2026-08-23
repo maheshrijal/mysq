@@ -1,6 +1,8 @@
 package collect
 
 import (
+	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -181,5 +183,134 @@ func TestDeriveStatementSamplesHandlesCounterReset(t *testing.T) {
 	samples := deriveStatementSamples(first, second, time.Second, 10)
 	if len(samples) != 0 {
 		t.Fatalf("counter reset was not handled: %+v", samples)
+	}
+}
+
+func TestDeriveEngineMetricsUsesIndependentSampleWindows(t *testing.T) {
+	first := map[string]string{"Questions": "100"}
+	second := map[string]string{"Questions": "111"}
+	metrics := deriveEngineMetrics(first, second, nil,
+		statementCounter{Errors: 10, Warnings: 20}, statementCounter{Errors: 20, Warnings: 40},
+		time.Second, 2*time.Second, true)
+
+	// deriveMetrics removes the final SHOW GLOBAL STATUS from Questions.
+	if metrics.QueriesPerSecond != 10 {
+		t.Fatalf("status rate used wrong window: got %.2f qps", metrics.QueriesPerSecond)
+	}
+	if metrics.StatementErrorsPerSec != 5 || metrics.StatementWarningsPerSec != 10 {
+		t.Fatalf("statement rates used wrong window: errors=%.2f warnings=%.2f",
+			metrics.StatementErrorsPerSec, metrics.StatementWarningsPerSec)
+	}
+}
+
+func TestFocusedProbePropagatesProbeAndContextErrors(t *testing.T) {
+	collector := New("test")
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "driver", err: errors.New("invalid connection")},
+		{name: "context", err: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := newContext("test", Target{})
+			err := collector.focusedProbe(result, "table statistics", func() error { return test.err })
+			if !errors.Is(err, test.err) {
+				t.Fatalf("focused probe error = %v, want wrapped %v", err, test.err)
+			}
+			if len(result.Capabilities) != 1 || result.Capabilities[0].Available || len(result.Warnings) != 1 {
+				t.Fatalf("failed probe was not recorded: capabilities=%+v warnings=%+v", result.Capabilities, result.Warnings)
+			}
+		})
+	}
+}
+
+func TestFocusedOptionalProbeDegradesOrdinaryFailure(t *testing.T) {
+	collector := New("test")
+	result := newContext("test", Target{})
+	probeErr := errors.New("process list unavailable")
+
+	if err := collector.focusedOptionalProbe(context.Background(), result, "process list", func() error { return probeErr }); err != nil {
+		t.Fatalf("ordinary optional failure was not degraded: %v", err)
+	}
+	if len(result.Capabilities) != 1 || result.Capabilities[0].Available || len(result.Warnings) != 1 {
+		t.Fatalf("optional failure was not recorded: capabilities=%+v warnings=%+v", result.Capabilities, result.Warnings)
+	}
+}
+
+func TestFocusedOptionalProbePropagatesCancellation(t *testing.T) {
+	collector := New("test")
+	for _, contextErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		result := newContext("test", Target{})
+		err := collector.focusedOptionalProbe(context.Background(), result, "process list", func() error { return contextErr })
+		if !errors.Is(err, contextErr) {
+			t.Fatalf("optional probe error = %v, want wrapped %v", err, contextErr)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := newContext("test", Target{})
+	err := collector.focusedOptionalProbe(ctx, result, "process list", func() error { return errors.New("driver stopped") })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled context was hidden by driver error: %v", err)
+	}
+}
+
+func TestFocusedSampleProbePropagatesEitherEndpointFailure(t *testing.T) {
+	collector := New("test")
+	for _, failures := range [][]error{
+		{errors.New("first sample failed"), nil},
+		{nil, errors.New("second sample failed")},
+	} {
+		result := newContext("test", Target{})
+		if err := collector.focusedSampleProbe(result, "wait events", failures...); err == nil {
+			t.Fatal("focused sample unexpectedly accepted a failed endpoint")
+		}
+		if len(result.Capabilities) != 1 || result.Capabilities[0].Available {
+			t.Fatalf("failed sample was not recorded once: %+v", result.Capabilities)
+		}
+	}
+}
+
+func TestFocusedSampleReturnsFirstEndpointFailureBeforeWaiting(t *testing.T) {
+	collector := New("test")
+	collector.Interval = time.Hour
+	result := newContext("test", Target{})
+	probeErr := errors.New("first sample failed")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	if _, err := collector.waitForFocusedSample(ctx, result, "wait events", probeErr); !errors.Is(err, probeErr) {
+		t.Fatalf("first endpoint error = %v, want immediate wrapped %v", err, probeErr)
+	}
+	if len(result.Capabilities) != 1 || result.Capabilities[0].Available {
+		t.Fatalf("first endpoint failure was not recorded: %+v", result.Capabilities)
+	}
+}
+
+func TestFocusedProbeAcceptsSuccessfulNilReplication(t *testing.T) {
+	collector := New("test")
+	result := newContext("test", Target{})
+	if err := collector.focusedProbe(result, "replication", func() error {
+		result.Replication = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if result.Replication != nil || len(result.Capabilities) != 1 || !result.Capabilities[0].Available {
+		t.Fatalf("successful non-replica result was not preserved: replication=%+v capabilities=%+v", result.Replication, result.Capabilities)
+	}
+}
+
+func TestLegacyReplicationFallbackOnlyForUnsupportedSyntax(t *testing.T) {
+	if !legacyReplicationFallback(&mysqlDriver.MySQLError{Number: 1064, Message: "syntax error"}) {
+		t.Fatal("unsupported SHOW REPLICA syntax should use the legacy fallback")
+	}
+	if legacyReplicationFallback(&mysqlDriver.MySQLError{Number: 1227, Message: "access denied"}) {
+		t.Fatal("a privilege error must not be replaced by the legacy fallback")
+	}
+	if legacyReplicationFallback(context.Canceled) {
+		t.Fatal("a context error must not use the legacy fallback")
 	}
 }

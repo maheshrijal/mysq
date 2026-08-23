@@ -2,8 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maheshrijal/mysq/internal/model"
 )
@@ -37,4 +40,44 @@ func TestFailCode(t *testing.T) {
 
 func testHealth(critical, warnings, notes int) *model.Context {
 	return &model.Context{Health: model.Health{Critical: critical, Warnings: warnings, Notes: notes}}
+}
+
+func TestFocusedCommandMapsCollectionFailureToExitThree(t *testing.T) {
+	var out bytes.Buffer
+	probeErr := errors.New("invalid connection")
+	app := &App{
+		Out: &out,
+		Err: &out,
+		inspectSectionFn: func(context.Context, string, time.Duration, string) (*model.Context, error) {
+			return nil, probeErr
+		},
+	}
+	command := app.focusedCommand("tables")
+	command.SetArgs([]string{"--json"})
+	err := command.Execute()
+	var exit ExitError
+	if !errors.As(err, &exit) || exit.Code != 3 || !errors.Is(err, probeErr) {
+		t.Fatalf("focused collection error = %v, want wrapped exit 3", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("failed focused command emitted output: %q", out.String())
+	}
+}
+
+func TestFocusedReplicationRendersSuccessfulNonReplica(t *testing.T) {
+	var out bytes.Buffer
+	app := &App{
+		Out: &out,
+		Err: &out,
+		inspectSectionFn: func(context.Context, string, time.Duration, string) (*model.Context, error) {
+			return &model.Context{Replication: nil}, nil
+		},
+	}
+	command := app.focusedCommand("replication")
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "not configured as a replica") {
+		t.Fatalf("unexpected successful non-replica output: %q", out.String())
+	}
 }

@@ -4,17 +4,23 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work_dir="$(mktemp -d)"
 binary="$work_dir/mysq"
+load_binary="$work_dir/load"
 port="${MYSQ_MYSQL_PORT:-33306}"
 monitor_dsn="mysq_monitor:mysq-monitor-test@tcp(127.0.0.1:${port})/app?parseTime=true"
 load_dsn="loadgen:mysq-load-test@tcp(127.0.0.1:${port})/app?parseTime=true"
 compose=(docker compose -f "$repo_root/docker-compose.e2e.yml")
 load_pid=""
 
-cleanup() {
+stop_load() {
   if [[ -n "$load_pid" ]]; then
     kill "$load_pid" >/dev/null 2>&1 || true
     wait "$load_pid" >/dev/null 2>&1 || true
+    load_pid=""
   fi
+}
+
+cleanup() {
+  stop_load
   "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work_dir"
 }
@@ -22,9 +28,10 @@ trap cleanup EXIT
 
 cd "$repo_root"
 go build -trimpath -ldflags "-X main.version=e2e" -o "$binary" ./cmd/mysq
+go build -trimpath -o "$load_binary" ./test/e2e/load
 "${compose[@]}" up -d --wait
 
-go run ./test/e2e/load --dsn "$load_dsn" --duration 45s >"$work_dir/load.log" 2>&1 &
+"$load_binary" --dsn "$load_dsn" --duration 45s >"$work_dir/load.log" 2>&1 &
 load_pid=$!
 load_ready=false
 for _ in {1..120}; do
@@ -64,6 +71,7 @@ fi
 for section in queries tables indexes processes transactions locks metadata-locks waits io errors memory engine coverage variables replication; do
   MYSQ_DATABASE_URL="$monitor_dsn" "$binary" "$section" --json --interval 250ms >"$work_dir/${section}.json"
 done
+go run ./test/e2e/verify --focused-dir "$work_dir"
 
 bundle_dir="$work_dir/agent-bundle"
 MYSQ_DATABASE_URL="$monitor_dsn" "$binary" export --out "$bundle_dir" --zip --interval 250ms
@@ -77,12 +85,37 @@ MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --store "$histo
 "$binary" snapshots list --store "$history_dir" >"$work_dir/snapshots.txt"
 "$binary" diff --store "$history_dir" --since 1s >"$work_dir/diff.txt"
 
+# The workload has already exercised collection, focused commands, export, and
+# history. Stop it before the navigation-only PTY phase so hosted-runner load
+# cannot starve Bubble Tea's initial full refresh.
+stop_load
+
 "$binary" init --user observer >"$work_dir/init.sql"
 "$binary" --help >"$work_dir/help.txt"
 "$binary" --version >"$work_dir/version.txt"
 
 cd "$work_dir"
-expect "$repo_root/test/e2e/tui.exp" "$binary" "$monitor_dsn" >"$work_dir/tui.log" 2>&1
+tui_harness_log="$work_dir/tui-harness.log"
+tui_pty_log="$work_dir/tui-pty.log"
+set +e
+expect "$repo_root/test/e2e/tui.exp" "$binary" "$monitor_dsn" "$tui_pty_log" >"$tui_harness_log" 2>&1
+tui_status=$?
+set -e
+if [[ "$tui_status" -ne 0 ]]; then
+  printf 'TUI harness log:\n' >&2
+  if [[ -r "$tui_harness_log" ]]; then
+    cat "$tui_harness_log" >&2
+  else
+    printf '(missing: %s)\n' "$tui_harness_log" >&2
+  fi
+  printf 'TUI PTY log:\n' >&2
+  if [[ -r "$tui_pty_log" ]]; then
+    cat "$tui_pty_log" >&2
+  else
+    printf '(missing: %s)\n' "$tui_pty_log" >&2
+  fi
+  exit "$tui_status"
+fi
 find "$work_dir" -maxdepth 1 -type d -name 'mysq-export-*' | grep -q .
 
 grep -q "Database health" "$work_dir/full.txt"

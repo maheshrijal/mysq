@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -11,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 func main() {
@@ -22,6 +23,9 @@ func main() {
 	flag.DurationVar(&duration, "duration", 45*time.Second, "load duration")
 	flag.IntVar(&workers, "workers", 8, "concurrent OLTP workers")
 	flag.Parse()
+	if err := validateWorkerCount(workers); err != nil {
+		log.Fatal(err)
+	}
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -42,6 +46,7 @@ func main() {
 
 	var operations atomic.Uint64
 	var wg sync.WaitGroup
+	workerErrors := make(chan error, workers)
 	lockReady := make(chan error, 1)
 	wg.Add(1)
 	go func() { defer wg.Done(); holdRowLock(ctx, db, 35*time.Second, lockReady) }()
@@ -52,15 +57,56 @@ func main() {
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
-			work(ctx, db, worker, &operations)
+			if err := work(ctx, db, worker, &operations); err != nil {
+				workerErrors <- fmt.Errorf("worker %d: %w", worker, err)
+			}
 		}(i)
 	}
-	wg.Add(2)
+	wg.Add(3)
+	statementReady := make(chan error, 1)
+	errorReady := make(chan error, 1)
 	go func() { defer wg.Done(); waitOnRowLock(ctx, db) }()
-	go func() { defer wg.Done(); runLongStatement(ctx, db, 35) }()
+	go func() { defer wg.Done(); runLongStatement(ctx, db, 35, statementReady) }()
+	go func() { defer wg.Done(); generateServerErrors(ctx, db, errorReady) }()
+	if err := <-statementReady; err != nil {
+		log.Fatalf("establish long-statement metadata-lock fixture: %v", err)
+	}
+	if err := <-errorReady; err != nil {
+		log.Fatalf("establish server-error fixture: %v", err)
+	}
+	select {
+	case err := <-workerErrors:
+		cancel()
+		wg.Wait()
+		log.Fatalf("OLTP workload failed before becoming ready: %v", err)
+	default:
+	}
 	fmt.Println("load ready")
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case err := <-workerErrors:
+		cancel()
+		<-done
+		log.Fatalf("OLTP workload failed: %v", err)
+	case <-done:
+		select {
+		case err := <-workerErrors:
+			log.Fatalf("OLTP workload failed: %v", err)
+		default:
+		}
+	}
 	fmt.Printf("load complete: %d operations\n", operations.Load())
+}
+
+func validateWorkerCount(workers int) error {
+	if workers < 1 {
+		return fmt.Errorf("--workers must be at least 1, got %d", workers)
+	}
+	return nil
 }
 
 func seed(ctx context.Context, db *sql.DB) {
@@ -90,13 +136,16 @@ func seed(ctx context.Context, db *sql.DB) {
 	}
 }
 
-func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64) {
+func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64) error {
 	statuses := []string{"pending", "paid", "shipped", "cancelled"}
 	for ctx.Err() == nil {
 		account := 1 + rand.IntN(500)
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
-			return
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("begin transaction: %w", err)
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE accounts SET balance=balance+? WHERE id=?`, rand.IntN(20)-10, account)
 		if err == nil {
@@ -113,25 +162,56 @@ func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
-			continue
+			if retryableWorkloadError(err) {
+				continue
+			}
+			return fmt.Errorf("execute transaction: %w", err)
 		}
 		var sum sql.NullFloat64
-		_ = db.QueryRowContext(ctx, `SELECT SUM(amount) FROM orders WHERE status=? AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.source'))='missing'`, statuses[rand.IntN(len(statuses))]).Scan(&sum)
+		if err := db.QueryRowContext(ctx, `SELECT SUM(amount) FROM orders WHERE status=? AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.source'))='missing'`, statuses[rand.IntN(len(statuses))]).Scan(&sum); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("run workload read: %w", err)
+		}
 		if operations.Add(1)%100 == 0 {
 			rows, queryErr := db.QueryContext(ctx, `SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY SUM(amount) DESC`)
-			if queryErr == nil {
-				for rows.Next() {
-					var status string
-					var count int
-					var amount float64
-					_ = rows.Scan(&status, &count, &amount)
+			if queryErr != nil {
+				if ctx.Err() != nil {
+					return nil
 				}
-				_ = rows.Close()
+				return fmt.Errorf("run workload aggregate: %w", queryErr)
 			}
+			for rows.Next() {
+				var status string
+				var count int
+				var amount float64
+				if err := rows.Scan(&status, &count, &amount); err != nil {
+					_ = rows.Close()
+					if ctx.Err() != nil {
+						return nil
+					}
+					return fmt.Errorf("scan workload aggregate: %w", err)
+				}
+			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				if ctx.Err() != nil {
+					return nil
+				}
+				return fmt.Errorf("read workload aggregate: %w", err)
+			}
+			_ = rows.Close()
 		}
 	}
+	return nil
+}
+
+func retryableWorkloadError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && (mysqlErr.Number == 1205 || mysqlErr.Number == 1213)
 }
 
 func holdRowLock(ctx context.Context, db *sql.DB, duration time.Duration, ready chan<- error) {
@@ -167,7 +247,58 @@ func waitOnRowLock(ctx context.Context, db *sql.DB) {
 	_, _ = db.ExecContext(ctx, `UPDATE accounts SET balance=balance-1 WHERE id=1`)
 }
 
-func runLongStatement(ctx context.Context, db *sql.DB, seconds int) {
+func runLongStatement(ctx context.Context, db *sql.DB, seconds int, ready chan<- error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		ready <- err
+		return
+	}
+	defer tx.Rollback()
+
+	// Keep a granted TABLE metadata lock for the lifetime of the long statement.
+	// Signaling only after the table read makes the focused metadata-lock E2E
+	// evidence deterministic instead of depending on goroutine scheduling.
+	var rows int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts`).Scan(&rows); err != nil {
+		ready <- err
+		return
+	}
+	ready <- nil
+
 	var ignored int
-	_ = db.QueryRowContext(ctx, `SELECT SLEEP(?)`, seconds).Scan(&ignored)
+	if err := tx.QueryRowContext(ctx, `SELECT SLEEP(?)`, seconds).Scan(&ignored); err != nil {
+		return
+	}
+	_ = tx.Commit()
+}
+
+func generateServerErrors(ctx context.Context, db *sql.DB, ready chan<- error) {
+	trigger := func() error {
+		// Account 1 is deliberately row-locked by a separate fixture; use account
+		// 2 so error generation cannot block readiness behind that transaction.
+		_, err := db.ExecContext(ctx, `INSERT INTO accounts(id,email,balance) VALUES(2,'duplicate@example.test',0)`)
+		if err == nil {
+			return fmt.Errorf("duplicate-key statement unexpectedly succeeded")
+		}
+		var mysqlErr *mysql.MySQLError
+		if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1062 {
+			return fmt.Errorf("expected duplicate-key error 1062: %w", err)
+		}
+		return nil
+	}
+	if err := trigger(); err != nil {
+		ready <- err
+		return
+	}
+	ready <- nil
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = trigger()
+		}
+	}
 }

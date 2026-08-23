@@ -24,7 +24,7 @@ The `Context` interface includes the versioned JSON shape, collection timestamp 
 - `internal/history` stores gzip JSON by server/database fingerprint. `internal/compare` remains pure and performs offline comparisons.
 - `internal/sanitize` is intentionally early in the flow. Potential SQL literals are discarded before the context crosses any persistence or rendering seam.
 
-The collector degrades individual optional probes, but server identity and two counter samples are required. This prevents a visually complete report built from absent data. Each optional failure appears in capabilities, collection warnings, the full report, the TUI Config view, and exports.
+The full snapshot collector degrades individual optional probes, but server identity and two counter samples are required. This prevents a visually complete report built from absent data. Each optional failure appears in capabilities, collection warnings, the full report, the TUI Config view, and exports. Focused commands cross a separate collector interface that runs only the probes needed for that section; point-in-time sections return immediately, while rate-based sections retain the configured sample interval.
 
 ## Database cost and safety
 

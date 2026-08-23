@@ -181,44 +181,14 @@ func splitAddress(addr string) (string, int) {
 }
 
 func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context, error) {
-	db, err := sql.Open("mysql", target.DSN)
+	db, conn, err := c.openConnection(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("open MySQL connection: %w", err)
+		return nil, err
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(2 * time.Minute)
-
-	pingCtx, cancel := context.WithTimeout(ctx, c.Timeout)
-	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		return nil, fmt.Errorf("connect to %s:%d: %w", target.Host, target.Port, err)
-	}
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("reserve MySQL connection: %w", err)
-	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "SET SESSION MAX_EXECUTION_TIME=10000"); err != nil {
-		return nil, fmt.Errorf("pin session statement timeout: %w", err)
-	}
-	if _, err := conn.ExecContext(ctx, "SET SESSION transaction_read_only=ON"); err != nil {
-		return nil, fmt.Errorf("pin session read-only: %w", err)
-	}
 
-	result := &model.Context{
-		SchemaVersion: model.SchemaVersion,
-		ToolVersion:   c.ToolVersion,
-		CollectedAt:   time.Now().UTC(),
-		Variables:     map[string]string{},
-		GlobalStatus:  map[string]string{},
-		Server: model.Server{
-			Host:     target.Host,
-			Port:     target.Port,
-			Database: target.Database,
-		},
-	}
+	result := newContext(c.ToolVersion, target)
 
 	if err := c.collectServer(ctx, conn, &result.Server); err != nil {
 		return nil, fmt.Errorf("collect server identity: %w", err)
@@ -227,11 +197,7 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	if err != nil {
 		result.Warnings = append(result.Warnings, "global variables unavailable: "+err.Error())
 	}
-	for key, value := range result.Variables {
-		if sanitize.SensitiveName(key) && value != "" {
-			result.Variables[key] = "[redacted]"
-		}
-	}
+	redactVariables(result.Variables)
 	result.Server.PerformanceSchema = strings.EqualFold(result.Variables["performance_schema"], "ON")
 
 	c.probe(ctx, result, "statement digests", func() error {
@@ -362,6 +328,338 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	applyInstrumentationStatus(&result.Instrumentation, second)
 	result.Fingerprint = fingerprint(result.Server)
 	return result, nil
+}
+
+func (c *Collector) openConnection(ctx context.Context, target Target) (*sql.DB, *sql.Conn, error) {
+	db, err := sql.Open("mysql", target.DSN)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open MySQL connection: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(2 * time.Minute)
+
+	pingCtx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("connect to %s:%d: %w", target.Host, target.Port, err)
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("reserve MySQL connection: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SET SESSION MAX_EXECUTION_TIME=10000"); err != nil {
+		conn.Close()
+		db.Close()
+		return nil, nil, fmt.Errorf("pin session statement timeout: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SET SESSION transaction_read_only=ON"); err != nil {
+		conn.Close()
+		db.Close()
+		return nil, nil, fmt.Errorf("pin session read-only: %w", err)
+	}
+	return db, conn, nil
+}
+
+func newContext(version string, target Target) *model.Context {
+	return &model.Context{
+		SchemaVersion: model.SchemaVersion,
+		ToolVersion:   version,
+		CollectedAt:   time.Now().UTC(),
+		Variables:     map[string]string{},
+		GlobalStatus:  map[string]string{},
+		Server: model.Server{
+			Host:     target.Host,
+			Port:     target.Port,
+			Database: target.Database,
+		},
+	}
+}
+
+func redactVariables(variables map[string]string) {
+	for key, value := range variables {
+		if sanitize.SensitiveName(key) && value != "" {
+			variables[key] = "[redacted]"
+		}
+	}
+}
+
+// InspectSection collects only the probes needed to render one focused command.
+// Sampling commands retain the configured interval; cumulative and point-in-time
+// commands return immediately instead of paying for an unrelated full snapshot.
+func (c *Collector) InspectSection(ctx context.Context, target Target, section string) (*model.Context, error) {
+	db, conn, err := c.openConnection(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	defer conn.Close()
+
+	result := newContext(c.ToolVersion, target)
+	switch section {
+	case "queries":
+		if err := c.focusedProbe(result, "statement digests", func() error {
+			var probeErr error
+			result.Queries, probeErr = c.collectQueries(ctx, conn)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+		if err := c.focusedOptionalProbe(ctx, result, "process list", func() error {
+			var probeErr error
+			result.Processes, probeErr = c.collectProcesses(ctx, conn)
+			attributeActiveUsers(result.Queries, result.Processes)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+	case "tables":
+		if err := c.focusedProbe(result, "table statistics", func() error {
+			var probeErr error
+			result.Tables, probeErr = c.collectTables(ctx, conn)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+	case "indexes":
+		if err := c.focusedProbe(result, "index statistics", func() error {
+			var probeErr error
+			result.Indexes, probeErr = c.collectIndexes(ctx, conn)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+	case "processes":
+		if err := c.focusedProbe(result, "process list", func() error {
+			var probeErr error
+			result.Processes, probeErr = c.collectProcesses(ctx, conn)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+	case "transactions":
+		if err := c.focusedProbe(result, "active transactions", func() error {
+			var probeErr error
+			result.Transactions, probeErr = c.collectTransactions(ctx, conn)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+	case "locks":
+		if err := c.focusedProbe(result, "row lock waits", func() error {
+			var probeErr error
+			result.Locks, probeErr = c.collectLocks(ctx, conn)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+	case "metadata-locks":
+		if err := c.focusedProbe(result, "metadata locks", func() error {
+			var probeErr error
+			result.MetadataLocks, probeErr = c.collectMetadataLocks(ctx, conn)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+	case "waits":
+		first, firstErr := c.collectWaitCounters(ctx, conn)
+		started, err := c.waitForFocusedSample(ctx, result, "wait events", firstErr)
+		if err != nil {
+			return nil, err
+		}
+		second, secondErr := c.collectWaitCounters(ctx, conn)
+		elapsed := time.Since(started)
+		if err := c.focusedSampleProbe(result, "wait events", firstErr, secondErr); err != nil {
+			return nil, err
+		}
+		result.WaitEvents = deriveWaitEvents(first, second, elapsed)
+		result.IntervalMillis = elapsed.Milliseconds()
+	case "io":
+		first, firstErr := c.collectFileIOCounters(ctx, conn)
+		started, err := c.waitForFocusedSample(ctx, result, "file I/O", firstErr)
+		if err != nil {
+			return nil, err
+		}
+		second, secondErr := c.collectFileIOCounters(ctx, conn)
+		elapsed := time.Since(started)
+		if err := c.focusedSampleProbe(result, "file I/O", firstErr, secondErr); err != nil {
+			return nil, err
+		}
+		result.FileIO = deriveFileIO(first, second, elapsed)
+		result.IntervalMillis = elapsed.Milliseconds()
+	case "errors":
+		first, firstErr := c.collectErrorCounters(ctx, conn)
+		started, err := c.waitForFocusedSample(ctx, result, "server errors", firstErr)
+		if err != nil {
+			return nil, err
+		}
+		second, secondErr := c.collectErrorCounters(ctx, conn)
+		elapsed := time.Since(started)
+		if err := c.focusedSampleProbe(result, "server errors", firstErr, secondErr); err != nil {
+			return nil, err
+		}
+		result.ServerErrors = deriveServerErrors(first, second, elapsed)
+		result.IntervalMillis = elapsed.Milliseconds()
+	case "memory":
+		if err := c.focusedProbe(result, "memory consumers", func() error {
+			var probeErr error
+			result.MemoryConsumers, probeErr = c.collectMemoryConsumers(ctx, conn)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+	case "engine":
+		if err := c.collectEngineSection(ctx, conn, result); err != nil {
+			return nil, err
+		}
+	case "coverage":
+		result.Variables, err = queryNameValue(ctx, conn, "SHOW GLOBAL VARIABLES")
+		if err != nil {
+			return nil, fmt.Errorf("collect global variables: %w", err)
+		}
+		redactVariables(result.Variables)
+		if err := c.focusedProbe(result, "instrumentation coverage", func() error {
+			var probeErr error
+			result.Instrumentation, probeErr = c.collectInstrumentation(ctx, conn, result.Variables)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+		status, statusErr := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
+		if statusErr != nil {
+			return nil, fmt.Errorf("collect global status: %w", statusErr)
+		}
+		applyInstrumentationStatus(&result.Instrumentation, status)
+	case "variables":
+		result.Variables, err = queryNameValue(ctx, conn, "SHOW GLOBAL VARIABLES")
+		if err != nil {
+			return nil, fmt.Errorf("collect global variables: %w", err)
+		}
+		redactVariables(result.Variables)
+	case "replication":
+		if err := c.focusedProbe(result, "replication", func() error {
+			var probeErr error
+			result.Replication, probeErr = c.collectReplication(ctx, conn)
+			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unknown diagnostic section %q", section)
+	}
+	return result, nil
+}
+
+func (c *Collector) focusedProbe(result *model.Context, name string, fn func() error) error {
+	err := fn()
+	c.recordCapability(result, name, err)
+	if err != nil {
+		return fmt.Errorf("collect %s: %w", name, err)
+	}
+	return nil
+}
+
+func (c *Collector) focusedOptionalProbe(ctx context.Context, result *model.Context, name string, fn func() error) error {
+	err := fn()
+	c.recordCapability(result, name, err)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("collect %s: %w", name, ctxErr)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("collect %s: %w", name, err)
+	}
+	return nil
+}
+
+func (c *Collector) focusedSampleProbe(result *model.Context, name string, errs ...error) error {
+	if c.sampleProbe(result, name, errs...) {
+		return nil
+	}
+	for _, err := range errs {
+		if err != nil {
+			return fmt.Errorf("collect %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, result *model.Context) error {
+	var err error
+	result.Variables, err = queryNameValue(ctx, conn, "SHOW GLOBAL VARIABLES")
+	if err != nil {
+		result.Warnings = append(result.Warnings, "global variables unavailable: "+err.Error())
+	}
+	redactVariables(result.Variables)
+	historyListLength := c.historyListLength(ctx, conn, result)
+	firstStatements, firstStatementErr := c.collectStatementCounters(ctx, conn)
+	statementStarted := time.Now()
+	first, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
+	if err != nil {
+		return fmt.Errorf("collect initial global status: %w", err)
+	}
+	started, err := c.waitForSample(ctx)
+	if err != nil {
+		return err
+	}
+	second, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
+	if err != nil {
+		return fmt.Errorf("collect final global status: %w", err)
+	}
+	statusElapsed := time.Since(started)
+	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
+	statementElapsed := time.Since(statementStarted)
+	result.IntervalMillis = statusElapsed.Milliseconds()
+	result.GlobalStatus = second
+	statementAvailable := c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr)
+	result.Metrics = deriveEngineMetrics(first, second, result.Variables, firstStatements, secondStatements,
+		statusElapsed, statementElapsed, statementAvailable)
+	result.Metrics.HistoryListLength = historyListLength
+	return nil
+}
+
+func deriveEngineMetrics(first, second, variables map[string]string, firstStatements, secondStatements statementCounter,
+	statusElapsed, statementElapsed time.Duration, statementAvailable bool) model.Metrics {
+	metrics := deriveMetrics(first, second, variables, statusElapsed)
+	if statementAvailable {
+		// The statement summary has its own endpoints; do not dilute status rates
+		// with this query's post-snapshot latency.
+		applyStatementRates(&metrics, firstStatements, secondStatements, statementElapsed)
+	}
+	return metrics
+}
+
+func applyStatementRates(metrics *model.Metrics, first, second statementCounter, elapsed time.Duration) {
+	seconds := elapsed.Seconds()
+	if seconds <= 0 {
+		seconds = 1
+	}
+	metrics.StatementErrorsPerSec = float64(counterDelta(first.Errors, second.Errors)) / seconds
+	metrics.StatementWarningsPerSec = float64(counterDelta(first.Warnings, second.Warnings)) / seconds
+}
+
+func (c *Collector) waitForSample(ctx context.Context) (time.Time, error) {
+	interval := c.Interval
+	if interval < 100*time.Millisecond {
+		interval = 100 * time.Millisecond
+	}
+	started := time.Now()
+	timer := time.NewTimer(interval)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		return time.Time{}, ctx.Err()
+	case <-timer.C:
+		return started, nil
+	}
+}
+
+func (c *Collector) waitForFocusedSample(ctx context.Context, result *model.Context, name string, firstErr error) (time.Time, error) {
+	if firstErr != nil {
+		return time.Time{}, c.focusedSampleProbe(result, name, firstErr)
+	}
+	return c.waitForSample(ctx)
 }
 
 func (c *Collector) probe(ctx context.Context, result *model.Context, name string, fn func() error) {
@@ -1276,7 +1574,7 @@ func (c *Collector) collectMemoryConsumers(ctx context.Context, conn *sql.Conn) 
 
 func (c *Collector) collectReplication(ctx context.Context, conn *sql.Conn) (*model.Replication, error) {
 	rows, err := queryMaps(ctx, conn, "SHOW REPLICA STATUS")
-	if err != nil {
+	if err != nil && legacyReplicationFallback(err) {
 		rows, err = queryMaps(ctx, conn, "SHOW SLAVE STATUS")
 	}
 	if err != nil {
@@ -1338,6 +1636,11 @@ func (c *Collector) collectReplication(ctx context.Context, conn *sql.Conn) (*mo
 		})
 	}
 	return replica, nil
+}
+
+func legacyReplicationFallback(err error) bool {
+	var mysqlErr *mysqlDriver.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1064
 }
 
 func collectInnoDBStatus(ctx context.Context, conn *sql.Conn) (string, error) {
