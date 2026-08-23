@@ -27,7 +27,7 @@ MYSQ_BENCHMARK_BASELINE=/absolute/path/to/mysq-cd9f70c \
 
 ## 2026-08-23 result
 
-Measured on an Apple M4 Pro with Go 1.26.7, Docker Engine 29.7.2, and MySQL 8.4. The baseline binary was built from commit `cd9f70c`; the candidate product code and benchmark harness were commit `04547cb`. Baseline and candidate were paired and order-balanced on the same fresh container using the command above. A subsequent documentation-only commit that records this provenance does not change the measured candidate binary.
+Measured on an Apple M4 Pro with Go 1.26.7, Docker Engine 29.7.2, and MySQL 8.4. The baseline binary was built from commit `cd9f70c`; the candidate product code and benchmark harness were commit `04547cb`. Baseline and candidate were paired and order-balanced on the same fresh container using the command above. Later E2E fixture and verification changes leave the measured product binary unchanged but are not part of this recorded benchmark harness.
 
 | Command | Baseline median | Optimized median | Change | Baseline p95 | Optimized p95 |
 |---|---:|---:|---:|---:|---:|

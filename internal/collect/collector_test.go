@@ -302,3 +302,15 @@ func TestFocusedProbeAcceptsSuccessfulNilReplication(t *testing.T) {
 		t.Fatalf("successful non-replica result was not preserved: replication=%+v capabilities=%+v", result.Replication, result.Capabilities)
 	}
 }
+
+func TestLegacyReplicationFallbackOnlyForUnsupportedSyntax(t *testing.T) {
+	if !legacyReplicationFallback(&mysqlDriver.MySQLError{Number: 1064, Message: "syntax error"}) {
+		t.Fatal("unsupported SHOW REPLICA syntax should use the legacy fallback")
+	}
+	if legacyReplicationFallback(&mysqlDriver.MySQLError{Number: 1227, Message: "access denied"}) {
+		t.Fatal("a privilege error must not be replaced by the legacy fallback")
+	}
+	if legacyReplicationFallback(context.Canceled) {
+		t.Fatal("a context error must not use the legacy fallback")
+	}
+}

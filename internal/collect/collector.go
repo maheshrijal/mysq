@@ -1574,7 +1574,7 @@ func (c *Collector) collectMemoryConsumers(ctx context.Context, conn *sql.Conn) 
 
 func (c *Collector) collectReplication(ctx context.Context, conn *sql.Conn) (*model.Replication, error) {
 	rows, err := queryMaps(ctx, conn, "SHOW REPLICA STATUS")
-	if err != nil {
+	if err != nil && legacyReplicationFallback(err) {
 		rows, err = queryMaps(ctx, conn, "SHOW SLAVE STATUS")
 	}
 	if err != nil {
@@ -1636,6 +1636,11 @@ func (c *Collector) collectReplication(ctx context.Context, conn *sql.Conn) (*mo
 		})
 	}
 	return replica, nil
+}
+
+func legacyReplicationFallback(err error) bool {
+	var mysqlErr *mysqlDriver.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1064
 }
 
 func collectInnoDBStatus(ctx context.Context, conn *sql.Conn) (string, error) {
