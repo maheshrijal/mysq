@@ -183,3 +183,20 @@ func TestDeriveStatementSamplesHandlesCounterReset(t *testing.T) {
 		t.Fatalf("counter reset was not handled: %+v", samples)
 	}
 }
+
+func TestDeriveEngineMetricsUsesIndependentSampleWindows(t *testing.T) {
+	first := map[string]string{"Questions": "100"}
+	second := map[string]string{"Questions": "111"}
+	metrics := deriveEngineMetrics(first, second, nil,
+		statementCounter{Errors: 10, Warnings: 20}, statementCounter{Errors: 20, Warnings: 40},
+		time.Second, 2*time.Second, true)
+
+	// deriveMetrics removes the final SHOW GLOBAL STATUS from Questions.
+	if metrics.QueriesPerSecond != 10 {
+		t.Fatalf("status rate used wrong window: got %.2f qps", metrics.QueriesPerSecond)
+	}
+	if metrics.StatementErrorsPerSec != 5 || metrics.StatementWarningsPerSec != 10 {
+		t.Fatalf("statement rates used wrong window: errors=%.2f warnings=%.2f",
+			metrics.StatementErrorsPerSec, metrics.StatementWarningsPerSec)
+	}
+}

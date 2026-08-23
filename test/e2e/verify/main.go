@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -23,9 +25,10 @@ type manifest struct {
 }
 
 func main() {
-	var contextPath, bundle string
+	var contextPath, bundle, focusedDirectory string
 	flag.StringVar(&contextPath, "context", "", "context JSON to verify")
 	flag.StringVar(&bundle, "bundle", "", "bundle directory to verify")
+	flag.StringVar(&focusedDirectory, "focused-dir", "", "directory containing focused command JSON")
 	flag.Parse()
 	if contextPath != "" {
 		verifyContext(contextPath)
@@ -33,9 +36,119 @@ func main() {
 	if bundle != "" {
 		verifyBundle(bundle)
 	}
-	if contextPath == "" && bundle == "" {
-		log.Fatal("pass --context or --bundle")
+	if focusedDirectory != "" {
+		verifyFocused(focusedDirectory)
 	}
+	if contextPath == "" && bundle == "" && focusedDirectory == "" {
+		log.Fatal("pass --context, --bundle, or --focused-dir")
+	}
+}
+
+func verifyFocused(directory string) {
+	sections := []string{"queries", "tables", "indexes", "processes", "transactions", "locks", "metadata-locks", "waits", "io", "errors", "memory", "engine", "coverage", "variables", "replication"}
+	for _, section := range sections {
+		data, err := os.ReadFile(filepath.Join(directory, section+".json"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := verifyFocusedData(section, data); err != nil {
+			log.Fatalf("invalid focused %s output: %v", section, err)
+		}
+	}
+	fmt.Printf("verified focused commands: %d section-specific JSON outputs\n", len(sections))
+}
+
+func verifyFocusedData(section string, data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return errors.New("empty output")
+	}
+	if bytes.Equal(trimmed, []byte("null")) && section != "replication" {
+		return errors.New("unexpected null output")
+	}
+	switch section {
+	case "queries":
+		var items []model.Query
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Digest == "" {
+			return fmt.Errorf("missing query evidence: items=%d err=%v", len(items), err)
+		}
+	case "tables":
+		var items []model.Table
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) < 3 || items[0].Name == "" {
+			return fmt.Errorf("missing table evidence: items=%d err=%v", len(items), err)
+		}
+	case "indexes":
+		var items []model.Index
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
+			return fmt.Errorf("missing index evidence: items=%d err=%v", len(items), err)
+		}
+	case "processes":
+		var items []model.Process
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].ID == 0 {
+			return fmt.Errorf("missing process evidence: items=%d err=%v", len(items), err)
+		}
+	case "transactions":
+		var items []model.Transaction
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].ID == "" {
+			return fmt.Errorf("missing transaction evidence: items=%d err=%v", len(items), err)
+		}
+	case "locks":
+		var items []model.LockWait
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].WaitingTransaction == "" {
+			return fmt.Errorf("missing lock evidence: items=%d err=%v", len(items), err)
+		}
+	case "metadata-locks":
+		var items []model.MetadataLock
+		if err := json.Unmarshal(trimmed, &items); err != nil || items == nil {
+			return fmt.Errorf("metadata locks are not an array: err=%v", err)
+		}
+	case "waits":
+		var items []model.WaitEvent
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
+			return fmt.Errorf("missing wait evidence: items=%d err=%v", len(items), err)
+		}
+	case "io":
+		var items []model.FileIO
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
+			return fmt.Errorf("missing file I/O evidence: items=%d err=%v", len(items), err)
+		}
+	case "errors":
+		var items []model.ServerError
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Number == 0 {
+			return fmt.Errorf("missing server error evidence: items=%d err=%v", len(items), err)
+		}
+	case "memory":
+		var items []model.MemoryConsumer
+		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
+			return fmt.Errorf("missing memory evidence: items=%d err=%v", len(items), err)
+		}
+	case "engine":
+		var metrics model.Metrics
+		if err := json.Unmarshal(trimmed, &metrics); err != nil || metrics.ConnectionsMax == 0 || metrics.RedoCapacityBytes == 0 {
+			return fmt.Errorf("missing engine evidence: max_connections=%d redo=%d err=%v", metrics.ConnectionsMax, metrics.RedoCapacityBytes, err)
+		}
+	case "coverage":
+		var coverage model.Instrumentation
+		if err := json.Unmarshal(trimmed, &coverage); err != nil || coverage.DigestCapacity == 0 {
+			return fmt.Errorf("missing instrumentation evidence: capacity=%d err=%v", coverage.DigestCapacity, err)
+		}
+	case "variables":
+		var variables map[string]string
+		if err := json.Unmarshal(trimmed, &variables); err != nil || !strings.EqualFold(variables["performance_schema"], "ON") {
+			return fmt.Errorf("missing variables evidence: performance_schema=%q err=%v", variables["performance_schema"], err)
+		}
+	case "replication":
+		if bytes.Equal(trimmed, []byte("null")) {
+			return nil
+		}
+		var replication model.Replication
+		if err := json.Unmarshal(trimmed, &replication); err != nil || replication.SourceHost == "" {
+			return fmt.Errorf("invalid replication evidence: source=%q err=%v", replication.SourceHost, err)
+		}
+	default:
+		return fmt.Errorf("unknown focused section %q", section)
+	}
+	return nil
 }
 
 func verifyContext(path string) {

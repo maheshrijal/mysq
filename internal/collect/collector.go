@@ -536,6 +536,7 @@ func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, re
 	redactVariables(result.Variables)
 	historyListLength := c.historyListLength(ctx, conn, result)
 	firstStatements, firstStatementErr := c.collectStatementCounters(ctx, conn)
+	statementStarted := time.Now()
 	first, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return fmt.Errorf("collect initial global status: %w", err)
@@ -548,21 +549,36 @@ func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, re
 	if err != nil {
 		return fmt.Errorf("collect final global status: %w", err)
 	}
+	statusElapsed := time.Since(started)
 	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
-	elapsed := time.Since(started)
-	result.IntervalMillis = elapsed.Milliseconds()
+	statementElapsed := time.Since(statementStarted)
+	result.IntervalMillis = statusElapsed.Milliseconds()
 	result.GlobalStatus = second
-	result.Metrics = deriveMetrics(first, second, result.Variables, elapsed)
+	statementAvailable := c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr)
+	result.Metrics = deriveEngineMetrics(first, second, result.Variables, firstStatements, secondStatements,
+		statusElapsed, statementElapsed, statementAvailable)
 	result.Metrics.HistoryListLength = historyListLength
-	if c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr) {
-		seconds := elapsed.Seconds()
-		if seconds <= 0 {
-			seconds = 1
-		}
-		result.Metrics.StatementErrorsPerSec = float64(counterDelta(firstStatements.Errors, secondStatements.Errors)) / seconds
-		result.Metrics.StatementWarningsPerSec = float64(counterDelta(firstStatements.Warnings, secondStatements.Warnings)) / seconds
-	}
 	return nil
+}
+
+func deriveEngineMetrics(first, second, variables map[string]string, firstStatements, secondStatements statementCounter,
+	statusElapsed, statementElapsed time.Duration, statementAvailable bool) model.Metrics {
+	metrics := deriveMetrics(first, second, variables, statusElapsed)
+	if statementAvailable {
+		// The statement summary has its own endpoints; do not dilute status rates
+		// with this query's post-snapshot latency.
+		applyStatementRates(&metrics, firstStatements, secondStatements, statementElapsed)
+	}
+	return metrics
+}
+
+func applyStatementRates(metrics *model.Metrics, first, second statementCounter, elapsed time.Duration) {
+	seconds := elapsed.Seconds()
+	if seconds <= 0 {
+		seconds = 1
+	}
+	metrics.StatementErrorsPerSec = float64(counterDelta(first.Errors, second.Errors)) / seconds
+	metrics.StatementWarningsPerSec = float64(counterDelta(first.Warnings, second.Warnings)) / seconds
 }
 
 func (c *Collector) waitForSample(ctx context.Context) (time.Time, error) {

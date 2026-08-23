@@ -4,10 +4,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work_dir="$(mktemp -d)"
 binary="${MYSQ_BENCHMARK_BINARY:-$work_dir/mysq}"
-port="${MYSQ_BENCHMARK_PORT:-33307}"
-project="mysq-benchmark"
-monitor_dsn="mysq_monitor:mysq-monitor-test@tcp(127.0.0.1:${port})/app?parseTime=true"
-load_dsn="loadgen:mysq-load-test@tcp(127.0.0.1:${port})/app?parseTime=true"
+baseline="${MYSQ_BENCHMARK_BASELINE:-}"
+requested_port="${MYSQ_BENCHMARK_PORT:-0}"
+project="mysq-benchmark-$$-$RANDOM"
 compose=(docker compose --project-name "$project" -f "$repo_root/docker-compose.e2e.yml")
 load_pid=""
 
@@ -16,7 +15,7 @@ cleanup() {
     kill "$load_pid" >/dev/null 2>&1 || true
     wait "$load_pid" >/dev/null 2>&1 || true
   fi
-  MYSQ_MYSQL_PORT="$port" "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  MYSQ_MYSQL_PORT="$requested_port" "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
@@ -25,7 +24,15 @@ cd "$repo_root"
 if [[ -z "${MYSQ_BENCHMARK_BINARY:-}" ]]; then
   go build -trimpath -ldflags "-X main.version=benchmark" -o "$binary" ./cmd/mysq
 fi
-MYSQ_MYSQL_PORT="$port" "${compose[@]}" up -d --wait
+MYSQ_MYSQL_PORT="$requested_port" "${compose[@]}" up -d --wait --force-recreate
+published_address="$(MYSQ_MYSQL_PORT="$requested_port" "${compose[@]}" port mysql 3306)"
+port="${published_address##*:}"
+if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+  echo "could not resolve benchmark MySQL port from: $published_address" >&2
+  exit 1
+fi
+monitor_dsn="mysq_monitor:mysq-monitor-test@tcp(127.0.0.1:${port})/app?parseTime=true"
+load_dsn="loadgen:mysq-load-test@tcp(127.0.0.1:${port})/app?parseTime=true"
 
 go run ./test/e2e/load --dsn "$load_dsn" --duration 2m >"$work_dir/load.log" 2>&1 &
 load_pid=$!
@@ -49,4 +56,8 @@ if [[ "$load_ready" != true ]]; then
   exit 1
 fi
 
-MYSQ_BENCHMARK_DSN="$monitor_dsn" go run ./test/benchmark --binary "$binary" "$@"
+runner=(--binary "$binary")
+if [[ -n "$baseline" ]]; then
+  runner+=(--baseline "$baseline")
+fi
+MYSQ_BENCHMARK_DSN="$monitor_dsn" go run ./test/benchmark "${runner[@]}" "$@"

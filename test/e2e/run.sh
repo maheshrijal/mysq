@@ -64,6 +64,7 @@ fi
 for section in queries tables indexes processes transactions locks metadata-locks waits io errors memory engine coverage variables replication; do
   MYSQ_DATABASE_URL="$monitor_dsn" "$binary" "$section" --json --interval 250ms >"$work_dir/${section}.json"
 done
+go run ./test/e2e/verify --focused-dir "$work_dir"
 
 bundle_dir="$work_dir/agent-bundle"
 MYSQ_DATABASE_URL="$monitor_dsn" "$binary" export --out "$bundle_dir" --zip --interval 250ms
