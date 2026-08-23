@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -11,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 func main() {
@@ -22,6 +23,9 @@ func main() {
 	flag.DurationVar(&duration, "duration", 45*time.Second, "load duration")
 	flag.IntVar(&workers, "workers", 8, "concurrent OLTP workers")
 	flag.Parse()
+	if err := validateWorkerCount(workers); err != nil {
+		log.Fatal(err)
+	}
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -89,8 +93,20 @@ func main() {
 		<-done
 		log.Fatalf("OLTP workload failed: %v", err)
 	case <-done:
+		select {
+		case err := <-workerErrors:
+			log.Fatalf("OLTP workload failed: %v", err)
+		default:
+		}
 	}
 	fmt.Printf("load complete: %d operations\n", operations.Load())
+}
+
+func validateWorkerCount(workers int) error {
+	if workers < 1 {
+		return fmt.Errorf("--workers must be at least 1, got %d", workers)
+	}
+	return nil
 }
 
 func seed(ctx context.Context, db *sql.DB) {
@@ -148,24 +164,54 @@ func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64
 			if ctx.Err() != nil {
 				return nil
 			}
-			continue
+			if retryableWorkloadError(err) {
+				continue
+			}
+			return fmt.Errorf("execute transaction: %w", err)
 		}
 		var sum sql.NullFloat64
-		_ = db.QueryRowContext(ctx, `SELECT SUM(amount) FROM orders WHERE status=? AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.source'))='missing'`, statuses[rand.IntN(len(statuses))]).Scan(&sum)
+		if err := db.QueryRowContext(ctx, `SELECT SUM(amount) FROM orders WHERE status=? AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.source'))='missing'`, statuses[rand.IntN(len(statuses))]).Scan(&sum); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("run workload read: %w", err)
+		}
 		if operations.Add(1)%100 == 0 {
 			rows, queryErr := db.QueryContext(ctx, `SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY SUM(amount) DESC`)
-			if queryErr == nil {
-				for rows.Next() {
-					var status string
-					var count int
-					var amount float64
-					_ = rows.Scan(&status, &count, &amount)
+			if queryErr != nil {
+				if ctx.Err() != nil {
+					return nil
 				}
-				_ = rows.Close()
+				return fmt.Errorf("run workload aggregate: %w", queryErr)
 			}
+			for rows.Next() {
+				var status string
+				var count int
+				var amount float64
+				if err := rows.Scan(&status, &count, &amount); err != nil {
+					_ = rows.Close()
+					if ctx.Err() != nil {
+						return nil
+					}
+					return fmt.Errorf("scan workload aggregate: %w", err)
+				}
+			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				if ctx.Err() != nil {
+					return nil
+				}
+				return fmt.Errorf("read workload aggregate: %w", err)
+			}
+			_ = rows.Close()
 		}
 	}
 	return nil
+}
+
+func retryableWorkloadError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && (mysqlErr.Number == 1205 || mysqlErr.Number == 1213)
 }
 
 func holdRowLock(ctx context.Context, db *sql.DB, duration time.Duration, ready chan<- error) {
@@ -233,6 +279,10 @@ func generateServerErrors(ctx context.Context, db *sql.DB, ready chan<- error) {
 		_, err := db.ExecContext(ctx, `INSERT INTO accounts(id,email,balance) VALUES(2,'duplicate@example.test',0)`)
 		if err == nil {
 			return fmt.Errorf("duplicate-key statement unexpectedly succeeded")
+		}
+		var mysqlErr *mysql.MySQLError
+		if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1062 {
+			return fmt.Errorf("expected duplicate-key error 1062: %w", err)
 		}
 		return nil
 	}
