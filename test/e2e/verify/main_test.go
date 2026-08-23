@@ -13,8 +13,29 @@ func TestVerifyFocusedDataRejectsNullExceptForReplication(t *testing.T) {
 	}
 }
 
-func TestVerifyFocusedDataAllowsEmptyMetadataLockArray(t *testing.T) {
-	if err := verifyFocusedData("metadata-locks", []byte("[]")); err != nil {
-		t.Fatal(err)
+func TestVerifyFocusedDataRequiresFixtureMetadataLock(t *testing.T) {
+	if err := verifyFocusedData("metadata-locks", []byte("[]")); err == nil {
+		t.Fatal("empty metadata-lock output unexpectedly passed")
+	}
+	data := []byte(`[{"thread_id":1,"process_id":2,"object_type":"TABLE","schema":"app","object":"accounts","lock_type":"SHARED_READ","duration":"TRANSACTION","status":"GRANTED"}]`)
+	if err := verifyFocusedData("metadata-locks", data); err != nil {
+		t.Fatalf("typed fixture metadata lock was rejected: %v", err)
+	}
+}
+
+func TestVerifyFocusedDataRejectsSectionMisroutes(t *testing.T) {
+	for _, test := range []struct {
+		name, section, data string
+	}{
+		{name: "tables as metadata locks", section: "metadata-locks", data: `[{"schema":"app","name":"accounts","engine":"InnoDB"}]`},
+		{name: "memory as waits", section: "waits", data: `[{"name":"memory/sql","current_bytes":1,"high_bytes":2,"allocations":1}]`},
+		{name: "waits as file io", section: "io", data: `[{"name":"wait/io/file","class":"io/file","count":1,"sample_count":1}]`},
+		{name: "tables as indexes", section: "indexes", data: `[{"schema":"app","name":"accounts","engine":"InnoDB"}]`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := verifyFocusedData(test.section, []byte(test.data)); err == nil {
+				t.Fatalf("%s unexpectedly accepted misrouted output: %s", test.section, test.data)
+			}
+		})
 	}
 }

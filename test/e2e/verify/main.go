@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -69,72 +70,82 @@ func verifyFocusedData(section string, data []byte) error {
 	switch section {
 	case "queries":
 		var items []model.Query
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Digest == "" {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].Digest == "" {
 			return fmt.Errorf("missing query evidence: items=%d err=%v", len(items), err)
 		}
 	case "tables":
 		var items []model.Table
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) < 3 || items[0].Name == "" {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) < 3 || items[0].Name == "" {
 			return fmt.Errorf("missing table evidence: items=%d err=%v", len(items), err)
 		}
 	case "indexes":
 		var items []model.Index
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
 			return fmt.Errorf("missing index evidence: items=%d err=%v", len(items), err)
 		}
 	case "processes":
 		var items []model.Process
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].ID == 0 {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].ID == 0 {
 			return fmt.Errorf("missing process evidence: items=%d err=%v", len(items), err)
 		}
 	case "transactions":
 		var items []model.Transaction
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].ID == "" {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].ID == "" {
 			return fmt.Errorf("missing transaction evidence: items=%d err=%v", len(items), err)
 		}
 	case "locks":
 		var items []model.LockWait
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].WaitingTransaction == "" {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].WaitingTransaction == "" {
 			return fmt.Errorf("missing lock evidence: items=%d err=%v", len(items), err)
 		}
 	case "metadata-locks":
 		var items []model.MetadataLock
-		if err := json.Unmarshal(trimmed, &items); err != nil || items == nil {
-			return fmt.Errorf("metadata locks are not an array: err=%v", err)
+		if err := decodeStrictJSON(trimmed, &items); err != nil {
+			return fmt.Errorf("invalid metadata-lock evidence: %w", err)
+		}
+		foundFixtureLock := false
+		for _, item := range items {
+			if item.ObjectType == "TABLE" && item.Schema == "app" && item.Object == "accounts" && item.LockType != "" && item.Status != "" {
+				foundFixtureLock = true
+				break
+			}
+		}
+		if !foundFixtureLock {
+			return fmt.Errorf("missing typed app.accounts metadata-lock evidence: items=%d", len(items))
 		}
 	case "waits":
 		var items []model.WaitEvent
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
 			return fmt.Errorf("missing wait evidence: items=%d err=%v", len(items), err)
 		}
 	case "io":
 		var items []model.FileIO
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
 			return fmt.Errorf("missing file I/O evidence: items=%d err=%v", len(items), err)
 		}
 	case "errors":
 		var items []model.ServerError
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Number == 0 {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].Number == 0 {
 			return fmt.Errorf("missing server error evidence: items=%d err=%v", len(items), err)
 		}
 	case "memory":
 		var items []model.MemoryConsumer
-		if err := json.Unmarshal(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
+		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
 			return fmt.Errorf("missing memory evidence: items=%d err=%v", len(items), err)
 		}
 	case "engine":
 		var metrics model.Metrics
-		if err := json.Unmarshal(trimmed, &metrics); err != nil || metrics.ConnectionsMax == 0 || metrics.RedoCapacityBytes == 0 {
+		if err := decodeStrictJSON(trimmed, &metrics); err != nil || metrics.ConnectionsMax == 0 || metrics.RedoCapacityBytes == 0 {
 			return fmt.Errorf("missing engine evidence: max_connections=%d redo=%d err=%v", metrics.ConnectionsMax, metrics.RedoCapacityBytes, err)
 		}
 	case "coverage":
 		var coverage model.Instrumentation
-		if err := json.Unmarshal(trimmed, &coverage); err != nil || coverage.DigestCapacity == 0 {
+		if err := decodeStrictJSON(trimmed, &coverage); err != nil || coverage.DigestCapacity == 0 {
 			return fmt.Errorf("missing instrumentation evidence: capacity=%d err=%v", coverage.DigestCapacity, err)
 		}
 	case "variables":
 		var variables map[string]string
-		if err := json.Unmarshal(trimmed, &variables); err != nil || !strings.EqualFold(variables["performance_schema"], "ON") {
+		if err := decodeStrictJSON(trimmed, &variables); err != nil || !strings.EqualFold(variables["performance_schema"], "ON") {
 			return fmt.Errorf("missing variables evidence: performance_schema=%q err=%v", variables["performance_schema"], err)
 		}
 	case "replication":
@@ -142,11 +153,26 @@ func verifyFocusedData(section string, data []byte) error {
 			return nil
 		}
 		var replication model.Replication
-		if err := json.Unmarshal(trimmed, &replication); err != nil || replication.SourceHost == "" {
+		if err := decodeStrictJSON(trimmed, &replication); err != nil || replication.SourceHost == "" {
 			return fmt.Errorf("invalid replication evidence: source=%q err=%v", replication.SourceHost, err)
 		}
 	default:
 		return fmt.Errorf("unknown focused section %q", section)
+	}
+	return nil
+}
+
+func decodeStrictJSON(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return fmt.Errorf("trailing JSON data: %w", err)
 	}
 	return nil
 }

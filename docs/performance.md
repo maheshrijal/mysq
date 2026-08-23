@@ -18,9 +18,16 @@ bash test/benchmark/run.sh --runs 100 --warmup 10
 
 To compare a prebuilt baseline without changing the checkout, set `MYSQ_BENCHMARK_BASELINE` to that binary. The runner alternates baseline-first and candidate-first execution for every command on the same live fixture, removing the systematic workload-age skew of separate serial runs. `MYSQ_BENCHMARK_BINARY` can override the candidate binary; otherwise the current checkout is built.
 
+The recorded comparison below used the default paired invocation, with a baseline binary built from `cd9f70c`:
+
+```bash
+MYSQ_BENCHMARK_BASELINE=/absolute/path/to/mysq-cd9f70c \
+  bash test/benchmark/run.sh --runs 50 --warmup 5
+```
+
 ## 2026-08-23 result
 
-Measured on an Apple M4 Pro with Go 1.26.7, Docker Engine 29.7.2, and MySQL 8.4. The baseline was commit `cd9f70c`; baseline and candidate were paired and order-balanced on the same fresh container using the 50-run benchmark above.
+Measured on an Apple M4 Pro with Go 1.26.7, Docker Engine 29.7.2, and MySQL 8.4. The baseline binary was built from commit `cd9f70c`; the candidate product code and benchmark harness were commit `04547cb`. Baseline and candidate were paired and order-balanced on the same fresh container using the command above. A subsequent documentation-only commit that records this provenance does not change the measured candidate binary.
 
 | Command | Baseline median | Optimized median | Change | Baseline p95 | Optimized p95 |
 |---|---:|---:|---:|---:|---:|

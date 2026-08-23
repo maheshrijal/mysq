@@ -56,8 +56,12 @@ func main() {
 		}(i)
 	}
 	wg.Add(2)
+	statementReady := make(chan error, 1)
 	go func() { defer wg.Done(); waitOnRowLock(ctx, db) }()
-	go func() { defer wg.Done(); runLongStatement(ctx, db, 35) }()
+	go func() { defer wg.Done(); runLongStatement(ctx, db, 35, statementReady) }()
+	if err := <-statementReady; err != nil {
+		log.Fatalf("establish long-statement metadata-lock fixture: %v", err)
+	}
 	fmt.Println("load ready")
 	wg.Wait()
 	fmt.Printf("load complete: %d operations\n", operations.Load())
@@ -167,7 +171,27 @@ func waitOnRowLock(ctx context.Context, db *sql.DB) {
 	_, _ = db.ExecContext(ctx, `UPDATE accounts SET balance=balance-1 WHERE id=1`)
 }
 
-func runLongStatement(ctx context.Context, db *sql.DB, seconds int) {
+func runLongStatement(ctx context.Context, db *sql.DB, seconds int, ready chan<- error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		ready <- err
+		return
+	}
+	defer tx.Rollback()
+
+	// Keep a granted TABLE metadata lock for the lifetime of the long statement.
+	// Signaling only after the table read makes the focused metadata-lock E2E
+	// evidence deterministic instead of depending on goroutine scheduling.
+	var rows int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts`).Scan(&rows); err != nil {
+		ready <- err
+		return
+	}
+	ready <- nil
+
 	var ignored int
-	_ = db.QueryRowContext(ctx, `SELECT SLEEP(?)`, seconds).Scan(&ignored)
+	if err := tx.QueryRowContext(ctx, `SELECT SLEEP(?)`, seconds).Scan(&ignored); err != nil {
+		return
+	}
+	_ = tx.Commit()
 }
