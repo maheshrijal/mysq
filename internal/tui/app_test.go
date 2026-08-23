@@ -177,7 +177,7 @@ func TestHorizontalArrowsNavigateViewsAndVerticalKeysScrollContent(t *testing.T)
 
 func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100}}
-	path := "/Users/mahesh/code/mysq/mysq-export-20260822-154220.547"
+	path := "/workspace/mysq-export-20260822-154220.547"
 	m := New(context.Background(), nil, nil)
 	m.loading = false
 	m.snapshot = ctx
