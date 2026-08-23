@@ -204,6 +204,59 @@ func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	}
 }
 
+func TestExportKeyIsIgnoredWhileExportIsRunning(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	m := New(context.Background(), nil, func(*model.Context) (string, error) { return "bundle", nil })
+	m.loading = false
+	m.snapshot = ctx
+
+	updated, first := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if !m.exporting || first == nil {
+		t.Fatal("first export did not enter the exporting state")
+	}
+	updated, second := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if !m.exporting || second != nil {
+		t.Fatal("repeated export launched another command")
+	}
+	updated, _ = m.Update(exportMessage{path: "bundle"})
+	m = updated.(Model)
+	if m.exporting {
+		t.Fatal("completed export did not clear the exporting state")
+	}
+	updated, repeated := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if repeated != nil || m.exportPath != "bundle" {
+		t.Fatal("export confirmation allowed a repeated export")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	updated, afterDismiss := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if !m.exporting || afterDismiss == nil {
+		t.Fatal("dismissing confirmation did not allow a new export")
+	}
+}
+
+func TestNarrowTerminalShowsHelpKeys(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(Model)
+	view := m.View()
+	for _, expected := range []string{"1–7", "jump", "g/G", "pgup/dn", "export"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("narrow help omitted %q:\n%s", expected, view)
+		}
+	}
+	assertViewWidth(t, view, 60)
+}
+
 func TestTopTabsReclaimWidthAndWindowOnNarrowTerminals(t *testing.T) {
 	statement := "SELECT account_id, status, amount FROM app.orders WHERE account_id = ?"
 	ctx := &model.Context{

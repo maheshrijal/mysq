@@ -44,6 +44,7 @@ type Model struct {
 	queryIndex  int
 	queryDetail bool
 	loading     bool
+	exporting   bool
 	help        bool
 	status      string
 	exportPath  string
@@ -133,7 +134,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuild()
 			updateViewport = false
 		case "r":
-			if !m.loading {
+			if !m.loading && !m.exporting {
 				m.exportPath = ""
 				m.resizeViewport()
 				m.loading = true
@@ -141,9 +142,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				commands = append(commands, m.inspectCommand(), m.spinner.Tick)
 			}
 		case "e":
-			if !m.loading && m.snapshot != nil {
+			if !m.loading && !m.exporting && m.exportPath == "" && m.snapshot != nil {
 				m.exportPath = ""
 				m.resizeViewport()
+				m.exporting = true
 				m.status = "Writing agent bundle…"
 				commands = append(commands, m.exportCommand())
 			}
@@ -188,6 +190,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuild()
 		}
 	case exportMessage:
+		m.exporting = false
 		if msg.err != nil {
 			m.exportPath = ""
 			m.status = "Export failed: " + compact(msg.err.Error(), max(20, m.width-20))
@@ -364,14 +367,17 @@ func (m Model) footer() string {
 			keys = keyHint("esc", "queries") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
 		}
 	}
-	if m.help {
-		keys = keyHint("1–7", "jump") + "  " + keyHint("g/G", "top/bottom") + "  " + keyHint("pgup/dn", "page") + "  " + keyHint("e", "agent bundle")
-	}
 	status := m.status
 	if status == "" {
 		status = "Read-only · SQL literals redacted"
 	}
-	if m.width < 96 {
+	if m.help {
+		if m.width < 96 {
+			keys = keyHint("1–7", "jump") + "  " + keyHint("g/G", "ends") + "  " + keyHint("pgup/dn", "page") + "  " + keyHint("e", "export")
+		} else {
+			keys = keyHint("1–7", "jump") + "  " + keyHint("g/G", "top/bottom") + "  " + keyHint("pgup/dn", "page") + "  " + keyHint("e", "agent bundle")
+		}
+	} else if m.width < 96 {
 		if tabs[m.tab] == "Queries" {
 			keys = keyHint("↑/↓", "select") + "  " + keyHint("enter", "open") + "  " + keyHint("←/→", "views")
 			if m.queryDetail {

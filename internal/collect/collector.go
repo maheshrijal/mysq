@@ -264,23 +264,29 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	})
 	result.Metrics.HistoryListLength = c.historyListLength(ctx, conn, result)
 
-	// The rate window starts only after catalog and Performance Schema probes,
-	// so the diagnostic does not report its own work as application throughput.
+	// Counter endpoints are collected sequentially, so each family keeps its own
+	// elapsed window. Sharing the status timer would divide earlier/later counter
+	// deltas by a window that did not match their actual endpoints.
 	firstWaits, firstWaitErr := c.collectWaitCounters(ctx, conn)
+	waitsStarted := time.Now()
 	firstFileIO, firstFileErr := c.collectFileIOCounters(ctx, conn)
+	fileIOStarted := time.Now()
 	firstErrors, firstErrorErr := c.collectErrorCounters(ctx, conn)
+	errorsStarted := time.Now()
 	firstStatements, firstStatementErr := c.collectStatementCounters(ctx, conn)
+	statementsStarted := time.Now()
 	first, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect initial global status: %w", err)
 	}
+	statusStarted := time.Now()
 	firstDigests, firstDigestErr := c.collectStatementDigestCounters(ctx, conn)
+	digestsStarted := time.Now()
 
 	interval := c.Interval
 	if interval < 100*time.Millisecond {
 		interval = 100 * time.Millisecond
 	}
-	started := time.Now()
 	timer := time.NewTimer(interval)
 	select {
 	case <-ctx.Done():
@@ -289,40 +295,40 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	case <-timer.C:
 	}
 	secondDigests, secondDigestErr := c.collectStatementDigestCounters(ctx, conn)
+	digestsElapsed := time.Since(digestsStarted)
 	second, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect final global status: %w", err)
 	}
-	elapsed := time.Since(started)
+	statusElapsed := time.Since(statusStarted)
 	secondWaits, secondWaitErr := c.collectWaitCounters(ctx, conn)
+	waitsElapsed := time.Since(waitsStarted)
 	secondFileIO, secondFileErr := c.collectFileIOCounters(ctx, conn)
+	fileIOElapsed := time.Since(fileIOStarted)
 	secondErrors, secondErrorErr := c.collectErrorCounters(ctx, conn)
+	errorsElapsed := time.Since(errorsStarted)
 	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
+	statementsElapsed := time.Since(statementsStarted)
 	if c.sampleProbe(result, "wait events", firstWaitErr, secondWaitErr) {
-		result.WaitEvents = deriveWaitEvents(firstWaits, secondWaits, elapsed)
+		result.WaitEvents = deriveWaitEvents(firstWaits, secondWaits, waitsElapsed)
 	}
 	if c.sampleProbe(result, "file I/O", firstFileErr, secondFileErr) {
-		result.FileIO = deriveFileIO(firstFileIO, secondFileIO, elapsed)
+		result.FileIO = deriveFileIO(firstFileIO, secondFileIO, fileIOElapsed)
 	}
 	if c.sampleProbe(result, "server errors", firstErrorErr, secondErrorErr) {
-		result.ServerErrors = deriveServerErrors(firstErrors, secondErrors, elapsed)
+		result.ServerErrors = deriveServerErrors(firstErrors, secondErrors, errorsElapsed)
 	}
 	if c.sampleProbe(result, "statement database time", firstDigestErr, secondDigestErr) {
-		result.StatementSamples = deriveStatementSamples(firstDigests, secondDigests, elapsed, c.QueryLimit)
+		result.StatementSamples = deriveStatementSamples(firstDigests, secondDigests, digestsElapsed, c.QueryLimit)
 	}
 	statementSampleAvailable := c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr)
-	result.IntervalMillis = elapsed.Milliseconds()
+	result.IntervalMillis = statusElapsed.Milliseconds()
 	result.GlobalStatus = second
 	result.Server.UptimeSeconds = unsigned(second["Uptime"])
 	historyListLength := result.Metrics.HistoryListLength
-	result.Metrics = deriveMetrics(first, second, result.Variables, elapsed)
+	result.Metrics = deriveMetrics(first, second, result.Variables, statusElapsed)
 	if statementSampleAvailable {
-		seconds := elapsed.Seconds()
-		if seconds <= 0 {
-			seconds = 1
-		}
-		result.Metrics.StatementErrorsPerSec = float64(counterDelta(firstStatements.Errors, secondStatements.Errors)) / seconds
-		result.Metrics.StatementWarningsPerSec = float64(counterDelta(firstStatements.Warnings, secondStatements.Warnings)) / seconds
+		applyStatementRates(&result.Metrics, firstStatements, secondStatements, statementsElapsed)
 	}
 	result.Metrics.HistoryListLength = historyListLength
 	applyInstrumentationStatus(&result.Instrumentation, second)
