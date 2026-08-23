@@ -13,6 +13,7 @@ import (
 )
 
 var errPermanentWorkload = errors.New("permanent workload failure")
+var driverSequence atomic.Uint64
 
 func TestWorkReportsUnexpectedBeginFailure(t *testing.T) {
 	db, err := sql.Open("mysql", "loadgen:password@tcp(127.0.0.1:1)/app")
@@ -49,7 +50,7 @@ func TestWorkReportsPermanentTransactionFailures(t *testing.T) {
 		{name: "commit", failCommit: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			driverName := fmt.Sprintf("workload-failure-%s", test.name)
+			driverName := fmt.Sprintf("workload-failure-%s-%d", test.name, driverSequence.Add(1))
 			sql.Register(driverName, failingDriver{failCommit: test.failCommit})
 			db, err := sql.Open(driverName, "")
 			if err != nil {
