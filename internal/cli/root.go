@@ -220,7 +220,7 @@ func (a *App) focusedCommand(section string) *cobra.Command {
 			if len(args) == 1 {
 				argument = args[0]
 			}
-			ctx, err := a.inspect(cmd.Context(), argument, interval)
+			ctx, err := a.inspectSection(cmd.Context(), argument, interval, section)
 			if err != nil {
 				return ExitError{Code: 3, Err: err}
 			}
@@ -232,7 +232,7 @@ func (a *App) focusedCommand(section string) *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON")
-	command.Flags().DurationVar(&interval, "interval", time.Second, "counter sampling interval")
+	command.Flags().DurationVar(&interval, "interval", time.Second, "sampling interval for waits, io, errors, and engine")
 	return command
 }
 
@@ -349,6 +349,16 @@ func (a *App) inspect(ctx context.Context, argument string, interval time.Durati
 	}
 	analyze.Apply(result)
 	return result, nil
+}
+
+func (a *App) inspectSection(ctx context.Context, argument string, interval time.Duration, section string) (*model.Context, error) {
+	target, err := collect.ResolveConnection(argument)
+	if err != nil {
+		return nil, err
+	}
+	collector := collect.New(a.Version)
+	collector.Interval = interval
+	return collector.InspectSection(ctx, target, section)
 }
 
 func (a *App) render(cmd *cobra.Command, ctx *model.Context, format string, full bool) error {

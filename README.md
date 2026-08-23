@@ -193,10 +193,13 @@ MySQL 8.0 and 8.4 LTS are the supported targets. The collector recognizes Percon
 make test
 make test-race
 make e2e
+make benchmark
 make check
 ```
 
 `make e2e` binds a fresh `mysql:8.4` container only to `127.0.0.1:33306`, uses a tmpfs data directory, generates concurrent OLTP traffic, holds a real row-lock chain, runs a long statement, and then verifies every CLI command, all output formats, CI exit behavior, local history and diff, export checksums, and a real PTY-driven TUI refresh/export/quit flow. It tears the container and temporary evidence down on exit.
+
+`make benchmark` uses a separate fresh Docker MySQL fixture on `127.0.0.1:33307`, runs the same concurrent workload, and reports median, p95, minimum, and maximum command latency. See [docs/performance.md](docs/performance.md) for the benchmark contract and the latest measured result.
 
 See [docs/architecture.md](docs/architecture.md) for the module seams and [SECURITY.md](SECURITY.md) for the threat model.
 
