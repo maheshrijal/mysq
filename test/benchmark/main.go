@@ -27,6 +27,8 @@ type result struct {
 	median, p95, min, max time.Duration
 }
 
+const benchmarkSampleInterval = 100 * time.Millisecond
+
 func main() {
 	binary := flag.String("binary", "", "mysq binary to benchmark")
 	baseline := flag.String("baseline", "", "optional baseline mysq binary for paired comparison")
@@ -46,12 +48,12 @@ func main() {
 	}
 
 	cases := []benchmarkCase{
-		{name: "inspect-full", args: []string{"inspect", "--full", "--format", "json", "--no-store", "--interval", "100ms"}},
-		{name: "queries", args: []string{"queries", "--json", "--interval", "100ms"}},
-		{name: "tables", args: []string{"tables", "--json", "--interval", "100ms"}},
-		{name: "variables", args: []string{"variables", "--json", "--interval", "100ms"}},
-		{name: "waits", args: []string{"waits", "--json", "--interval", "100ms"}},
-		{name: "engine", args: []string{"engine", "--json", "--interval", "100ms"}},
+		{name: "inspect-full", args: []string{"inspect", "--full", "--format", "json", "--no-store", "--interval", benchmarkSampleInterval.String()}},
+		{name: "queries", args: []string{"queries", "--json", "--interval", benchmarkSampleInterval.String()}},
+		{name: "tables", args: []string{"tables", "--json", "--interval", benchmarkSampleInterval.String()}},
+		{name: "variables", args: []string{"variables", "--json", "--interval", benchmarkSampleInterval.String()}},
+		{name: "waits", args: []string{"waits", "--json", "--interval", benchmarkSampleInterval.String()}},
+		{name: "engine", args: []string{"engine", "--json", "--interval", benchmarkSampleInterval.String()}},
 	}
 
 	fmt.Printf("Docker MySQL command benchmark (%d runs after %d warmups)\n\n", *runs, *warmup)
@@ -140,9 +142,15 @@ func invokePair(baseline, candidate, dsn string, current benchmarkCase, index in
 
 func summarize(name string, samples []time.Duration) result {
 	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	median := samples[len(samples)/2]
+	if len(samples)%2 == 0 {
+		lower := samples[len(samples)/2-1]
+		upper := samples[len(samples)/2]
+		median = lower + (upper-lower)/2
+	}
 	return result{
 		name:   name,
-		median: samples[len(samples)/2],
+		median: median,
 		p95:    samples[int(math.Ceil(float64(len(samples))*0.95))-1],
 		min:    samples[0],
 		max:    samples[len(samples)-1],
@@ -156,7 +164,7 @@ func invokeTimed(binary, dsn string, current benchmarkCase) (time.Duration, erro
 		return 0, err
 	}
 	elapsed := time.Since(started)
-	if err := validateOutput(current.name, output.Bytes()); err != nil {
+	if err := validateOutput(current.name, output.Bytes(), elapsed); err != nil {
 		return 0, fmt.Errorf("%s produced invalid diagnostics: %w", current.name, err)
 	}
 	return elapsed, nil
@@ -178,7 +186,7 @@ func invoke(binary, dsn string, current benchmarkCase, stdout io.Writer) error {
 	return nil
 }
 
-func validateOutput(name string, data []byte) error {
+func validateOutput(name string, data []byte, elapsed time.Duration) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return errors.New("empty output")
 	}
@@ -188,15 +196,7 @@ func validateOutput(name string, data []byte) error {
 		if err := json.Unmarshal(data, &context); err != nil {
 			return fmt.Errorf("parse full inspection JSON: %w", err)
 		}
-		if context.SchemaVersion == "" || context.Server.Flavor != "MySQL" || context.Server.Version == "" {
-			return errors.New("missing full inspection server identity")
-		}
-		if err := validateQueries(context.Queries); err != nil {
-			return err
-		}
-		if err := validateTables(context.Tables); err != nil {
-			return err
-		}
+		return validateFullInspection(context, elapsed)
 	case "queries":
 		var queries []model.Query
 		if err := json.Unmarshal(data, &queries); err != nil {
@@ -210,18 +210,14 @@ func validateOutput(name string, data []byte) error {
 		}
 		return validateTables(tables)
 	case "waits":
+		if err := validateSampleDuration(name, elapsed); err != nil {
+			return err
+		}
 		var waits []model.WaitEvent
 		if err := json.Unmarshal(data, &waits); err != nil {
 			return fmt.Errorf("parse waits JSON: %w", err)
 		}
-		if len(waits) == 0 {
-			return errors.New("waits array is empty or null")
-		}
-		for _, wait := range waits {
-			if wait.Name == "" || wait.Class == "" {
-				return errors.New("wait evidence is missing name or class")
-			}
-		}
+		return validateWaits(waits)
 	case "variables":
 		var variables map[string]string
 		if err := json.Unmarshal(data, &variables); err != nil {
@@ -231,15 +227,100 @@ func validateOutput(name string, data []byte) error {
 			return errors.New("performance_schema variable is absent or disabled")
 		}
 	case "engine":
+		if err := validateSampleDuration(name, elapsed); err != nil {
+			return err
+		}
 		var metrics model.Metrics
 		if err := json.Unmarshal(data, &metrics); err != nil {
 			return fmt.Errorf("parse engine JSON: %w", err)
 		}
-		if metrics.ConnectionsMax == 0 || metrics.RedoCapacityBytes == 0 {
-			return errors.New("engine capacity metrics are absent")
-		}
+		return validateEngine(metrics)
 	default:
 		return fmt.Errorf("no validator for %q", name)
+	}
+	return nil
+}
+
+func validateFullInspection(context model.Context, elapsed time.Duration) error {
+	if err := validateSampleDuration("inspect-full", elapsed); err != nil {
+		return err
+	}
+	if context.IntervalMillis < benchmarkSampleInterval.Milliseconds() {
+		return fmt.Errorf("full inspection interval is %dms, want at least %dms", context.IntervalMillis, benchmarkSampleInterval.Milliseconds())
+	}
+	if context.SchemaVersion != model.SchemaVersion || context.Server.Flavor != "MySQL" || context.Server.Version == "" {
+		return errors.New("missing full inspection server identity")
+	}
+	if err := validateQueries(context.Queries); err != nil {
+		return err
+	}
+	if err := validateTables(context.Tables); err != nil {
+		return err
+	}
+	if len(context.Indexes) == 0 || len(context.Processes) == 0 || len(context.ConnectionGroups) == 0 || len(context.Findings) == 0 {
+		return errors.New("full inspection is missing index, process, connection-group, or finding evidence")
+	}
+	if context.Locks == nil || context.Transactions == nil || context.MetadataLocks == nil {
+		return errors.New("full inspection is missing lock or transaction collections")
+	}
+	if err := validateWaits(context.WaitEvents); err != nil {
+		return fmt.Errorf("full inspection: %w", err)
+	}
+	if len(context.FileIO) == 0 || context.FileIO[0].Name == "" ||
+		len(context.ServerErrors) == 0 || context.ServerErrors[0].Number == 0 ||
+		len(context.MemoryConsumers) == 0 || context.MemoryConsumers[0].Name == "" {
+		return errors.New("full inspection is missing file I/O, server-error, or memory evidence")
+	}
+	if err := validateEngine(context.Metrics); err != nil {
+		return fmt.Errorf("full inspection: %w", err)
+	}
+	if context.Instrumentation.DigestCapacity == 0 || !strings.EqualFold(context.Variables["performance_schema"], "ON") ||
+		len(context.GlobalStatus) == 0 || strings.TrimSpace(context.InnoDBStatus) == "" {
+		return errors.New("full inspection is missing instrumentation, variables, status, or InnoDB evidence")
+	}
+	capabilities := make(map[string]model.Capability, len(context.Capabilities))
+	for _, capability := range context.Capabilities {
+		capabilities[capability.Name] = capability
+	}
+	for _, name := range []string{
+		"statement digests", "table statistics", "index statistics", "process list",
+		"row lock waits", "active transactions", "metadata locks", "statement latency histogram",
+		"instrumentation coverage", "memory consumers", "replication", "InnoDB monitor",
+		"wait events", "file I/O", "server errors", "statement database time", "statement counters",
+	} {
+		capability, ok := capabilities[name]
+		if !ok {
+			return fmt.Errorf("full inspection is missing %q probe capability", name)
+		}
+		if !capability.Available && strings.TrimSpace(capability.Reason) == "" {
+			return fmt.Errorf("full inspection unavailable probe %q has no reason", name)
+		}
+	}
+	return nil
+}
+
+func validateSampleDuration(name string, elapsed time.Duration) error {
+	if elapsed < benchmarkSampleInterval {
+		return fmt.Errorf("%s completed in %s, shorter than the %s sample contract", name, elapsed, benchmarkSampleInterval)
+	}
+	return nil
+}
+
+func validateWaits(waits []model.WaitEvent) error {
+	if len(waits) == 0 {
+		return errors.New("waits array is empty or null")
+	}
+	for _, wait := range waits {
+		if wait.Name == "" || wait.Class == "" {
+			return errors.New("wait evidence is missing name or class")
+		}
+	}
+	return nil
+}
+
+func validateEngine(metrics model.Metrics) error {
+	if metrics.ConnectionsMax == 0 || metrics.RedoCapacityBytes == 0 || metrics.BufferPoolDataBytes == 0 {
+		return errors.New("engine capacity metrics are absent")
 	}
 	return nil
 }

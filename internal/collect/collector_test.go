@@ -225,6 +225,38 @@ func TestFocusedProbePropagatesProbeAndContextErrors(t *testing.T) {
 	}
 }
 
+func TestFocusedOptionalProbeDegradesOrdinaryFailure(t *testing.T) {
+	collector := New("test")
+	result := newContext("test", Target{})
+	probeErr := errors.New("process list unavailable")
+
+	if err := collector.focusedOptionalProbe(context.Background(), result, "process list", func() error { return probeErr }); err != nil {
+		t.Fatalf("ordinary optional failure was not degraded: %v", err)
+	}
+	if len(result.Capabilities) != 1 || result.Capabilities[0].Available || len(result.Warnings) != 1 {
+		t.Fatalf("optional failure was not recorded: capabilities=%+v warnings=%+v", result.Capabilities, result.Warnings)
+	}
+}
+
+func TestFocusedOptionalProbePropagatesCancellation(t *testing.T) {
+	collector := New("test")
+	for _, contextErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		result := newContext("test", Target{})
+		err := collector.focusedOptionalProbe(context.Background(), result, "process list", func() error { return contextErr })
+		if !errors.Is(err, contextErr) {
+			t.Fatalf("optional probe error = %v, want wrapped %v", err, contextErr)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := newContext("test", Target{})
+	err := collector.focusedOptionalProbe(ctx, result, "process list", func() error { return errors.New("driver stopped") })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled context was hidden by driver error: %v", err)
+	}
+}
+
 func TestFocusedSampleProbePropagatesEitherEndpointFailure(t *testing.T) {
 	collector := New("test")
 	for _, failures := range [][]error{
@@ -238,6 +270,22 @@ func TestFocusedSampleProbePropagatesEitherEndpointFailure(t *testing.T) {
 		if len(result.Capabilities) != 1 || result.Capabilities[0].Available {
 			t.Fatalf("failed sample was not recorded once: %+v", result.Capabilities)
 		}
+	}
+}
+
+func TestFocusedSampleReturnsFirstEndpointFailureBeforeWaiting(t *testing.T) {
+	collector := New("test")
+	collector.Interval = time.Hour
+	result := newContext("test", Target{})
+	probeErr := errors.New("first sample failed")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	if _, err := collector.waitForFocusedSample(ctx, result, "wait events", probeErr); !errors.Is(err, probeErr) {
+		t.Fatalf("first endpoint error = %v, want immediate wrapped %v", err, probeErr)
+	}
+	if len(result.Capabilities) != 1 || result.Capabilities[0].Available {
+		t.Fatalf("first endpoint failure was not recorded: %+v", result.Capabilities)
 	}
 }
 

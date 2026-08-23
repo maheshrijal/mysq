@@ -8,7 +8,7 @@ Run it with:
 make benchmark
 ```
 
-The benchmark creates a uniquely named fresh `mysql:8.4` container backed by tmpfs on an ephemeral `127.0.0.1` port, seeds the end-to-end schema, and keeps eight concurrent OLTP workers running until the benchmark finishes. Each command gets five warmups followed by 50 measured process executions. Every invocation must emit typed, section-appropriate JSON evidence; validation happens after the invocation timer stops. The supervisor fails the run if the workload exits early. It reports wall-clock median, p95, minimum, and maximum latency, then tears down only its own container, processes, and temporary artifacts.
+The benchmark creates a uniquely named fresh `mysql:8.4` container backed by tmpfs on an ephemeral `127.0.0.1` port, seeds the end-to-end schema, and keeps eight concurrent OLTP workers running until the benchmark finishes. Each command gets five warmups followed by 50 measured process executions. Every invocation must emit typed, section-appropriate JSON evidence; full inspections must retain the complete fixture contract, and sampled commands must run for at least the requested window. Validation happens after the invocation timer stops. The supervisor fails the run if the workload exits early. It reports wall-clock median, p95, minimum, and maximum latency, then tears down only its own container, processes, and temporary artifacts.
 
 For a longer run:
 
@@ -24,12 +24,12 @@ Measured on an Apple M4 Pro with Go 1.26.7, Docker Engine 29.7.2, and MySQL 8.4.
 
 | Command | Baseline median | Optimized median | Change | Baseline p95 | Optimized p95 |
 |---|---:|---:|---:|---:|---:|
-| `inspect --full` | 167.84 ms | 166.15 ms | -1.0% | 188.58 ms | 187.63 ms |
-| `queries` | 172.71 ms | 19.85 ms | -88.5% | 188.14 ms | 26.76 ms |
-| `tables` | 164.68 ms | 13.09 ms | -92.0% | 185.69 ms | 24.52 ms |
-| `variables` | 165.51 ms | 15.36 ms | -90.7% | 182.12 ms | 18.86 ms |
-| `waits` | 172.27 ms | 145.18 ms | -15.7% | 195.28 ms | 151.63 ms |
-| `engine` | 166.73 ms | 120.18 ms | -27.9% | 174.63 ms | 124.97 ms |
+| `inspect --full` | 180.33 ms | 182.85 ms | +1.4% | 189.88 ms | 196.75 ms |
+| `queries` | 175.58 ms | 19.16 ms | -89.1% | 205.87 ms | 25.78 ms |
+| `tables` | 174.77 ms | 14.31 ms | -91.8% | 185.95 ms | 20.96 ms |
+| `variables` | 176.55 ms | 15.36 ms | -91.3% | 198.67 ms | 21.70 ms |
+| `waits` | 175.25 ms | 149.38 ms | -14.8% | 182.80 ms | 154.89 ms |
+| `engine` | 174.74 ms | 120.93 ms | -30.8% | 196.32 ms | 127.22 ms |
 
 The bottleneck was structural: every focused command invoked the complete collector, including unrelated catalog and Performance Schema probes and the minimum 100 ms sampling window. Point-in-time commands now collect only their required evidence and return immediately. Sampled commands still honor the observation interval, but no longer perform unrelated probes. The full inspection deliberately retains its complete evidence contract and shows no material median regression.
 

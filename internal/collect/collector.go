@@ -407,12 +407,14 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}); err != nil {
 			return nil, err
 		}
-		c.probe(ctx, result, "process list", func() error {
+		if err := c.focusedOptionalProbe(ctx, result, "process list", func() error {
 			var probeErr error
 			result.Processes, probeErr = c.collectProcesses(ctx, conn)
 			attributeActiveUsers(result.Queries, result.Processes)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 	case "tables":
 		if err := c.focusedProbe(result, "table statistics", func() error {
 			var probeErr error
@@ -463,7 +465,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 	case "waits":
 		first, firstErr := c.collectWaitCounters(ctx, conn)
-		started, err := c.waitForSample(ctx)
+		started, err := c.waitForFocusedSample(ctx, result, "wait events", firstErr)
 		if err != nil {
 			return nil, err
 		}
@@ -476,7 +478,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		result.IntervalMillis = elapsed.Milliseconds()
 	case "io":
 		first, firstErr := c.collectFileIOCounters(ctx, conn)
-		started, err := c.waitForSample(ctx)
+		started, err := c.waitForFocusedSample(ctx, result, "file I/O", firstErr)
 		if err != nil {
 			return nil, err
 		}
@@ -489,7 +491,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		result.IntervalMillis = elapsed.Milliseconds()
 	case "errors":
 		first, firstErr := c.collectErrorCounters(ctx, conn)
-		started, err := c.waitForSample(ctx)
+		started, err := c.waitForFocusedSample(ctx, result, "server errors", firstErr)
 		if err != nil {
 			return nil, err
 		}
@@ -554,6 +556,18 @@ func (c *Collector) focusedProbe(result *model.Context, name string, fn func() e
 	err := fn()
 	c.recordCapability(result, name, err)
 	if err != nil {
+		return fmt.Errorf("collect %s: %w", name, err)
+	}
+	return nil
+}
+
+func (c *Collector) focusedOptionalProbe(ctx context.Context, result *model.Context, name string, fn func() error) error {
+	err := fn()
+	c.recordCapability(result, name, err)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("collect %s: %w", name, ctxErr)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("collect %s: %w", name, err)
 	}
 	return nil
@@ -639,6 +653,13 @@ func (c *Collector) waitForSample(ctx context.Context) (time.Time, error) {
 	case <-timer.C:
 		return started, nil
 	}
+}
+
+func (c *Collector) waitForFocusedSample(ctx context.Context, result *model.Context, name string, firstErr error) (time.Time, error) {
+	if firstErr != nil {
+		return time.Time{}, c.focusedSampleProbe(result, name, firstErr)
+	}
+	return c.waitForSample(ctx)
 }
 
 func (c *Collector) probe(ctx context.Context, result *model.Context, name string, fn func() error) {
