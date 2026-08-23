@@ -10,11 +10,16 @@ load_dsn="loadgen:mysq-load-test@tcp(127.0.0.1:${port})/app?parseTime=true"
 compose=(docker compose -f "$repo_root/docker-compose.e2e.yml")
 load_pid=""
 
-cleanup() {
+stop_load() {
   if [[ -n "$load_pid" ]]; then
     kill "$load_pid" >/dev/null 2>&1 || true
     wait "$load_pid" >/dev/null 2>&1 || true
+    load_pid=""
   fi
+}
+
+cleanup() {
+  stop_load
   "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work_dir"
 }
@@ -77,6 +82,11 @@ sleep 2
 MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --store "$history_dir" --interval 250ms >"$work_dir/history-2.json"
 "$binary" snapshots list --store "$history_dir" >"$work_dir/snapshots.txt"
 "$binary" diff --store "$history_dir" --since 1s >"$work_dir/diff.txt"
+
+# The workload has already exercised collection, focused commands, export, and
+# history. Stop it before the navigation-only PTY phase so hosted-runner load
+# cannot starve Bubble Tea's initial full refresh.
+stop_load
 
 "$binary" init --user observer >"$work_dir/init.sql"
 "$binary" --help >"$work_dir/help.txt"

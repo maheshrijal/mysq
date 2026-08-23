@@ -39,3 +39,21 @@ func TestVerifyFocusedDataRejectsSectionMisroutes(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyFocusedDataRequiresIOSampleEvidence(t *testing.T) {
+	if err := verifyFocusedData("io", []byte(`[{"name":"file","class":"io/file"}]`)); err == nil {
+		t.Fatal("cumulative-only file I/O unexpectedly passed")
+	}
+	if err := verifyFocusedData("io", []byte(`[{"name":"file","class":"io/file","writes_per_second":1}]`)); err != nil {
+		t.Fatalf("sampled file I/O was rejected: %v", err)
+	}
+}
+
+func TestVerifyFocusedDataRequiresErrorSampleEvidence(t *testing.T) {
+	if err := verifyFocusedData("errors", []byte(`[{"number":1062,"name":"ER_DUP_ENTRY","sql_state":"23000"}]`)); err == nil {
+		t.Fatal("cumulative-only server error unexpectedly passed")
+	}
+	if err := verifyFocusedData("errors", []byte(`[{"number":1062,"name":"ER_DUP_ENTRY","sql_state":"23000","sample_raised":1}]`)); err != nil {
+		t.Fatalf("sampled server error was rejected: %v", err)
+	}
+}

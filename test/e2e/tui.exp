@@ -6,7 +6,7 @@ log_user 0
 set binary [lindex $argv 0]
 set dsn [lindex $argv 1]
 set pty_log [lindex $argv 2]
-log_file -noappend $pty_log
+log_file -a -noappend $pty_log
 spawn -noecho $binary tui $dsn --interval 250ms
 # Give Bubble Tea a deterministic initial viewport even when this harness is
 # launched by a headless CI runner with no inherited terminal dimensions.

@@ -58,6 +58,8 @@ func main() {
 		{name: "tables", args: []string{"tables", "--json", "--interval", benchmarkSampleInterval.String()}},
 		{name: "variables", args: []string{"variables", "--json", "--interval", benchmarkSampleInterval.String()}},
 		{name: "waits", args: []string{"waits", "--json", "--interval", benchmarkSampleInterval.String()}},
+		{name: "io", args: []string{"io", "--json", "--interval", benchmarkSampleInterval.String()}},
+		{name: "errors", args: []string{"errors", "--json", "--interval", benchmarkSampleInterval.String()}},
 		{name: "engine", args: []string{"engine", "--json", "--interval", benchmarkSampleInterval.String()}},
 	}
 
@@ -191,7 +193,8 @@ func invokeTimed(binary, dsn string, current benchmarkCase) (invocation, error) 
 }
 
 func requireSampleEvidence(name string, found bool, runs int) error {
-	if (strings.HasSuffix(name, "waits") || strings.HasSuffix(name, "engine")) && !found {
+	if (strings.HasSuffix(name, "waits") || strings.HasSuffix(name, "io") ||
+		strings.HasSuffix(name, "errors") || strings.HasSuffix(name, "engine")) && !found {
 		return fmt.Errorf("%s produced no derived sample delta or rate across %d measured runs", name, runs)
 	}
 	return nil
@@ -220,19 +223,19 @@ func validateOutput(name string, data []byte, elapsed time.Duration) error {
 	switch name {
 	case "inspect-full":
 		var context model.Context
-		if err := json.Unmarshal(data, &context); err != nil {
+		if err := decodeStrictJSON(data, &context); err != nil {
 			return fmt.Errorf("parse full inspection JSON: %w", err)
 		}
 		return validateFullInspection(context, elapsed)
 	case "queries":
 		var queries []model.Query
-		if err := json.Unmarshal(data, &queries); err != nil {
+		if err := decodeStrictJSON(data, &queries); err != nil {
 			return fmt.Errorf("parse queries JSON: %w", err)
 		}
 		return validateQueries(queries)
 	case "tables":
 		var tables []model.Table
-		if err := json.Unmarshal(data, &tables); err != nil {
+		if err := decodeStrictJSON(data, &tables); err != nil {
 			return fmt.Errorf("parse tables JSON: %w", err)
 		}
 		return validateTables(tables)
@@ -241,13 +244,31 @@ func validateOutput(name string, data []byte, elapsed time.Duration) error {
 			return err
 		}
 		var waits []model.WaitEvent
-		if err := json.Unmarshal(data, &waits); err != nil {
+		if err := decodeStrictJSON(data, &waits); err != nil {
 			return fmt.Errorf("parse waits JSON: %w", err)
 		}
 		return validateWaits(waits)
+	case "io":
+		if err := validateSampleDuration(name, elapsed); err != nil {
+			return err
+		}
+		var items []model.FileIO
+		if err := decodeStrictJSON(data, &items); err != nil {
+			return fmt.Errorf("parse file I/O JSON: %w", err)
+		}
+		return validateFileIO(items)
+	case "errors":
+		if err := validateSampleDuration(name, elapsed); err != nil {
+			return err
+		}
+		var items []model.ServerError
+		if err := decodeStrictJSON(data, &items); err != nil {
+			return fmt.Errorf("parse server errors JSON: %w", err)
+		}
+		return validateServerErrors(items)
 	case "variables":
 		var variables map[string]string
-		if err := json.Unmarshal(data, &variables); err != nil {
+		if err := decodeStrictJSON(data, &variables); err != nil {
 			return fmt.Errorf("parse variables JSON: %w", err)
 		}
 		if !strings.EqualFold(variables["performance_schema"], "ON") {
@@ -258,12 +279,27 @@ func validateOutput(name string, data []byte, elapsed time.Duration) error {
 			return err
 		}
 		var metrics model.Metrics
-		if err := json.Unmarshal(data, &metrics); err != nil {
+		if err := decodeStrictJSON(data, &metrics); err != nil {
 			return fmt.Errorf("parse engine JSON: %w", err)
 		}
 		return validateEngine(metrics)
 	default:
 		return fmt.Errorf("no validator for %q", name)
+	}
+	return nil
+}
+
+func decodeStrictJSON(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return fmt.Errorf("trailing JSON data: %w", err)
 	}
 	return nil
 }
@@ -352,6 +388,30 @@ func validateEngine(metrics model.Metrics) error {
 	return nil
 }
 
+func validateFileIO(items []model.FileIO) error {
+	if len(items) == 0 {
+		return errors.New("file I/O array is empty or null")
+	}
+	for _, item := range items {
+		if item.Name == "" || item.Class == "" {
+			return errors.New("file I/O evidence is missing name or class")
+		}
+	}
+	return nil
+}
+
+func validateServerErrors(items []model.ServerError) error {
+	if len(items) == 0 {
+		return errors.New("server errors array is empty or null")
+	}
+	for _, item := range items {
+		if item.Number == 0 || item.Name == "" || item.SQLState == "" {
+			return errors.New("server error evidence is missing number, name, or SQL state")
+		}
+	}
+	return nil
+}
+
 func derivedSampleEvidence(name string, data []byte) bool {
 	switch name {
 	case "waits":
@@ -375,6 +435,28 @@ func derivedSampleEvidence(name string, data []byte) bool {
 			metrics.NetworkInBytesPerSec > 0 || metrics.NetworkOutBytesPerSec > 0 ||
 			metrics.DataReadsPerSecond > 0 || metrics.DataWritesPerSecond > 0 ||
 			metrics.RedoBytesPerSecond > 0
+	case "io":
+		var items []model.FileIO
+		if json.Unmarshal(data, &items) != nil {
+			return false
+		}
+		for _, item := range items {
+			if item.ReadsPerSecond > 0 || item.WritesPerSecond > 0 ||
+				item.ReadBytesPerSecond > 0 || item.WriteBytesPerSecond > 0 ||
+				item.WaitMillisPerSecond > 0 {
+				return true
+			}
+		}
+	case "errors":
+		var items []model.ServerError
+		if json.Unmarshal(data, &items) != nil {
+			return false
+		}
+		for _, item := range items {
+			if item.SampleRaised > 0 || item.RaisedPerSecond > 0 {
+				return true
+			}
+		}
 	}
 	return false
 }

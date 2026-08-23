@@ -55,12 +55,17 @@ func main() {
 			work(ctx, db, worker, &operations)
 		}(i)
 	}
-	wg.Add(2)
+	wg.Add(3)
 	statementReady := make(chan error, 1)
+	errorReady := make(chan error, 1)
 	go func() { defer wg.Done(); waitOnRowLock(ctx, db) }()
 	go func() { defer wg.Done(); runLongStatement(ctx, db, 35, statementReady) }()
+	go func() { defer wg.Done(); generateServerErrors(ctx, db, errorReady) }()
 	if err := <-statementReady; err != nil {
 		log.Fatalf("establish long-statement metadata-lock fixture: %v", err)
+	}
+	if err := <-errorReady; err != nil {
+		log.Fatalf("establish server-error fixture: %v", err)
 	}
 	fmt.Println("load ready")
 	wg.Wait()
@@ -194,4 +199,31 @@ func runLongStatement(ctx context.Context, db *sql.DB, seconds int, ready chan<-
 		return
 	}
 	_ = tx.Commit()
+}
+
+func generateServerErrors(ctx context.Context, db *sql.DB, ready chan<- error) {
+	trigger := func() error {
+		// Account 1 is deliberately row-locked by a separate fixture; use account
+		// 2 so error generation cannot block readiness behind that transaction.
+		_, err := db.ExecContext(ctx, `INSERT INTO accounts(id,email,balance) VALUES(2,'duplicate@example.test',0)`)
+		if err == nil {
+			return fmt.Errorf("duplicate-key statement unexpectedly succeeded")
+		}
+		return nil
+	}
+	if err := trigger(); err != nil {
+		ready <- err
+		return
+	}
+	ready <- nil
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = trigger()
+		}
+	}
 }

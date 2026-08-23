@@ -46,6 +46,8 @@ func TestValidateOutputAcceptsFixtureShapes(t *testing.T) {
 		{name: "queries", data: `[{"digest":"abc","statement":"SELECT ?"}]`},
 		{name: "tables", data: `[{"schema":"app","name":"orders","engine":"InnoDB"}]`},
 		{name: "waits", data: `[{"name":"wait/io/file","class":"io/file","sample_count":1,"events_per_second":10}]`},
+		{name: "io", data: `[{"name":"file","class":"io/file","writes_per_second":1}]`},
+		{name: "errors", data: `[{"number":1062,"name":"ER_DUP_ENTRY","sql_state":"23000","sample_raised":1}]`},
 		{name: "variables", data: `{"performance_schema":"ON"}`},
 		{name: "engine", data: `{"connections_max":151,"redo_capacity_bytes":1048576,"buffer_pool_data_bytes":4096,"queries_per_second":10,"transactions_per_second":2,"rows_written_per_second":1}`},
 	} {
@@ -100,11 +102,21 @@ func TestDerivedSampleEvidenceDistinguishesQuietAndActiveWindows(t *testing.T) {
 	activeWaits := []byte(`[{"name":"wait/io/file","class":"io/file","sample_count":1}]`)
 	quietEngine := []byte(`{"connections_max":151,"redo_capacity_bytes":1048576,"buffer_pool_data_bytes":4096}`)
 	activeEngine := []byte(`{"connections_max":151,"redo_capacity_bytes":1048576,"buffer_pool_data_bytes":4096,"network_out_bytes_per_second":1}`)
+	quietIO := []byte(`[{"name":"file","class":"io/file"}]`)
+	activeIO := []byte(`[{"name":"file","class":"io/file","writes_per_second":1}]`)
+	quietErrors := []byte(`[{"number":1062,"name":"ER_DUP_ENTRY","sql_state":"23000"}]`)
+	activeErrors := []byte(`[{"number":1062,"name":"ER_DUP_ENTRY","sql_state":"23000","sample_raised":1}]`)
 	if derivedSampleEvidence("waits", quietWaits) || !derivedSampleEvidence("waits", activeWaits) {
 		t.Fatal("wait sample evidence classification is wrong")
 	}
 	if derivedSampleEvidence("engine", quietEngine) || !derivedSampleEvidence("engine", activeEngine) {
 		t.Fatal("engine sample evidence classification is wrong")
+	}
+	if derivedSampleEvidence("io", quietIO) || !derivedSampleEvidence("io", activeIO) {
+		t.Fatal("file I/O sample evidence classification is wrong")
+	}
+	if derivedSampleEvidence("errors", quietErrors) || !derivedSampleEvidence("errors", activeErrors) {
+		t.Fatal("server error sample evidence classification is wrong")
 	}
 	if err := requireSampleEvidence("candidate waits", false, 20); err == nil {
 		t.Fatal("a measured run with no derived wait evidence unexpectedly passed")
@@ -116,6 +128,8 @@ func TestDerivedSampleEvidenceDistinguishesQuietAndActiveWindows(t *testing.T) {
 
 func TestValidateOutputEnforcesSampleDuration(t *testing.T) {
 	waits := []byte(`[{"name":"wait/io/file","class":"io/file","sample_count":1}]`)
+	fileIO := []byte(`[{"name":"file","class":"io/file","writes_per_second":1}]`)
+	serverErrors := []byte(`[{"number":1062,"name":"ER_DUP_ENTRY","sql_state":"23000","sample_raised":1}]`)
 	engine := []byte(`{"connections_max":151,"redo_capacity_bytes":1048576,"buffer_pool_data_bytes":4096,"queries_per_second":10,"transactions_per_second":2,"rows_written_per_second":1}`)
 	for _, test := range []struct {
 		name string
@@ -123,6 +137,8 @@ func TestValidateOutputEnforcesSampleDuration(t *testing.T) {
 	}{
 		{name: "inspect-full", data: marshalJSON(t, validFullContext())},
 		{name: "waits", data: waits},
+		{name: "io", data: fileIO},
+		{name: "errors", data: serverErrors},
 		{name: "engine", data: engine},
 	} {
 		t.Run(test.name+" duration", func(t *testing.T) {

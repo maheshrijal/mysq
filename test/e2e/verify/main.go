@@ -120,12 +120,26 @@ func verifyFocusedData(section string, data []byte) error {
 		}
 	case "io":
 		var items []model.FileIO
-		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].Name == "" {
+		hasSample := false
+		err := decodeStrictJSON(trimmed, &items)
+		for _, item := range items {
+			if item.ReadsPerSecond > 0 || item.WritesPerSecond > 0 || item.ReadBytesPerSecond > 0 || item.WriteBytesPerSecond > 0 || item.WaitMillisPerSecond > 0 {
+				hasSample = true
+			}
+		}
+		if err != nil || len(items) == 0 || items[0].Name == "" || !hasSample {
 			return fmt.Errorf("missing file I/O evidence: items=%d err=%v", len(items), err)
 		}
 	case "errors":
 		var items []model.ServerError
-		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].Number == 0 {
+		hasSample := false
+		err := decodeStrictJSON(trimmed, &items)
+		for _, item := range items {
+			if item.SampleRaised > 0 || item.RaisedPerSecond > 0 {
+				hasSample = true
+			}
+		}
+		if err != nil || len(items) == 0 || items[0].Number == 0 || !hasSample {
 			return fmt.Errorf("missing server error evidence: items=%d err=%v", len(items), err)
 		}
 	case "memory":
