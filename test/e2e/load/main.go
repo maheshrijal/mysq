@@ -42,6 +42,7 @@ func main() {
 
 	var operations atomic.Uint64
 	var wg sync.WaitGroup
+	workerErrors := make(chan error, workers)
 	lockReady := make(chan error, 1)
 	wg.Add(1)
 	go func() { defer wg.Done(); holdRowLock(ctx, db, 35*time.Second, lockReady) }()
@@ -52,7 +53,9 @@ func main() {
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
-			work(ctx, db, worker, &operations)
+			if err := work(ctx, db, worker, &operations); err != nil {
+				workerErrors <- fmt.Errorf("worker %d: %w", worker, err)
+			}
 		}(i)
 	}
 	wg.Add(3)
@@ -67,8 +70,26 @@ func main() {
 	if err := <-errorReady; err != nil {
 		log.Fatalf("establish server-error fixture: %v", err)
 	}
+	select {
+	case err := <-workerErrors:
+		cancel()
+		wg.Wait()
+		log.Fatalf("OLTP workload failed before becoming ready: %v", err)
+	default:
+	}
 	fmt.Println("load ready")
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case err := <-workerErrors:
+		cancel()
+		<-done
+		log.Fatalf("OLTP workload failed: %v", err)
+	case <-done:
+	}
 	fmt.Printf("load complete: %d operations\n", operations.Load())
 }
 
@@ -99,13 +120,16 @@ func seed(ctx context.Context, db *sql.DB) {
 	}
 }
 
-func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64) {
+func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64) error {
 	statuses := []string{"pending", "paid", "shipped", "cancelled"}
 	for ctx.Err() == nil {
 		account := 1 + rand.IntN(500)
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
-			return
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("begin transaction: %w", err)
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE accounts SET balance=balance+? WHERE id=?`, rand.IntN(20)-10, account)
 		if err == nil {
@@ -122,7 +146,7 @@ func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
 			continue
 		}
@@ -141,6 +165,7 @@ func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64
 			}
 		}
 	}
+	return nil
 }
 
 func holdRowLock(ctx context.Context, db *sql.DB, duration time.Duration, ready chan<- error) {
