@@ -27,6 +27,11 @@ type result struct {
 	median, p95, min, max time.Duration
 }
 
+type invocation struct {
+	elapsed        time.Duration
+	sampleEvidence bool
+}
+
 const benchmarkSampleInterval = 100 * time.Millisecond
 
 func main() {
@@ -93,12 +98,17 @@ func run(binary, dsn string, current benchmarkCase, warmup, runs int) (result, e
 	}
 
 	samples := make([]time.Duration, 0, runs)
+	hasSampleEvidence := false
 	for range runs {
-		elapsed, err := invokeTimed(binary, dsn, current)
+		measured, err := invokeTimed(binary, dsn, current)
 		if err != nil {
 			return result{}, err
 		}
-		samples = append(samples, elapsed)
+		samples = append(samples, measured.elapsed)
+		hasSampleEvidence = hasSampleEvidence || measured.sampleEvidence
+	}
+	if err := requireSampleEvidence(current.name, hasSampleEvidence, runs); err != nil {
+		return result{}, err
 	}
 	return summarize(current.name, samples), nil
 }
@@ -112,32 +122,42 @@ func runPaired(baseline, candidate, dsn string, current benchmarkCase, warmup, r
 
 	baseSamples := make([]time.Duration, 0, runs)
 	candidateSamples := make([]time.Duration, 0, runs)
+	baseHasSampleEvidence := false
+	candidateHasSampleEvidence := false
 	for index := range runs {
 		first, second, err := invokePair(baseline, candidate, dsn, current, index)
 		if err != nil {
 			return result{}, result{}, err
 		}
-		baseSamples = append(baseSamples, first)
-		candidateSamples = append(candidateSamples, second)
+		baseSamples = append(baseSamples, first.elapsed)
+		candidateSamples = append(candidateSamples, second.elapsed)
+		baseHasSampleEvidence = baseHasSampleEvidence || first.sampleEvidence
+		candidateHasSampleEvidence = candidateHasSampleEvidence || second.sampleEvidence
+	}
+	if err := requireSampleEvidence("baseline "+current.name, baseHasSampleEvidence, runs); err != nil {
+		return result{}, result{}, err
+	}
+	if err := requireSampleEvidence("candidate "+current.name, candidateHasSampleEvidence, runs); err != nil {
+		return result{}, result{}, err
 	}
 	return summarize(current.name, baseSamples), summarize(current.name, candidateSamples), nil
 }
 
-func invokePair(baseline, candidate, dsn string, current benchmarkCase, index int) (time.Duration, time.Duration, error) {
+func invokePair(baseline, candidate, dsn string, current benchmarkCase, index int) (invocation, invocation, error) {
 	if index%2 == 0 {
-		baselineElapsed, err := invokeTimed(baseline, dsn, current)
+		baselineResult, err := invokeTimed(baseline, dsn, current)
 		if err != nil {
-			return 0, 0, err
+			return invocation{}, invocation{}, err
 		}
-		candidateElapsed, err := invokeTimed(candidate, dsn, current)
-		return baselineElapsed, candidateElapsed, err
+		candidateResult, err := invokeTimed(candidate, dsn, current)
+		return baselineResult, candidateResult, err
 	}
-	candidateElapsed, err := invokeTimed(candidate, dsn, current)
+	candidateResult, err := invokeTimed(candidate, dsn, current)
 	if err != nil {
-		return 0, 0, err
+		return invocation{}, invocation{}, err
 	}
-	baselineElapsed, err := invokeTimed(baseline, dsn, current)
-	return baselineElapsed, candidateElapsed, err
+	baselineResult, err := invokeTimed(baseline, dsn, current)
+	return baselineResult, candidateResult, err
 }
 
 func summarize(name string, samples []time.Duration) result {
@@ -157,17 +177,24 @@ func summarize(name string, samples []time.Duration) result {
 	}
 }
 
-func invokeTimed(binary, dsn string, current benchmarkCase) (time.Duration, error) {
+func invokeTimed(binary, dsn string, current benchmarkCase) (invocation, error) {
 	var output bytes.Buffer
 	started := time.Now()
 	if err := invoke(binary, dsn, current, &output); err != nil {
-		return 0, err
+		return invocation{}, err
 	}
 	elapsed := time.Since(started)
 	if err := validateOutput(current.name, output.Bytes(), elapsed); err != nil {
-		return 0, fmt.Errorf("%s produced invalid diagnostics: %w", current.name, err)
+		return invocation{}, fmt.Errorf("%s produced invalid diagnostics: %w", current.name, err)
 	}
-	return elapsed, nil
+	return invocation{elapsed: elapsed, sampleEvidence: derivedSampleEvidence(current.name, output.Bytes())}, nil
+}
+
+func requireSampleEvidence(name string, found bool, runs int) error {
+	if (strings.HasSuffix(name, "waits") || strings.HasSuffix(name, "engine")) && !found {
+		return fmt.Errorf("%s produced no derived sample delta or rate across %d measured runs", name, runs)
+	}
+	return nil
 }
 
 func invoke(binary, dsn string, current benchmarkCase, stdout io.Writer) error {
@@ -292,8 +319,8 @@ func validateFullInspection(context model.Context, elapsed time.Duration) error 
 		if !ok {
 			return fmt.Errorf("full inspection is missing %q probe capability", name)
 		}
-		if !capability.Available && strings.TrimSpace(capability.Reason) == "" {
-			return fmt.Errorf("full inspection unavailable probe %q has no reason", name)
+		if !capability.Available {
+			return fmt.Errorf("full inspection probe %q is unavailable: %s", name, strings.TrimSpace(capability.Reason))
 		}
 	}
 	return nil
@@ -323,6 +350,33 @@ func validateEngine(metrics model.Metrics) error {
 		return errors.New("engine capacity metrics are absent")
 	}
 	return nil
+}
+
+func derivedSampleEvidence(name string, data []byte) bool {
+	switch name {
+	case "waits":
+		var waits []model.WaitEvent
+		if json.Unmarshal(data, &waits) != nil {
+			return false
+		}
+		for _, wait := range waits {
+			if wait.SampleCount > 0 || wait.SampleLatencyMillis > 0 ||
+				wait.EventsPerSecond > 0 || wait.WaitMillisPerSecond > 0 {
+				return true
+			}
+		}
+	case "engine":
+		var metrics model.Metrics
+		if json.Unmarshal(data, &metrics) != nil {
+			return false
+		}
+		return metrics.QueriesPerSecond > 0 || metrics.TransactionsPerSecond > 0 ||
+			metrics.RowsReadPerSecond > 0 || metrics.RowsWrittenPerSecond > 0 ||
+			metrics.NetworkInBytesPerSec > 0 || metrics.NetworkOutBytesPerSec > 0 ||
+			metrics.DataReadsPerSecond > 0 || metrics.DataWritesPerSecond > 0 ||
+			metrics.RedoBytesPerSecond > 0
+	}
+	return false
 }
 
 func validateQueries(queries []model.Query) error {

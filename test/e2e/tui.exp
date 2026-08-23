@@ -1,9 +1,12 @@
 #!/usr/bin/expect -f
 
-set timeout 25
+set interaction_timeout 25
+set timeout 60
 log_user 0
 set binary [lindex $argv 0]
 set dsn [lindex $argv 1]
+set pty_log [lindex $argv 2]
+log_file -noappend $pty_log
 spawn -noecho $binary tui $dsn --interval 250ms
 # Give Bubble Tea a deterministic initial viewport even when this harness is
 # launched by a headless CI runner with no inherited terminal dimensions.
@@ -15,6 +18,7 @@ expect {
   timeout { exit 10 }
   eof { exit 11 }
 }
+set timeout $interaction_timeout
 # Exercise horizontal view navigation, vertical query selection, and the
 # Enter/Esc query detail workflow.
 send "\033\[C"

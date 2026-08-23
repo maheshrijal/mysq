@@ -83,7 +83,27 @@ MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --store "$histo
 "$binary" --version >"$work_dir/version.txt"
 
 cd "$work_dir"
-expect "$repo_root/test/e2e/tui.exp" "$binary" "$monitor_dsn" >"$work_dir/tui.log" 2>&1
+tui_harness_log="$work_dir/tui-harness.log"
+tui_pty_log="$work_dir/tui-pty.log"
+set +e
+expect "$repo_root/test/e2e/tui.exp" "$binary" "$monitor_dsn" "$tui_pty_log" >"$tui_harness_log" 2>&1
+tui_status=$?
+set -e
+if [[ "$tui_status" -ne 0 ]]; then
+  printf 'TUI harness log:\n' >&2
+  if [[ -r "$tui_harness_log" ]]; then
+    cat "$tui_harness_log" >&2
+  else
+    printf '(missing: %s)\n' "$tui_harness_log" >&2
+  fi
+  printf 'TUI PTY log:\n' >&2
+  if [[ -r "$tui_pty_log" ]]; then
+    cat "$tui_pty_log" >&2
+  else
+    printf '(missing: %s)\n' "$tui_pty_log" >&2
+  fi
+  exit "$tui_status"
+fi
 find "$work_dir" -maxdepth 1 -type d -name 'mysq-export-*' | grep -q .
 
 grep -q "Database health" "$work_dir/full.txt"

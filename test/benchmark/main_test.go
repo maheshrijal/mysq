@@ -71,7 +71,10 @@ func TestValidateOutputRejectsIncompleteFullInspection(t *testing.T) {
 		{name: "file io", mutate: func(context *model.Context) { context.FileIO = nil }},
 		{name: "engine capacity", mutate: func(context *model.Context) { context.Metrics.BufferPoolDataBytes = 0 }},
 		{name: "instrumentation", mutate: func(context *model.Context) { context.Instrumentation.DigestCapacity = 0 }},
-		{name: "capability", mutate: func(context *model.Context) { context.Capabilities[0].Available = false }},
+		{name: "unavailable capability with reason", mutate: func(context *model.Context) {
+			context.Capabilities[0].Available = false
+			context.Capabilities[0].Reason = "fixture probe failed"
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			context := validFullContext()
@@ -89,6 +92,25 @@ func TestValidateOutputAllowsEmptySampleResultsWhenProbesSucceeded(t *testing.T)
 	context.StatementLatency = model.StatementLatency{}
 	if err := validateOutput("inspect-full", marshalJSON(t, context), benchmarkSampleInterval); err != nil {
 		t.Fatalf("legitimate empty sample window was rejected: %v", err)
+	}
+}
+
+func TestDerivedSampleEvidenceDistinguishesQuietAndActiveWindows(t *testing.T) {
+	quietWaits := []byte(`[{"name":"wait/io/file","class":"io/file","count":100,"total_latency_ms":25}]`)
+	activeWaits := []byte(`[{"name":"wait/io/file","class":"io/file","sample_count":1}]`)
+	quietEngine := []byte(`{"connections_max":151,"redo_capacity_bytes":1048576,"buffer_pool_data_bytes":4096}`)
+	activeEngine := []byte(`{"connections_max":151,"redo_capacity_bytes":1048576,"buffer_pool_data_bytes":4096,"network_out_bytes_per_second":1}`)
+	if derivedSampleEvidence("waits", quietWaits) || !derivedSampleEvidence("waits", activeWaits) {
+		t.Fatal("wait sample evidence classification is wrong")
+	}
+	if derivedSampleEvidence("engine", quietEngine) || !derivedSampleEvidence("engine", activeEngine) {
+		t.Fatal("engine sample evidence classification is wrong")
+	}
+	if err := requireSampleEvidence("candidate waits", false, 20); err == nil {
+		t.Fatal("a measured run with no derived wait evidence unexpectedly passed")
+	}
+	if err := requireSampleEvidence("candidate waits", true, 20); err != nil {
+		t.Fatalf("a measured run with derived wait evidence failed: %v", err)
 	}
 }
 
