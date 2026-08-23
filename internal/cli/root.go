@@ -25,10 +25,11 @@ import (
 )
 
 type App struct {
-	Version string
-	Out     io.Writer
-	Err     io.Writer
-	color   bool
+	Version          string
+	Out              io.Writer
+	Err              io.Writer
+	color            bool
+	inspectSectionFn func(context.Context, string, time.Duration, string) (*model.Context, error)
 }
 
 type ExitError struct {
@@ -352,6 +353,9 @@ func (a *App) inspect(ctx context.Context, argument string, interval time.Durati
 }
 
 func (a *App) inspectSection(ctx context.Context, argument string, interval time.Duration, section string) (*model.Context, error) {
+	if a.inspectSectionFn != nil {
+		return a.inspectSectionFn(ctx, argument, interval, section)
+	}
 	target, err := collect.ResolveConnection(argument)
 	if err != nil {
 		return nil, err

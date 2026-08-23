@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/maheshrijal/mysq/internal/model"
 )
 
 type benchmarkCase struct {
@@ -57,7 +59,10 @@ func main() {
 		fmt.Println("| command | median | p95 | min | max |")
 		fmt.Println("|---|---:|---:|---:|---:|")
 		for _, current := range cases {
-			measured := run(*binary, dsn, current, *warmup, *runs)
+			measured, err := run(*binary, dsn, current, *warmup, *runs)
+			if err != nil {
+				fatal("%v", err)
+			}
 			fmt.Printf("| %s | %s | %s | %s | %s |\n", measured.name,
 				milliseconds(measured.median), milliseconds(measured.p95),
 				milliseconds(measured.min), milliseconds(measured.max))
@@ -68,50 +73,69 @@ func main() {
 	fmt.Println("| command | baseline median | candidate median | change | baseline p95 | candidate p95 |")
 	fmt.Println("|---|---:|---:|---:|---:|---:|")
 	for _, current := range cases {
-		base, candidate := runPaired(*baseline, *binary, dsn, current, *warmup, *runs)
+		base, candidate, err := runPaired(*baseline, *binary, dsn, current, *warmup, *runs)
+		if err != nil {
+			fatal("%v", err)
+		}
 		fmt.Printf("| %s | %s | %s | %+.1f%% | %s | %s |\n", current.name,
 			milliseconds(base.median), milliseconds(candidate.median), percentChange(base.median, candidate.median),
 			milliseconds(base.p95), milliseconds(candidate.p95))
 	}
 }
 
-func run(binary, dsn string, current benchmarkCase, warmup, runs int) result {
-	validateInvocation(binary, dsn, current)
+func run(binary, dsn string, current benchmarkCase, warmup, runs int) (result, error) {
 	for range warmup {
-		invokeTimed(binary, dsn, current)
+		if _, err := invokeTimed(binary, dsn, current); err != nil {
+			return result{}, err
+		}
 	}
 
 	samples := make([]time.Duration, 0, runs)
 	for range runs {
-		samples = append(samples, invokeTimed(binary, dsn, current))
+		elapsed, err := invokeTimed(binary, dsn, current)
+		if err != nil {
+			return result{}, err
+		}
+		samples = append(samples, elapsed)
 	}
-	return summarize(current.name, samples)
+	return summarize(current.name, samples), nil
 }
 
-func runPaired(baseline, candidate, dsn string, current benchmarkCase, warmup, runs int) (result, result) {
-	validateInvocation(baseline, dsn, current)
-	validateInvocation(candidate, dsn, current)
+func runPaired(baseline, candidate, dsn string, current benchmarkCase, warmup, runs int) (result, result, error) {
 	for index := range warmup {
-		invokePair(baseline, candidate, dsn, current, index)
+		if _, _, err := invokePair(baseline, candidate, dsn, current, index); err != nil {
+			return result{}, result{}, err
+		}
 	}
 
 	baseSamples := make([]time.Duration, 0, runs)
 	candidateSamples := make([]time.Duration, 0, runs)
 	for index := range runs {
-		first, second := invokePair(baseline, candidate, dsn, current, index)
+		first, second, err := invokePair(baseline, candidate, dsn, current, index)
+		if err != nil {
+			return result{}, result{}, err
+		}
 		baseSamples = append(baseSamples, first)
 		candidateSamples = append(candidateSamples, second)
 	}
-	return summarize(current.name, baseSamples), summarize(current.name, candidateSamples)
+	return summarize(current.name, baseSamples), summarize(current.name, candidateSamples), nil
 }
 
-func invokePair(baseline, candidate, dsn string, current benchmarkCase, index int) (time.Duration, time.Duration) {
+func invokePair(baseline, candidate, dsn string, current benchmarkCase, index int) (time.Duration, time.Duration, error) {
 	if index%2 == 0 {
-		return invokeTimed(baseline, dsn, current), invokeTimed(candidate, dsn, current)
+		baselineElapsed, err := invokeTimed(baseline, dsn, current)
+		if err != nil {
+			return 0, 0, err
+		}
+		candidateElapsed, err := invokeTimed(candidate, dsn, current)
+		return baselineElapsed, candidateElapsed, err
 	}
-	candidateElapsed := invokeTimed(candidate, dsn, current)
-	baselineElapsed := invokeTimed(baseline, dsn, current)
-	return baselineElapsed, candidateElapsed
+	candidateElapsed, err := invokeTimed(candidate, dsn, current)
+	if err != nil {
+		return 0, 0, err
+	}
+	baselineElapsed, err := invokeTimed(baseline, dsn, current)
+	return baselineElapsed, candidateElapsed, err
 }
 
 func summarize(name string, samples []time.Duration) result {
@@ -125,22 +149,17 @@ func summarize(name string, samples []time.Duration) result {
 	}
 }
 
-func invokeTimed(binary, dsn string, current benchmarkCase) time.Duration {
-	started := time.Now()
-	if err := invoke(binary, dsn, current, io.Discard); err != nil {
-		fatal("%v", err)
-	}
-	return time.Since(started)
-}
-
-func validateInvocation(binary, dsn string, current benchmarkCase) {
+func invokeTimed(binary, dsn string, current benchmarkCase) (time.Duration, error) {
 	var output bytes.Buffer
+	started := time.Now()
 	if err := invoke(binary, dsn, current, &output); err != nil {
-		fatal("%v", err)
+		return 0, err
 	}
+	elapsed := time.Since(started)
 	if err := validateOutput(current.name, output.Bytes()); err != nil {
-		fatal("%s produced invalid diagnostics: %v", current.name, err)
+		return 0, fmt.Errorf("%s produced invalid diagnostics: %w", current.name, err)
 	}
+	return elapsed, nil
 }
 
 func invoke(binary, dsn string, current benchmarkCase, stdout io.Writer) error {
@@ -163,28 +182,60 @@ func validateOutput(name string, data []byte) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return errors.New("empty output")
 	}
-	var value any
-	if err := json.Unmarshal(data, &value); err != nil {
-		return fmt.Errorf("parse JSON: %w", err)
-	}
 	switch name {
 	case "inspect-full":
-		object, ok := value.(map[string]any)
-		if !ok || object["schema_version"] == "" || arrayLength(object["queries"]) == 0 || arrayLength(object["tables"]) == 0 {
-			return errors.New("missing full inspection identity or evidence")
+		var context model.Context
+		if err := json.Unmarshal(data, &context); err != nil {
+			return fmt.Errorf("parse full inspection JSON: %w", err)
 		}
-	case "queries", "tables", "waits":
-		if arrayLength(value) == 0 {
-			return fmt.Errorf("%s array is empty or null", name)
+		if context.SchemaVersion == "" || context.Server.Flavor != "MySQL" || context.Server.Version == "" {
+			return errors.New("missing full inspection server identity")
+		}
+		if err := validateQueries(context.Queries); err != nil {
+			return err
+		}
+		if err := validateTables(context.Tables); err != nil {
+			return err
+		}
+	case "queries":
+		var queries []model.Query
+		if err := json.Unmarshal(data, &queries); err != nil {
+			return fmt.Errorf("parse queries JSON: %w", err)
+		}
+		return validateQueries(queries)
+	case "tables":
+		var tables []model.Table
+		if err := json.Unmarshal(data, &tables); err != nil {
+			return fmt.Errorf("parse tables JSON: %w", err)
+		}
+		return validateTables(tables)
+	case "waits":
+		var waits []model.WaitEvent
+		if err := json.Unmarshal(data, &waits); err != nil {
+			return fmt.Errorf("parse waits JSON: %w", err)
+		}
+		if len(waits) == 0 {
+			return errors.New("waits array is empty or null")
+		}
+		for _, wait := range waits {
+			if wait.Name == "" || wait.Class == "" {
+				return errors.New("wait evidence is missing name or class")
+			}
 		}
 	case "variables":
-		object, ok := value.(map[string]any)
-		if !ok || !strings.EqualFold(fmt.Sprint(object["performance_schema"]), "ON") {
+		var variables map[string]string
+		if err := json.Unmarshal(data, &variables); err != nil {
+			return fmt.Errorf("parse variables JSON: %w", err)
+		}
+		if !strings.EqualFold(variables["performance_schema"], "ON") {
 			return errors.New("performance_schema variable is absent or disabled")
 		}
 	case "engine":
-		object, ok := value.(map[string]any)
-		if !ok || number(object["connections_max"]) <= 0 || number(object["redo_capacity_bytes"]) <= 0 {
+		var metrics model.Metrics
+		if err := json.Unmarshal(data, &metrics); err != nil {
+			return fmt.Errorf("parse engine JSON: %w", err)
+		}
+		if metrics.ConnectionsMax == 0 || metrics.RedoCapacityBytes == 0 {
 			return errors.New("engine capacity metrics are absent")
 		}
 	default:
@@ -193,14 +244,28 @@ func validateOutput(name string, data []byte) error {
 	return nil
 }
 
-func arrayLength(value any) int {
-	items, _ := value.([]any)
-	return len(items)
+func validateQueries(queries []model.Query) error {
+	if len(queries) == 0 {
+		return errors.New("queries array is empty or null")
+	}
+	for _, query := range queries {
+		if query.Digest == "" || query.Statement == "" {
+			return errors.New("query evidence is missing digest or statement")
+		}
+	}
+	return nil
 }
 
-func number(value any) float64 {
-	number, _ := value.(float64)
-	return number
+func validateTables(tables []model.Table) error {
+	if len(tables) == 0 {
+		return errors.New("tables array is empty or null")
+	}
+	for _, table := range tables {
+		if table.Schema == "" || table.Name == "" || table.Engine == "" {
+			return errors.New("table evidence is missing schema, name, or engine")
+		}
+	}
+	return nil
 }
 
 func benchmarkEnvironment(dsn string) []string {

@@ -400,11 +400,13 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 	result := newContext(c.ToolVersion, target)
 	switch section {
 	case "queries":
-		c.probe(ctx, result, "statement digests", func() error {
+		if err := c.focusedProbe(result, "statement digests", func() error {
 			var probeErr error
 			result.Queries, probeErr = c.collectQueries(ctx, conn)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 		c.probe(ctx, result, "process list", func() error {
 			var probeErr error
 			result.Processes, probeErr = c.collectProcesses(ctx, conn)
@@ -412,41 +414,53 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 			return probeErr
 		})
 	case "tables":
-		c.probe(ctx, result, "table statistics", func() error {
+		if err := c.focusedProbe(result, "table statistics", func() error {
 			var probeErr error
 			result.Tables, probeErr = c.collectTables(ctx, conn)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 	case "indexes":
-		c.probe(ctx, result, "index statistics", func() error {
+		if err := c.focusedProbe(result, "index statistics", func() error {
 			var probeErr error
 			result.Indexes, probeErr = c.collectIndexes(ctx, conn)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 	case "processes":
-		c.probe(ctx, result, "process list", func() error {
+		if err := c.focusedProbe(result, "process list", func() error {
 			var probeErr error
 			result.Processes, probeErr = c.collectProcesses(ctx, conn)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 	case "transactions":
-		c.probe(ctx, result, "active transactions", func() error {
+		if err := c.focusedProbe(result, "active transactions", func() error {
 			var probeErr error
 			result.Transactions, probeErr = c.collectTransactions(ctx, conn)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 	case "locks":
-		c.probe(ctx, result, "row lock waits", func() error {
+		if err := c.focusedProbe(result, "row lock waits", func() error {
 			var probeErr error
 			result.Locks, probeErr = c.collectLocks(ctx, conn)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 	case "metadata-locks":
-		c.probe(ctx, result, "metadata locks", func() error {
+		if err := c.focusedProbe(result, "metadata locks", func() error {
 			var probeErr error
 			result.MetadataLocks, probeErr = c.collectMetadataLocks(ctx, conn)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 	case "waits":
 		first, firstErr := c.collectWaitCounters(ctx, conn)
 		started, err := c.waitForSample(ctx)
@@ -455,9 +469,10 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 		second, secondErr := c.collectWaitCounters(ctx, conn)
 		elapsed := time.Since(started)
-		if c.sampleProbe(result, "wait events", firstErr, secondErr) {
-			result.WaitEvents = deriveWaitEvents(first, second, elapsed)
+		if err := c.focusedSampleProbe(result, "wait events", firstErr, secondErr); err != nil {
+			return nil, err
 		}
+		result.WaitEvents = deriveWaitEvents(first, second, elapsed)
 		result.IntervalMillis = elapsed.Milliseconds()
 	case "io":
 		first, firstErr := c.collectFileIOCounters(ctx, conn)
@@ -467,9 +482,10 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 		second, secondErr := c.collectFileIOCounters(ctx, conn)
 		elapsed := time.Since(started)
-		if c.sampleProbe(result, "file I/O", firstErr, secondErr) {
-			result.FileIO = deriveFileIO(first, second, elapsed)
+		if err := c.focusedSampleProbe(result, "file I/O", firstErr, secondErr); err != nil {
+			return nil, err
 		}
+		result.FileIO = deriveFileIO(first, second, elapsed)
 		result.IntervalMillis = elapsed.Milliseconds()
 	case "errors":
 		first, firstErr := c.collectErrorCounters(ctx, conn)
@@ -479,16 +495,19 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 		second, secondErr := c.collectErrorCounters(ctx, conn)
 		elapsed := time.Since(started)
-		if c.sampleProbe(result, "server errors", firstErr, secondErr) {
-			result.ServerErrors = deriveServerErrors(first, second, elapsed)
+		if err := c.focusedSampleProbe(result, "server errors", firstErr, secondErr); err != nil {
+			return nil, err
 		}
+		result.ServerErrors = deriveServerErrors(first, second, elapsed)
 		result.IntervalMillis = elapsed.Milliseconds()
 	case "memory":
-		c.probe(ctx, result, "memory consumers", func() error {
+		if err := c.focusedProbe(result, "memory consumers", func() error {
 			var probeErr error
 			result.MemoryConsumers, probeErr = c.collectMemoryConsumers(ctx, conn)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 	case "engine":
 		if err := c.collectEngineSection(ctx, conn, result); err != nil {
 			return nil, err
@@ -496,14 +515,16 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 	case "coverage":
 		result.Variables, err = queryNameValue(ctx, conn, "SHOW GLOBAL VARIABLES")
 		if err != nil {
-			result.Warnings = append(result.Warnings, "global variables unavailable: "+err.Error())
+			return nil, fmt.Errorf("collect global variables: %w", err)
 		}
 		redactVariables(result.Variables)
-		c.probe(ctx, result, "instrumentation coverage", func() error {
+		if err := c.focusedProbe(result, "instrumentation coverage", func() error {
 			var probeErr error
 			result.Instrumentation, probeErr = c.collectInstrumentation(ctx, conn, result.Variables)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 		status, statusErr := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 		if statusErr != nil {
 			return nil, fmt.Errorf("collect global status: %w", statusErr)
@@ -512,19 +533,42 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 	case "variables":
 		result.Variables, err = queryNameValue(ctx, conn, "SHOW GLOBAL VARIABLES")
 		if err != nil {
-			result.Warnings = append(result.Warnings, "global variables unavailable: "+err.Error())
+			return nil, fmt.Errorf("collect global variables: %w", err)
 		}
 		redactVariables(result.Variables)
 	case "replication":
-		c.probe(ctx, result, "replication", func() error {
+		if err := c.focusedProbe(result, "replication", func() error {
 			var probeErr error
 			result.Replication, probeErr = c.collectReplication(ctx, conn)
 			return probeErr
-		})
+		}); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unknown diagnostic section %q", section)
 	}
 	return result, nil
+}
+
+func (c *Collector) focusedProbe(result *model.Context, name string, fn func() error) error {
+	err := fn()
+	c.recordCapability(result, name, err)
+	if err != nil {
+		return fmt.Errorf("collect %s: %w", name, err)
+	}
+	return nil
+}
+
+func (c *Collector) focusedSampleProbe(result *model.Context, name string, errs ...error) error {
+	if c.sampleProbe(result, name, errs...) {
+		return nil
+	}
+	for _, err := range errs {
+		if err != nil {
+			return fmt.Errorf("collect %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, result *model.Context) error {

@@ -8,7 +8,7 @@ Run it with:
 make benchmark
 ```
 
-The benchmark creates a uniquely named fresh `mysql:8.4` container backed by tmpfs on an ephemeral `127.0.0.1` port, seeds the end-to-end schema, and runs eight concurrent OLTP workers. Each command gets five warmups followed by 50 measured process executions. Before timing, the runner verifies that every command emits nonempty, section-appropriate JSON evidence. It reports wall-clock median, p95, minimum, and maximum latency, then tears down only its own container and temporary artifacts.
+The benchmark creates a uniquely named fresh `mysql:8.4` container backed by tmpfs on an ephemeral `127.0.0.1` port, seeds the end-to-end schema, and keeps eight concurrent OLTP workers running until the benchmark finishes. Each command gets five warmups followed by 50 measured process executions. Every invocation must emit typed, section-appropriate JSON evidence; validation happens after the invocation timer stops. The supervisor fails the run if the workload exits early. It reports wall-clock median, p95, minimum, and maximum latency, then tears down only its own container, processes, and temporary artifacts.
 
 For a longer run:
 

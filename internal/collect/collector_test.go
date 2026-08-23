@@ -1,6 +1,8 @@
 package collect
 
 import (
+	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -198,5 +200,57 @@ func TestDeriveEngineMetricsUsesIndependentSampleWindows(t *testing.T) {
 	if metrics.StatementErrorsPerSec != 5 || metrics.StatementWarningsPerSec != 10 {
 		t.Fatalf("statement rates used wrong window: errors=%.2f warnings=%.2f",
 			metrics.StatementErrorsPerSec, metrics.StatementWarningsPerSec)
+	}
+}
+
+func TestFocusedProbePropagatesProbeAndContextErrors(t *testing.T) {
+	collector := New("test")
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "driver", err: errors.New("invalid connection")},
+		{name: "context", err: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := newContext("test", Target{})
+			err := collector.focusedProbe(result, "table statistics", func() error { return test.err })
+			if !errors.Is(err, test.err) {
+				t.Fatalf("focused probe error = %v, want wrapped %v", err, test.err)
+			}
+			if len(result.Capabilities) != 1 || result.Capabilities[0].Available || len(result.Warnings) != 1 {
+				t.Fatalf("failed probe was not recorded: capabilities=%+v warnings=%+v", result.Capabilities, result.Warnings)
+			}
+		})
+	}
+}
+
+func TestFocusedSampleProbePropagatesEitherEndpointFailure(t *testing.T) {
+	collector := New("test")
+	for _, failures := range [][]error{
+		{errors.New("first sample failed"), nil},
+		{nil, errors.New("second sample failed")},
+	} {
+		result := newContext("test", Target{})
+		if err := collector.focusedSampleProbe(result, "wait events", failures...); err == nil {
+			t.Fatal("focused sample unexpectedly accepted a failed endpoint")
+		}
+		if len(result.Capabilities) != 1 || result.Capabilities[0].Available {
+			t.Fatalf("failed sample was not recorded once: %+v", result.Capabilities)
+		}
+	}
+}
+
+func TestFocusedProbeAcceptsSuccessfulNilReplication(t *testing.T) {
+	collector := New("test")
+	result := newContext("test", Target{})
+	if err := collector.focusedProbe(result, "replication", func() error {
+		result.Replication = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if result.Replication != nil || len(result.Capabilities) != 1 || !result.Capabilities[0].Available {
+		t.Fatalf("successful non-replica result was not preserved: replication=%+v capabilities=%+v", result.Replication, result.Capabilities)
 	}
 }
