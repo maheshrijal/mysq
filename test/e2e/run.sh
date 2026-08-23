@@ -26,7 +26,26 @@ go build -trimpath -ldflags "-X main.version=e2e" -o "$binary" ./cmd/mysq
 
 go run ./test/e2e/load --dsn "$load_dsn" --duration 45s >"$work_dir/load.log" 2>&1 &
 load_pid=$!
-sleep 7
+load_ready=false
+for _ in {1..120}; do
+  if grep -q '^load ready$' "$work_dir/load.log"; then
+    load_ready=true
+    break
+  fi
+  if ! kill -0 "$load_pid" >/dev/null 2>&1; then
+    wait "$load_pid" || true
+    cat "$work_dir/load.log" >&2
+    echo "load generator exited before becoming ready" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+if [[ "$load_ready" != true ]]; then
+  cat "$work_dir/load.log" >&2
+  echo "timed out waiting for deterministic load fixture" >&2
+  exit 1
+fi
+sleep 2
 
 MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --full --no-store >"$work_dir/full.txt"
 MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --no-store >"$work_dir/context.json"

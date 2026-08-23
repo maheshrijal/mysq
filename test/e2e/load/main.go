@@ -30,15 +30,24 @@ func main() {
 	defer db.Close()
 	db.SetMaxOpenConns(workers + 8)
 	db.SetMaxIdleConns(workers + 8)
-	ctx, cancel := context.WithTimeout(context.Background(), duration)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if err := db.PingContext(setupCtx); err != nil {
 		log.Fatal(err)
 	}
-	seed(ctx, db)
+	seed(setupCtx, db)
+	setupCancel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
 
 	var operations atomic.Uint64
 	var wg sync.WaitGroup
+	lockReady := make(chan error, 1)
+	wg.Add(1)
+	go func() { defer wg.Done(); holdRowLock(ctx, db, 35*time.Second, lockReady) }()
+	if err := <-lockReady; err != nil {
+		log.Fatalf("establish row-lock fixture: %v", err)
+	}
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func(worker int) {
@@ -46,10 +55,10 @@ func main() {
 			work(ctx, db, worker, &operations)
 		}(i)
 	}
-	wg.Add(3)
-	go func() { defer wg.Done(); holdRowLock(ctx, db, 35*time.Second) }()
+	wg.Add(2)
 	go func() { defer wg.Done(); waitOnRowLock(ctx, db) }()
 	go func() { defer wg.Done(); runLongStatement(ctx, db, 35) }()
+	fmt.Println("load ready")
 	wg.Wait()
 	fmt.Printf("load complete: %d operations\n", operations.Load())
 }
@@ -125,15 +134,18 @@ func work(ctx context.Context, db *sql.DB, worker int, operations *atomic.Uint64
 	}
 }
 
-func holdRowLock(ctx context.Context, db *sql.DB, duration time.Duration) {
+func holdRowLock(ctx context.Context, db *sql.DB, duration time.Duration, ready chan<- error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
+		ready <- err
 		return
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET balance=balance+1 WHERE id=1`); err != nil {
 		_ = tx.Rollback()
+		ready <- err
 		return
 	}
+	ready <- nil
 	timer := time.NewTimer(duration)
 	select {
 	case <-ctx.Done():
