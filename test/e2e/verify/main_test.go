@@ -47,6 +47,9 @@ func TestVerifyFocusedDataRequiresIOSampleEvidence(t *testing.T) {
 	if err := verifyFocusedData("io", []byte(`[{"name":"file","class":"io/file","writes_per_second":1}]`)); err != nil {
 		t.Fatalf("sampled file I/O was rejected: %v", err)
 	}
+	if err := verifyFocusedData("io", []byte(`[{"name":"file","class":"io/file"},{"writes_per_second":1}]`)); err == nil {
+		t.Fatal("split file I/O identity and sample evidence unexpectedly passed")
+	}
 }
 
 func TestVerifyFocusedDataRequiresErrorSampleEvidence(t *testing.T) {
@@ -55,5 +58,8 @@ func TestVerifyFocusedDataRequiresErrorSampleEvidence(t *testing.T) {
 	}
 	if err := verifyFocusedData("errors", []byte(`[{"number":1062,"name":"ER_DUP_ENTRY","sql_state":"23000","sample_raised":1}]`)); err != nil {
 		t.Fatalf("sampled server error was rejected: %v", err)
+	}
+	if err := verifyFocusedData("errors", []byte(`[{"number":1062,"name":"ER_DUP_ENTRY","sql_state":"23000"},{"sample_raised":1}]`)); err == nil {
+		t.Fatal("split server error identity and sample evidence unexpectedly passed")
 	}
 }

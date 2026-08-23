@@ -120,26 +120,38 @@ func verifyFocusedData(section string, data []byte) error {
 		}
 	case "io":
 		var items []model.FileIO
-		hasSample := false
 		err := decodeStrictJSON(trimmed, &items)
+		if err != nil || len(items) == 0 {
+			return fmt.Errorf("missing file I/O evidence: items=%d err=%v", len(items), err)
+		}
+		hasSample := false
 		for _, item := range items {
+			if item.Name == "" || item.Class == "" {
+				return fmt.Errorf("file I/O evidence is missing name or class: items=%d", len(items))
+			}
 			if item.ReadsPerSecond > 0 || item.WritesPerSecond > 0 || item.ReadBytesPerSecond > 0 || item.WriteBytesPerSecond > 0 || item.WaitMillisPerSecond > 0 {
 				hasSample = true
 			}
 		}
-		if err != nil || len(items) == 0 || items[0].Name == "" || !hasSample {
+		if !hasSample {
 			return fmt.Errorf("missing file I/O evidence: items=%d err=%v", len(items), err)
 		}
 	case "errors":
 		var items []model.ServerError
-		hasSample := false
 		err := decodeStrictJSON(trimmed, &items)
+		if err != nil || len(items) == 0 {
+			return fmt.Errorf("missing server error evidence: items=%d err=%v", len(items), err)
+		}
+		hasSample := false
 		for _, item := range items {
+			if item.Number == 0 || item.Name == "" || item.SQLState == "" {
+				return fmt.Errorf("server error evidence is missing number, name, or SQL state: items=%d", len(items))
+			}
 			if item.SampleRaised > 0 || item.RaisedPerSecond > 0 {
 				hasSample = true
 			}
 		}
-		if err != nil || len(items) == 0 || items[0].Number == 0 || !hasSample {
+		if !hasSample {
 			return fmt.Errorf("missing server error evidence: items=%d err=%v", len(items), err)
 		}
 	case "memory":

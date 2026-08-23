@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work_dir="$(mktemp -d)"
 binary="$work_dir/mysq"
+load_binary="$work_dir/load"
 port="${MYSQ_MYSQL_PORT:-33306}"
 monitor_dsn="mysq_monitor:mysq-monitor-test@tcp(127.0.0.1:${port})/app?parseTime=true"
 load_dsn="loadgen:mysq-load-test@tcp(127.0.0.1:${port})/app?parseTime=true"
@@ -27,9 +28,10 @@ trap cleanup EXIT
 
 cd "$repo_root"
 go build -trimpath -ldflags "-X main.version=e2e" -o "$binary" ./cmd/mysq
+go build -trimpath -o "$load_binary" ./test/e2e/load
 "${compose[@]}" up -d --wait
 
-go run ./test/e2e/load --dsn "$load_dsn" --duration 45s >"$work_dir/load.log" 2>&1 &
+"$load_binary" --dsn "$load_dsn" --duration 45s >"$work_dir/load.log" 2>&1 &
 load_pid=$!
 load_ready=false
 for _ in {1..120}; do
