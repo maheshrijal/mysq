@@ -311,7 +311,7 @@ func validateFullInspection(context model.Context, elapsed time.Duration, requir
 	if context.IntervalMillis < benchmarkSampleInterval.Milliseconds() {
 		return fmt.Errorf("full inspection interval is %dms, want at least %dms", context.IntervalMillis, benchmarkSampleInterval.Milliseconds())
 	}
-	if requireCurrentSchema {
+	if requireCurrentSchema || context.SchemaVersion == model.SchemaVersion {
 		intervals := context.SampleIntervals
 		if context.IntervalMillis != intervals.GlobalStatus {
 			return fmt.Errorf("legacy interval is %dms, want global status interval %dms", context.IntervalMillis, intervals.GlobalStatus)

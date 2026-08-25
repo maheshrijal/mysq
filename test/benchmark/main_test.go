@@ -81,6 +81,11 @@ func TestValidateOutputAcceptsLegacyFullContextOnlyForPairedBaseline(t *testing.
 	if err := validateOutput("inspect-full", marshalJSON(t, legacy), benchmarkSampleInterval, false); err == nil {
 		t.Fatal("legacy schema without the required benchmark evidence unexpectedly passed validation")
 	}
+	current := validFullContext()
+	current.SampleIntervals = model.SampleIntervals{}
+	if err := validateOutput("inspect-full", marshalJSON(t, current), benchmarkSampleInterval, false); err == nil {
+		t.Fatal("current-schema baseline bypassed per-family interval validation")
+	}
 }
 
 func TestValidateOutputRejectsIncompleteFullInspection(t *testing.T) {
