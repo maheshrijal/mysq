@@ -151,7 +151,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.queryDetailOffset = 0
 			}
 			m.refreshed = time.Now()
-			m.setStatus(fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint), true)
+			m.setStatus(fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint), false)
 			m.rebuild()
 			if tabs[m.tab] == "Queries" && !m.queryDetail && !m.help {
 				m.ensureQuerySelectionVisible()
@@ -164,7 +164,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Export failed: "+compact(msg.err.Error(), max(20, m.width-20)), true)
 		} else {
 			m.exportPath = msg.path
-			m.setStatus("Agent bundle exported: "+msg.path, true)
+			m.setStatus("Agent bundle exported: "+msg.path, false)
 		}
 		m.resizeViewport()
 		m.rebuild()
@@ -1531,41 +1531,46 @@ func rows(values [][]string, headings []string, widths []int) string {
 }
 
 func tablesView(ctx *model.Context, width int) string {
-	if len(ctx.Tables) == 0 {
+	if len(ctx.Tables) == 0 && len(ctx.Indexes) == 0 {
 		return empty("No application tables are visible to the monitoring user.")
 	}
 	var out strings.Builder
 	wide := width >= 110
 	compactLayout := width < 80
-	widths := []int{12, 11, 11, 11, 5, max(20, width-50)}
-	headings := []string{"SIZE", "ROWS", "READS", "WRITES", "PK", "TABLE"}
-	if compactLayout {
-		widths = []int{max(18, width-22), 8, 9, 5}
-		headings = []string{"TABLE", "SIZE", "ROWS", "PK"}
-	} else if wide {
-		widths = []int{11, 10, 9, 11, 9, 11, 5, max(22, width-66)}
-		headings = []string{"SIZE", "ROWS", "READS", "READ TIME", "WRITES", "WRITE TIME", "PK", "TABLE"}
-	}
-	out.WriteString(row(headings, widths, true) + "\n")
-	for _, table := range ctx.Tables {
-		identityWidth := widths[len(widths)-1]
-		pk := "yes"
-		if !table.HasPrimaryKey {
-			pk = "NO"
-		}
-		values := []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), humanCount(table.Writes), pk, table.Schema + "." + table.Name}
+	if len(ctx.Tables) > 0 {
+		widths := []int{12, 11, 11, 11, 5, max(20, width-50)}
+		headings := []string{"SIZE", "ROWS", "READS", "WRITES", "PK", "TABLE"}
 		if compactLayout {
-			identityWidth = widths[0]
-			values = []string{compactMiddle(table.Schema+"."+table.Name, widths[0]-1), humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), pk}
+			widths = []int{max(18, width-22), 8, 9, 5}
+			headings = []string{"TABLE", "SIZE", "ROWS", "PK"}
 		} else if wide {
-			values = []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), duration(table.ReadLatencyMillis),
-				humanCount(table.Writes), duration(table.WriteLatencyMillis), pk, table.Schema + "." + table.Name}
+			widths = []int{11, 10, 9, 11, 9, 11, 5, max(22, width-66)}
+			headings = []string{"SIZE", "ROWS", "READS", "READ TIME", "WRITES", "WRITE TIME", "PK", "TABLE"}
 		}
-		out.WriteString(row(values, widths, false) + "\n")
-		out.WriteString(identityContinuation(table.Schema+"."+table.Name, identityWidth, width))
+		out.WriteString(row(headings, widths, true) + "\n")
+		for _, table := range ctx.Tables {
+			identityWidth := widths[len(widths)-1]
+			pk := "yes"
+			if !table.HasPrimaryKey {
+				pk = "NO"
+			}
+			values := []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), humanCount(table.Writes), pk, table.Schema + "." + table.Name}
+			if compactLayout {
+				identityWidth = widths[0]
+				values = []string{compactMiddle(table.Schema+"."+table.Name, widths[0]-1), humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), pk}
+			} else if wide {
+				values = []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), duration(table.ReadLatencyMillis),
+					humanCount(table.Writes), duration(table.WriteLatencyMillis), pk, table.Schema + "." + table.Name}
+			}
+			out.WriteString(row(values, widths, false) + "\n")
+			out.WriteString(identityContinuation(table.Schema+"."+table.Name, identityWidth, width))
+		}
 	}
 	if len(ctx.Indexes) > 0 {
-		out.WriteString("\n" + sectionTitle("INDEX ACTIVITY") + "\n")
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString(sectionTitle("INDEX ACTIVITY") + "\n")
 		indexWidths := []int{10, 10, 11, 10, max(24, width-41)}
 		indexHeadings := []string{"READS", "WRITES", "CARDINALITY", "FLAGS", "INDEX AND COLUMNS"}
 		if compactLayout {

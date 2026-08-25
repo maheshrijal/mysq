@@ -872,6 +872,62 @@ func TestActiveFilterDoesNotHideExportProgress(t *testing.T) {
 	}
 }
 
+func TestSuccessfulOperationsRestoreActiveFilterStatus(t *testing.T) {
+	ctx := &model.Context{
+		Fingerprint: "abc123", Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	for _, test := range []struct {
+		name    string
+		message tea.Msg
+		dismiss bool
+	}{
+		{name: "refresh", message: inspectMessage{context: ctx}},
+		{name: "export", message: exportMessage{path: "/workspace/bundle"}, dismiss: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := New(context.Background(), nil, nil)
+			m.loading = false
+			m.snapshot = ctx
+			m.tab = 2
+			m.filters[2] = "orders"
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+			m = updated.(Model)
+			updated, _ = m.Update(test.message)
+			m = updated.(Model)
+			if test.dismiss {
+				updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				m = updated.(Model)
+			}
+			if view := m.View(); !strings.Contains(view, `Filter "orders"`) {
+				t.Fatalf("successful %s hid retained active filter:\n%s", test.name, view)
+			}
+		})
+	}
+}
+
+func TestTablesFilterRendersIndexWithoutCollectedTable(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Tables:  []model.Table{{Schema: "app", Name: "top_100_table"}},
+		Indexes: []model.Index{{Schema: "archive", Table: "table_101", Name: "idx_customer", Columns: "customer_id"}},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 5
+	m.filters[5] = "idx_customer"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	if matched, total := m.filterCounts(); matched != 1 || total != 2 {
+		t.Fatalf("table filter count = %d/%d, want 1/2", matched, total)
+	}
+	view := m.View()
+	if !strings.Contains(view, "archive.table_101.idx_customer") || strings.Contains(view, "No application tables") {
+		t.Fatalf("index-only table filter result was hidden:\n%s", view)
+	}
+}
+
 func TestConnectionsFilterCountsOnlyRenderableGroups(t *testing.T) {
 	ctx := &model.Context{
 		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
