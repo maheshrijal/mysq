@@ -318,7 +318,9 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	if c.sampleProbe(result, "file I/O", firstFileErr, secondFileErr) {
 		result.FileIO = deriveFileIO(firstFileIO, secondFileIO, fileIOElapsed)
 	}
-	if c.sampleProbe(result, "server errors", firstErrorErr, secondErrorErr) {
+	serverErrorSampleErr := sampledServerError(firstErrorErr, secondErrorErr,
+		firstDigestErr, firstStatementErr, secondStatementErr, secondDigestErr, secondWaitErr, secondFileErr)
+	if c.sampleProbe(result, "server errors", serverErrorSampleErr) {
 		result.ServerErrors = deriveServerErrors(firstErrors, secondErrors, errorsElapsed)
 	}
 	if c.sampleProbe(result, "statement database time", firstDigestErr, secondDigestErr) {
@@ -651,6 +653,21 @@ func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, re
 func sampledContextError(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("collect sampled counters: %w", err)
+	}
+	return nil
+}
+
+func sampledServerError(first, second error, enclosed ...error) error {
+	if first != nil {
+		return first
+	}
+	if second != nil {
+		return second
+	}
+	for _, err := range enclosed {
+		if err != nil {
+			return fmt.Errorf("sample window contaminated by collector probe failure: %w", err)
+		}
 	}
 	return nil
 }

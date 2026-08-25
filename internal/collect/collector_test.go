@@ -81,6 +81,16 @@ func TestSampledContextCancellationIsFatal(t *testing.T) {
 	}
 }
 
+func TestServerErrorSampleRejectsEnclosedProbeFailure(t *testing.T) {
+	probeErr := errors.New("unsupported optional probe")
+	if err := sampledServerError(nil, nil, nil, probeErr); !errors.Is(err, probeErr) || !strings.Contains(err.Error(), "contaminated") {
+		t.Fatalf("server-error sample contamination = %v", err)
+	}
+	if err := sampledServerError(nil, nil, nil); err != nil {
+		t.Fatalf("clean server-error sample rejected: %v", err)
+	}
+}
+
 func TestAttributeActiveUsersToDigestWithoutGuessing(t *testing.T) {
 	queries := []model.Query{{Digest: "A"}, {Digest: "B"}}
 	processes := []model.Process{
