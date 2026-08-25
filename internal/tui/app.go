@@ -490,7 +490,7 @@ func (m *Model) restoreQuerySelection(identity string) bool {
 
 func queryIdentity(query model.Query) string {
 	if query.Digest != "" {
-		return query.Digest
+		return query.Schema + "\x00" + query.Digest
 	}
 	return query.Schema + "\x00" + query.Statement
 }

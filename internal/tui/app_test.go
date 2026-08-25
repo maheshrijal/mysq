@@ -492,8 +492,8 @@ func TestRefreshPreservesQueryIdentityAndResetsDetailOffset(t *testing.T) {
 	ctx := &model.Context{
 		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
 		Queries: []model.Query{
-			{Digest: "first", Statement: "SELECT first FROM orders"},
-			{Digest: "second", Statement: "SELECT second FROM orders"},
+			{Digest: "shared", Schema: "first_db", Statement: "SELECT first FROM orders"},
+			{Digest: "shared", Schema: "second_db", Statement: "SELECT second FROM orders"},
 		},
 	}
 	m := New(context.Background(), nil, nil)
@@ -511,8 +511,8 @@ func TestRefreshPreservesQueryIdentityAndResetsDetailOffset(t *testing.T) {
 	updated, _ = m.Update(inspectMessage{context: &model.Context{
 		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
 		Queries: []model.Query{
-			{Digest: "second", Statement: "SELECT second FROM orders"},
-			{Digest: "first", Statement: "SELECT first FROM orders"},
+			{Digest: "shared", Schema: "second_db", Statement: "SELECT second FROM orders"},
+			{Digest: "shared", Schema: "first_db", Statement: "SELECT first FROM orders"},
 		},
 	}})
 	m = updated.(Model)
