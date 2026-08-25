@@ -810,16 +810,19 @@ func (m Model) renderTabs(indices []int, measureOnly bool) string {
 		if count := m.tabCount(index); count != "" {
 			label += " (" + count + ")"
 		}
+		active := index == m.tab
+		if active {
+			label = fmt.Sprintf("● %d %s", index+1, strings.ToUpper(tabs[index]))
+			if count := m.tabCount(index); count != "" {
+				label += " (" + count + ")"
+			}
+		}
 		if measureOnly {
 			items = append(items, " "+label+" ")
 			continue
 		}
 		style := lipgloss.NewStyle().Foreground(muted).Padding(0, 1)
-		if index == m.tab {
-			label = fmt.Sprintf("● %d %s", index+1, strings.ToUpper(tabs[index]))
-			if count := m.tabCount(index); count != "" {
-				label += " (" + count + ")"
-			}
+		if active {
 			style = style.Foreground(cyan).Background(surface).Bold(true)
 		}
 		items = append(items, style.Render(label))

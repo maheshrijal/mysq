@@ -245,6 +245,40 @@ func TestResponsiveChromeNeverExceedsTerminal(t *testing.T) {
 	}
 }
 
+func TestTabChromeFitsEveryResponsiveWidth(t *testing.T) {
+	populated := &model.Context{
+		Health:           model.Health{Score: 100},
+		Metrics:          model.Metrics{ConnectionsMax: 100},
+		Queries:          make([]model.Query, 123),
+		Processes:        make([]model.Process, 45),
+		Findings:         make([]model.Finding, 6),
+		Tables:           make([]model.Table, 78),
+		Indexes:          make([]model.Index, 90),
+		ConnectionGroups: make([]model.ConnectionGroup, 12),
+	}
+	for _, snapshot := range []*model.Context{nil, populated} {
+		for tab := range tabs {
+			for width := 52; width <= 150; width++ {
+				m := New(context.Background(), nil, nil)
+				m.snapshot = snapshot
+				m.loading = snapshot == nil
+				m.tab = tab
+				updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 18})
+				view := updated.(Model).View()
+				lines := strings.Split(view, "\n")
+				if len(lines) > 18 {
+					t.Fatalf("tab %d at %dx18 rendered %d lines:\n%s", tab, width, len(lines), view)
+				}
+				for _, line := range lines {
+					if got := lipgloss.Width(line); got > width {
+						t.Fatalf("tab %d at %dx18 rendered line width %d:\n%s", tab, width, got, view)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestTinyTerminalShowsResizeState(t *testing.T) {
 	m := New(context.Background(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
