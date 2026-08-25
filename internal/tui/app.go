@@ -190,6 +190,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
+	if m.width > 0 && (m.width < 52 || m.height < 18) {
+		if key.Matches(msg, m.keys.Quit) {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
 	if m.filtering {
 		return m.updateFilter(msg)
 	}
@@ -1345,6 +1351,7 @@ func labelValue(label, value string) string {
 
 func engine(ctx *model.Context, width int) string {
 	var out strings.Builder
+	compactLayout := width < 90
 	currentLoad := summarizeCurrentLoad(ctx)
 	load := fmt.Sprintf("active %d  ·  executing %d  ·  waiting %d  ·  top wait %s  ·  top user %s",
 		currentLoad.active, currentLoad.executing, currentLoad.waiting, currentLoad.topWait, currentLoad.topUser)
@@ -1360,35 +1367,69 @@ func engine(ctx *model.Context, width int) string {
 		{"buffer pool data / dirty", humanBytes(ctx.Metrics.BufferPoolDataBytes) + " / " + humanBytes(ctx.Metrics.BufferPoolDirtyBytes), fmt.Sprintf("waits %.2f/s", ctx.Metrics.BufferPoolWaitsPerSec)},
 		{"network in / out", humanBytes(uint64(ctx.Metrics.NetworkInBytesPerSec)) + "/s / " + humanBytes(uint64(ctx.Metrics.NetworkOutBytesPerSec)) + "/s", fmt.Sprintf("scans %.2f/s · sort merges %.2f/s", ctx.Metrics.FullScansPerSecond, ctx.Metrics.SortMergePassesPerSec)},
 	}
-	out.WriteString(rows(metricRows, []string{"SIGNAL", "VALUE", "RELATED"}, metricWidths) + "\n")
+	metricHeadings := []string{"SIGNAL", "VALUE", "RELATED"}
+	if compactLayout {
+		metricWidths = []int{max(22, width-18), 18}
+		metricHeadings = []string{"SIGNAL", "VALUE"}
+		for index := range metricRows {
+			metricRows[index] = metricRows[index][:2]
+		}
+	}
+	out.WriteString(rows(metricRows, metricHeadings, metricWidths) + "\n")
 
 	if len(ctx.WaitEvents) > 0 {
 		out.WriteString(sectionTitle("SAMPLED WAIT PRESSURE") + "\n")
 		waitWidths := []int{8, 12, 10, 12, max(28, width-42)}
-		out.WriteString(row([]string{"SHARE", "WAIT/S", "EVENTS/S", "CUM TOTAL", "EVENT"}, waitWidths, true) + "\n")
+		waitHeadings := []string{"SHARE", "WAIT/S", "EVENTS/S", "CUM TOTAL", "EVENT"}
+		if compactLayout {
+			waitWidths = []int{max(22, width-18), 8, 10}
+			waitHeadings = []string{"EVENT", "SHARE", "WAIT/S"}
+		}
+		out.WriteString(row(waitHeadings, waitWidths, true) + "\n")
 		for _, wait := range ctx.WaitEvents {
-			out.WriteString(row([]string{fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s",
-				fmt.Sprintf("%.1f", wait.EventsPerSecond), duration(wait.TotalLatencyMillis), wait.Name}, waitWidths, false) + "\n")
+			values := []string{fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s",
+				fmt.Sprintf("%.1f", wait.EventsPerSecond), duration(wait.TotalLatencyMillis), wait.Name}
+			if compactLayout {
+				values = []string{wait.Name, fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s"}
+			}
+			out.WriteString(row(values, waitWidths, false) + "\n")
 		}
 	}
 
 	if len(ctx.FileIO) > 0 {
 		out.WriteString("\n" + sectionTitle("MYSQL FILE I/O") + "\n")
 		ioWidths := []int{10, 10, 12, 12, max(28, width-44)}
-		out.WriteString(row([]string{"READ/S", "WRITE/S", "READ LAT", "WRITE LAT", "FILE INSTRUMENT"}, ioWidths, true) + "\n")
+		ioHeadings := []string{"READ/S", "WRITE/S", "READ LAT", "WRITE LAT", "FILE INSTRUMENT"}
+		if compactLayout {
+			ioWidths = []int{max(22, width-18), 9, 9}
+			ioHeadings = []string{"FILE INSTRUMENT", "READ/S", "WRITE/S"}
+		}
+		out.WriteString(row(ioHeadings, ioWidths, true) + "\n")
 		for _, item := range ctx.FileIO[:min(12, len(ctx.FileIO))] {
-			out.WriteString(row([]string{fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond),
-				duration(item.MeanReadLatencyMillis), duration(item.MeanWriteLatencyMillis), item.Name}, ioWidths, false) + "\n")
+			values := []string{fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond),
+				duration(item.MeanReadLatencyMillis), duration(item.MeanWriteLatencyMillis), item.Name}
+			if compactLayout {
+				values = []string{item.Name, fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond)}
+			}
+			out.WriteString(row(values, ioWidths, false) + "\n")
 		}
 	}
 
 	if len(ctx.ServerErrors) > 0 {
 		out.WriteString("\n" + sectionTitle("MYSQL ERRORS AND WARNINGS") + "\n")
 		errorWidths := []int{9, 10, 10, 20, max(28, width-49)}
-		out.WriteString(row([]string{"ERROR", "SAMPLE/S", "TOTAL", "LAST SEEN", "NAME"}, errorWidths, true) + "\n")
+		errorHeadings := []string{"ERROR", "SAMPLE/S", "TOTAL", "LAST SEEN", "NAME"}
+		if compactLayout {
+			errorWidths = []int{max(22, width-18), 8, 10}
+			errorHeadings = []string{"NAME", "ERROR", "SAMPLE/S"}
+		}
+		out.WriteString(row(errorHeadings, errorWidths, true) + "\n")
 		for _, item := range ctx.ServerErrors[:min(10, len(ctx.ServerErrors))] {
-			out.WriteString(row([]string{fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond), humanCount(item.Raised),
-				item.LastSeen, item.Name}, errorWidths, false) + "\n")
+			values := []string{fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond), humanCount(item.Raised), item.LastSeen, item.Name}
+			if compactLayout {
+				values = []string{item.Name, fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond)}
+			}
+			out.WriteString(row(values, errorWidths, false) + "\n")
 		}
 	}
 
@@ -1428,12 +1469,21 @@ func engine(ctx *model.Context, width int) string {
 	if len(ctx.MemoryConsumers) > 0 {
 		out.WriteString("\n" + sectionTitle("TOP MYSQL MEMORY CONSUMERS") + "\n")
 		memoryWidths := []int{13, 13, 12, max(28, width-38)}
-		out.WriteString(row([]string{"CURRENT", "HIGH WATER", "ALLOCATIONS", "CONSUMER"}, memoryWidths, true) + "\n")
+		memoryHeadings := []string{"CURRENT", "HIGH WATER", "ALLOCATIONS", "CONSUMER"}
+		if compactLayout {
+			memoryWidths = []int{max(20, width-24), 12, 12}
+			memoryHeadings = []string{"CONSUMER", "CURRENT", "HIGH WATER"}
+		}
+		out.WriteString(row(memoryHeadings, memoryWidths, true) + "\n")
 		for _, consumer := range ctx.MemoryConsumers {
-			out.WriteString(row([]string{humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes), humanCount(consumer.Allocations), consumer.Name}, memoryWidths, false) + "\n")
+			values := []string{humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes), humanCount(consumer.Allocations), consumer.Name}
+			if compactLayout {
+				values = []string{consumer.Name, humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes)}
+			}
+			out.WriteString(row(values, memoryWidths, false) + "\n")
 		}
 	}
-	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Wait, file I/O, and error rates use their per-family sample windows; cumulative totals are retained for forensic context."))
+	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Width(width).Render("Wait, file I/O, and error rates use their per-family sample windows; cumulative totals are retained for forensic context."))
 	return out.String()
 }
 
@@ -1452,9 +1502,13 @@ func tablesView(ctx *model.Context, width int) string {
 	}
 	var out strings.Builder
 	wide := width >= 110
+	compactLayout := width < 80
 	widths := []int{12, 11, 11, 11, 5, max(20, width-50)}
 	headings := []string{"SIZE", "ROWS", "READS", "WRITES", "PK", "TABLE"}
-	if wide {
+	if compactLayout {
+		widths = []int{max(18, width-22), 8, 9, 5}
+		headings = []string{"TABLE", "SIZE", "ROWS", "PK"}
+	} else if wide {
 		widths = []int{11, 10, 9, 11, 9, 11, 5, max(22, width-66)}
 		headings = []string{"SIZE", "ROWS", "READS", "READ TIME", "WRITES", "WRITE TIME", "PK", "TABLE"}
 	}
@@ -1465,7 +1519,9 @@ func tablesView(ctx *model.Context, width int) string {
 			pk = "NO"
 		}
 		values := []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), humanCount(table.Writes), pk, table.Schema + "." + table.Name}
-		if wide {
+		if compactLayout {
+			values = []string{table.Schema + "." + table.Name, humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), pk}
+		} else if wide {
 			values = []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), duration(table.ReadLatencyMillis),
 				humanCount(table.Writes), duration(table.WriteLatencyMillis), pk, table.Schema + "." + table.Name}
 		}
@@ -1474,7 +1530,12 @@ func tablesView(ctx *model.Context, width int) string {
 	if len(ctx.Indexes) > 0 {
 		out.WriteString("\n" + sectionTitle("INDEX ACTIVITY") + "\n")
 		indexWidths := []int{10, 10, 11, 10, max(24, width-41)}
-		out.WriteString(row([]string{"READS", "WRITES", "CARDINALITY", "FLAGS", "INDEX AND COLUMNS"}, indexWidths, true) + "\n")
+		indexHeadings := []string{"READS", "WRITES", "CARDINALITY", "FLAGS", "INDEX AND COLUMNS"}
+		if compactLayout {
+			indexWidths = []int{max(18, width-26), 8, 8, 10}
+			indexHeadings = []string{"INDEX AND COLUMNS", "READS", "WRITES", "FLAGS"}
+		}
+		out.WriteString(row(indexHeadings, indexWidths, true) + "\n")
 		for _, index := range ctx.Indexes {
 			flags := ""
 			if index.Unique {
@@ -1483,30 +1544,51 @@ func tablesView(ctx *model.Context, width int) string {
 			if !index.Visible {
 				flags += "hidden"
 			}
-			out.WriteString(row([]string{humanCount(index.Reads), humanCount(index.Writes), humanCount(index.Cardinality), strings.TrimSpace(flags), index.Schema + "." + index.Table + "." + index.Name + " (" + index.Columns + ")"}, indexWidths, false) + "\n")
+			identity := index.Schema + "." + index.Table + "." + index.Name + " (" + index.Columns + ")"
+			values := []string{humanCount(index.Reads), humanCount(index.Writes), humanCount(index.Cardinality), strings.TrimSpace(flags), identity}
+			if compactLayout {
+				values = []string{identity, humanCount(index.Reads), humanCount(index.Writes), strings.TrimSpace(flags)}
+			}
+			out.WriteString(row(values, indexWidths, false) + "\n")
 		}
 	}
-	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Rows are InnoDB estimates. I/O counters are since Performance Schema reset."))
+	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Width(width).Render("Rows are InnoDB estimates. I/O counters are since Performance Schema reset."))
 	return out.String()
 }
 
 func connections(ctx *model.Context, width int) string {
 	var out strings.Builder
+	compactLayout := width < 82
 	if len(ctx.ConnectionGroups) > 0 {
 		out.WriteString(sectionTitle("CONNECTION BREAKDOWN") + "\n")
 		groupWidths := []int{10, max(18, width-42), 8, 8, 8, 8}
-		out.WriteString(row([]string{"GROUP", "VALUE", "TOTAL", "ACTIVE", "SLEEP", "OTHER"}, groupWidths, true) + "\n")
+		groupHeadings := []string{"GROUP", "VALUE", "TOTAL", "ACTIVE", "SLEEP", "OTHER"}
+		if compactLayout {
+			groupWidths = []int{10, max(18, width-26), 8, 8}
+			groupHeadings = []string{"GROUP", "VALUE", "TOTAL", "ACTIVE"}
+		}
+		out.WriteString(row(groupHeadings, groupWidths, true) + "\n")
 		shown := 0
 		for _, group := range ctx.ConnectionGroups {
 			if group.Kind == "user_host" || shown >= 12 {
 				continue
 			}
-			out.WriteString(row([]string{group.Kind, group.Key, fmt.Sprint(group.Total), fmt.Sprint(group.Active), fmt.Sprint(group.Sleeping), fmt.Sprint(group.Other)}, groupWidths, false) + "\n")
+			values := []string{group.Kind, group.Key, fmt.Sprint(group.Total), fmt.Sprint(group.Active), fmt.Sprint(group.Sleeping), fmt.Sprint(group.Other)}
+			if compactLayout {
+				values = values[:4]
+			}
+			out.WriteString(row(values, groupWidths, false) + "\n")
 			shown++
 		}
 		out.WriteString("\n" + sectionTitle("PROCESS SNAPSHOT") + "\n")
 	}
-	if width < 100 {
+	if compactLayout {
+		processWidths := []int{max(18, width-28), 10, 8, 10}
+		out.WriteString("\n" + row([]string{"STATEMENT", "USER", "TIME", "WAIT"}, processWidths, true) + "\n")
+		for _, process := range ctx.Processes {
+			out.WriteString(row([]string{process.Statement, process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processWidths, false) + "\n")
+		}
+	} else if width < 103 {
 		processWidths := []int{8, 12, 8, 18, max(22, width-46)}
 		out.WriteString("\n" + row([]string{"ID", "USER", "TIME", "WAIT", "STATEMENT"}, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
@@ -1525,24 +1607,43 @@ func connections(ctx *model.Context, width int) string {
 	if len(ctx.Locks) > 0 {
 		out.WriteString("\n\n" + sectionTitle("ROW LOCK WAITS") + "\n")
 		for _, lock := range ctx.Locks {
-			fmt.Fprintf(&out, "%s waits for %s on %s.%s index %s (%s %s)\n", lock.WaitingTransaction, lock.BlockingTransaction, lock.Schema, lock.Table, lock.Index, lock.LockType, lock.LockMode)
+			line := fmt.Sprintf("%s waits for %s on %s.%s index %s (%s %s)", lock.WaitingTransaction, lock.BlockingTransaction, lock.Schema, lock.Table, lock.Index, lock.LockType, lock.LockMode)
+			out.WriteString(lipgloss.NewStyle().Width(width).Render(line) + "\n")
 		}
 	}
 	if len(ctx.Transactions) > 0 {
 		out.WriteString("\n\n" + sectionTitle("ACTIVE TRANSACTIONS") + "\n")
 		transactionWidths := []int{11, 12, 8, 9, 10, max(28, width-50)}
-		out.WriteString(row([]string{"TRX", "USER", "AGE", "LOCKED", "MODIFIED", "STATEMENT"}, transactionWidths, true) + "\n")
+		transactionHeadings := []string{"TRX", "USER", "AGE", "LOCKED", "MODIFIED", "STATEMENT"}
+		if compactLayout {
+			transactionWidths = []int{max(18, width-28), 10, 10, 8}
+			transactionHeadings = []string{"STATEMENT", "TRX", "USER", "AGE"}
+		}
+		out.WriteString(row(transactionHeadings, transactionWidths, true) + "\n")
 		for _, transaction := range ctx.Transactions {
-			out.WriteString(row([]string{transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds), humanCount(transaction.RowsLocked), humanCount(transaction.RowsModified), transaction.Statement}, transactionWidths, false) + "\n")
+			values := []string{transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds), humanCount(transaction.RowsLocked), humanCount(transaction.RowsModified), transaction.Statement}
+			if compactLayout {
+				values = []string{transaction.Statement, transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds)}
+			}
+			out.WriteString(row(values, transactionWidths, false) + "\n")
 		}
 	}
 	if len(ctx.MetadataLocks) > 0 {
 		out.WriteString("\n\n" + sectionTitle("METADATA LOCKS") + "\n")
 		metadataWidths := []int{9, 12, 12, 13, 12, max(24, width-58)}
-		out.WriteString(row([]string{"STATUS", "USER", "TYPE", "DURATION", "OBJECT TYPE", "OBJECT"}, metadataWidths, true) + "\n")
+		metadataHeadings := []string{"STATUS", "USER", "TYPE", "DURATION", "OBJECT TYPE", "OBJECT"}
+		if compactLayout {
+			metadataWidths = []int{max(18, width-30), 10, 10, 10}
+			metadataHeadings = []string{"OBJECT", "STATUS", "USER", "TYPE"}
+		}
+		out.WriteString(row(metadataHeadings, metadataWidths, true) + "\n")
 		for _, lock := range ctx.MetadataLocks {
 			object := strings.TrimPrefix(lock.Schema+"."+lock.Object, ".")
-			out.WriteString(row([]string{lock.Status, lock.User, lock.LockType, lock.Duration, lock.ObjectType, object}, metadataWidths, false) + "\n")
+			values := []string{lock.Status, lock.User, lock.LockType, lock.Duration, lock.ObjectType, object}
+			if compactLayout {
+				values = []string{object, lock.Status, lock.User, lock.LockType}
+			}
+			out.WriteString(row(values, metadataWidths, false) + "\n")
 		}
 	}
 	return out.String()

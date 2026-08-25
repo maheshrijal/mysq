@@ -103,6 +103,80 @@ func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 	}
 }
 
+func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
+	ctx := &model.Context{
+		Health:       model.Health{Score: 100},
+		Metrics:      model.Metrics{ConnectionsMax: 100},
+		WaitEvents:   []model.WaitEvent{{Name: "wait/narrow", SampleSharePercent: 42}},
+		FileIO:       []model.FileIO{{Name: "file/narrow", ReadsPerSecond: 3}},
+		ServerErrors: []model.ServerError{{Name: "err/narrow", Number: 1234, RaisedPerSecond: 1}},
+		MemoryConsumers: []model.MemoryConsumer{{
+			Name: "memory/narrow", CurrentBytes: 1024, HighBytes: 2048,
+		}},
+		Tables:  []model.Table{{Schema: "app", Name: "narrow_table", TotalBytes: 1024, HasPrimaryKey: true}},
+		Indexes: []model.Index{{Schema: "ix", Table: "t", Name: "narrow_idx", Columns: "id", Visible: true}},
+		ConnectionGroups: []model.ConnectionGroup{{
+			Kind: "user", Key: "narrow_user", Total: 2, Active: 1,
+		}},
+		Processes:    []model.Process{{User: "app", Seconds: 2, Statement: "SELECT narrow_process"}},
+		Transactions: []model.Transaction{{ID: "trx-1", User: "app", AgeSeconds: 3, Statement: "UPDATE narrow_trx"}},
+		MetadataLocks: []model.MetadataLock{{
+			Status: "PENDING", User: "app", LockType: "EXCLUSIVE", Schema: "app", Object: "narrow_object",
+		}},
+	}
+
+	for _, size := range []tea.WindowSizeMsg{{Width: 52, Height: 18}, {Width: 60, Height: 24}} {
+		m := New(context.Background(), nil, nil)
+		m.loading = false
+		m.snapshot = ctx
+		updated, _ := m.Update(size)
+		m = updated.(Model)
+
+		for _, check := range []struct {
+			tab      int
+			expected []string
+		}{
+			{tab: 3, expected: []string{"wait/narrow", "file/narrow", "err/narrow", "memory/narrow"}},
+			{tab: 5, expected: []string{"app.narrow_table", "ix.t.narrow_idx"}},
+			{tab: 1, expected: []string{"narrow_user", "SELECT narrow", "UPDATE narrow_trx", "app.narrow_object"}},
+		} {
+			m.tab = check.tab
+			m.rebuild()
+			rendered := allViewportFrames(m)
+			for _, expected := range check.expected {
+				if !strings.Contains(rendered, expected) {
+					t.Fatalf("%dx%d %s view clipped identity %q:\n%s", size.Width, size.Height, tabs[check.tab], expected, rendered)
+				}
+			}
+		}
+	}
+
+	for width := 48; width <= 150; width++ {
+		for name, rendered := range map[string]string{
+			"engine":      engine(ctx, width),
+			"tables":      tablesView(ctx, width),
+			"connections": connections(ctx, width),
+		} {
+			for _, line := range strings.Split(rendered, "\n") {
+				if got := lipgloss.Width(line); got > width {
+					t.Fatalf("%s renderer produced width %d at viewport width %d:\n%s", name, got, width, line)
+				}
+			}
+		}
+	}
+}
+
+func allViewportFrames(m Model) string {
+	var rendered strings.Builder
+	lastOffset := max(0, m.viewport.TotalLineCount()-m.viewport.Height)
+	for offset := 0; offset <= lastOffset; offset++ {
+		m.viewport.SetYOffset(offset)
+		rendered.WriteString(m.viewport.View())
+		rendered.WriteByte('\n')
+	}
+	return rendered.String()
+}
+
 func TestResponsiveChromeNeverExceedsTerminal(t *testing.T) {
 	ctx := &model.Context{
 		Fingerprint: "abc", Server: model.Server{Host: "database.internal", Port: 3306, Database: "application", Flavor: "MySQL", Version: "8.4.0"},
@@ -181,6 +255,58 @@ func TestHorizontalArrowsNavigateViewsAndVerticalKeysScrollContent(t *testing.T)
 	m = updated.(Model)
 	if m.viewport.YOffset != 0 {
 		t.Fatalf("k scroll offset = %d, want 0", m.viewport.YOffset)
+	}
+}
+
+func TestTooSmallScreenAcceptsOnlyQuit(t *testing.T) {
+	ctx := &model.Context{
+		Health:  model.Health{Score: 100},
+		Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), nil, func(*model.Context) (string, error) { return "bundle", nil })
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	if !m.filtering {
+		t.Fatal("test setup did not enter filtering")
+	}
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+	m = updated.(Model)
+	updated, quit := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = updated.(Model)
+	if quit == nil {
+		t.Fatal("q did not quit from the too-small screen")
+	}
+	quitMessage := quit()
+	if _, ok := quitMessage.(tea.QuitMsg); !ok {
+		t.Fatalf("q returned %T, want tea.QuitMsg", quitMessage)
+	}
+	if got := m.filterInput.Value(); got != "" {
+		t.Fatalf("q was typed into hidden filter: %q", got)
+	}
+
+	m.filtering = false
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'/'}},
+		{Type: tea.KeyRunes, Runes: []rune{'?'}},
+		{Type: tea.KeyRunes, Runes: []rune{'e'}},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
+		{Type: tea.KeyRunes, Runes: []rune{'1'}},
+		{Type: tea.KeyTab},
+		{Type: tea.KeyEnter},
+	}
+	for _, pressed := range keys {
+		beforeTab := m.tab
+		updated, command := m.Update(pressed)
+		m = updated.(Model)
+		if command != nil || m.filtering || m.help || m.exporting || m.loading || m.queryDetail || m.tab != beforeTab {
+			t.Fatalf("%q activated hidden state at 40x12: cmd=%v filtering=%v help=%v exporting=%v loading=%v detail=%v tab=%d", pressed.String(), command != nil, m.filtering, m.help, m.exporting, m.loading, m.queryDetail, m.tab)
+		}
 	}
 }
 
