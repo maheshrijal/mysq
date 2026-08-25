@@ -229,7 +229,7 @@ func TestExportConfirmationKeepsSelectedQueryVisible(t *testing.T) {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(Model)
 	}
-	selectedLine := m.queryIndex + 1
+	selectedLine := m.queryIndex + 2
 	if selectedLine >= m.viewport.YOffset+m.viewport.Height {
 		t.Fatalf("test setup left selected line %d outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
 	}
@@ -238,6 +238,10 @@ func TestExportConfirmationKeepsSelectedQueryVisible(t *testing.T) {
 	m = updated.(Model)
 	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
 		t.Fatalf("export confirmation left selected line %d outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+	selectedStatement := fmt.Sprintf("SELECT %d FROM orders", m.queryIndex)
+	if !strings.Contains(m.viewport.View(), selectedStatement) {
+		t.Fatalf("export confirmation clipped selected statement %q:\n%s", selectedStatement, m.viewport.View())
 	}
 }
 
@@ -394,7 +398,7 @@ func TestHelpResizeAndRefreshPreserveQueryListVisibility(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)
-	selectedLine := m.queryIndex + 1
+	selectedLine := m.queryIndex + 2
 	if m.help || selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
 		t.Fatalf("closing help left selected line %d outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
 	}
@@ -473,7 +477,7 @@ func TestQueryPagerKeysMoveSelectionAndKeepItVisible(t *testing.T) {
 	if m.queryIndex == 0 {
 		t.Fatalf("page down left query selection=%d offset=%d", m.queryIndex, m.viewport.YOffset)
 	}
-	selectedLine := m.queryIndex + 1
+	selectedLine := m.queryIndex + 2
 	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
 		t.Fatalf("selected line %d is outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
 	}
@@ -516,7 +520,7 @@ func TestWalkingUpKeepsSelectedQueryVisible(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 		m = updated.(Model)
-		selectedLine := m.queryIndex + 1
+		selectedLine := m.queryIndex + 2
 		if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
 			t.Fatalf("query %d line %d is outside viewport [%d,%d)", m.queryIndex, selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
 		}
@@ -540,7 +544,7 @@ func TestResizeKeepsSelectedQueryVisible(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
 	m = updated.(Model)
-	selectedLine := m.queryIndex + 1
+	selectedLine := m.queryIndex + 2
 	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
 		t.Fatalf("selected line %d is outside resized viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
 	}

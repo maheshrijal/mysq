@@ -943,9 +943,9 @@ func (m *Model) rebuild() {
 }
 
 func (m *Model) ensureQuerySelectionVisible() {
-	// The query header occupies one line. Keep the selected statement inside
+	// The query header and underline occupy two lines. Keep the selected statement inside
 	// the viewport as the engineer walks a long digest list.
-	line := m.queryIndex + 1
+	line := m.queryIndex + 2
 	if line < m.viewport.YOffset {
 		m.viewport.SetYOffset(line)
 	} else if line >= m.viewport.YOffset+m.viewport.Height {
