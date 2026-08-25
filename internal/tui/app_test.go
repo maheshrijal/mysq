@@ -126,18 +126,29 @@ func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
 		Tables: []model.Table{
 			{Schema: "analytics", Name: "orders_archive_2025", TotalBytes: 1024, HasPrimaryKey: true},
 			{Schema: "analytics", Name: "orders_archive_2026", TotalBytes: 2048, HasPrimaryKey: true},
+			{Schema: "analytics", Name: "customer_orders_daily_archive", TotalBytes: 1024, HasPrimaryKey: true},
+			{Schema: "analytics", Name: "customer_refunds_daily_archive", TotalBytes: 1024, HasPrimaryKey: true},
 		},
 		Indexes: []model.Index{
 			{Schema: "analytics", Table: "orders", Name: "idx_customer_created_at", Columns: "customer_id,created_at", Visible: true},
 			{Schema: "analytics", Table: "orders", Name: "idx_customer_status", Columns: "customer_id,status", Visible: true},
+			{Schema: "analytics", Table: "orders", Name: "idx_customer_domestic_archive", Columns: "customer_id", Visible: true},
+			{Schema: "analytics", Table: "orders", Name: "idx_customer_overseas_archive", Columns: "customer_id", Visible: true},
 		},
 		ConnectionGroups: []model.ConnectionGroup{{
 			Kind: "user", Key: "narrow_user", Total: 2, Active: 1,
 		}},
-		Processes:    []model.Process{{User: "app", Seconds: 2, Statement: "SELECT narrow_process"}},
+		Processes: []model.Process{
+			{ID: 101, User: "app", Seconds: 2, Statement: "SELECT * FROM orders WHERE tenant_id = ?"},
+			{ID: 102, User: "app", Seconds: 2, Statement: "SELECT * FROM refunds WHERE tenant_id = ?"},
+		},
 		Transactions: []model.Transaction{{ID: "trx-1", User: "app", AgeSeconds: 3, Statement: "UPDATE narrow_trx"}},
 		MetadataLocks: []model.MetadataLock{{
 			Status: "PENDING", User: "app", LockType: "EXCLUSIVE", Schema: "app", Object: "narrow_object",
+		}, {
+			Status: "PENDING", User: "app", LockType: "EXCLUSIVE", Schema: "analytics", Object: "customer_orders_daily_archive",
+		}, {
+			Status: "PENDING", User: "app", LockType: "EXCLUSIVE", Schema: "analytics", Object: "customer_refunds_daily_archive",
 		}},
 	}
 
@@ -152,9 +163,9 @@ func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
 			tab      int
 			expected []string
 		}{
-			{tab: 3, expected: []string{"wait_alpha", "wait_beta", "orders_2025.ibd", "orders_2026.ibd", "DEADLOCK_ALPHA", "DEADLOCK_BETA", "mem_alpha", "mem_beta"}},
-			{tab: 5, expected: []string{"archive_2025", "archive_2026", "created_at", "status"}},
-			{tab: 1, expected: []string{"narrow_user", "SELECT na", "w_process", "UPDATE narrow_trx", "app.narrow_object"}},
+			{tab: 3, expected: []string{"wait_alpha", "wait_beta", "/var/lib/mysql/analytics/orders_2025.ibd", "/var/lib/mysql/analytics/orders_2026.ibd", "DEADLOCK_ALPHA", "DEADLOCK_BETA", "mem_alpha", "mem_beta"}},
+			{tab: 5, expected: []string{"analytics.orders_archive_2025", "analytics.orders_archive_2026", "analytics.customer_orders_daily_archive", "analytics.customer_refunds_daily_archive", "idx_customer_created_at", "idx_customer_status", "idx_customer_domestic_archive", "idx_customer_overseas_archive"}},
+			{tab: 1, expected: []string{"narrow_user", "SELECT * FROM orders WHERE tenant_id = ?", "SELECT * FROM refunds WHERE tenant_id = ?", "UPDATE narrow_trx", "app.narrow_object", "analytics.customer_orders_daily_archive", "analytics.customer_refunds_daily_archive"}},
 		} {
 			m.tab = check.tab
 			m.rebuild()

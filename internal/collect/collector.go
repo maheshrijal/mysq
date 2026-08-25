@@ -309,6 +309,9 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	errorsElapsed := time.Since(errorsStarted)
 	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
 	statementsElapsed := time.Since(statementsStarted)
+	if err := sampledContextError(ctx); err != nil {
+		return nil, err
+	}
 	if c.sampleProbe(result, "wait events", firstWaitErr, secondWaitErr) {
 		result.WaitEvents = deriveWaitEvents(firstWaits, secondWaits, waitsElapsed)
 	}
@@ -631,6 +634,9 @@ func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, re
 	statusElapsed := time.Since(started)
 	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
 	statementElapsed := time.Since(statementStarted)
+	if err := sampledContextError(ctx); err != nil {
+		return err
+	}
 	result.IntervalMillis = statusElapsed.Milliseconds()
 	result.SampleIntervals.GlobalStatus = statusElapsed.Milliseconds()
 	result.SampleIntervals.StatementCounters = statementElapsed.Milliseconds()
@@ -639,6 +645,13 @@ func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, re
 	result.Metrics = deriveEngineMetrics(first, second, result.Variables, firstStatements, secondStatements,
 		statusElapsed, statementElapsed, statementAvailable)
 	result.Metrics.HistoryListLength = historyListLength
+	return nil
+}
+
+func sampledContextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("collect sampled counters: %w", err)
+	}
 	return nil
 }
 
@@ -1311,6 +1324,9 @@ func deriveStatementSamples(first, second map[string]statementDigestCounter, ela
 
 func internalStatementSample(statement string) bool {
 	canonical := strings.NewReplacer("`", "", " ", "").Replace(strings.ToUpper(statement))
+	if canonical == "SHOWGLOBALSTATUS" {
+		return true
+	}
 	return strings.Contains(canonical, "PERFORMANCE_SCHEMA.EVENTS_STATEMENTS_SUMMARY_BY_DIGEST") &&
 		strings.Contains(canonical, "SUM_TIMER_WAIT") && strings.Contains(canonical, "COUNT_STAR")
 }

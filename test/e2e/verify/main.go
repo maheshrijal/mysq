@@ -61,7 +61,10 @@ func verifyIdleContext(path string) {
 	if ctx.Metrics.QueriesPerSecond != 0 {
 		log.Fatalf("idle inspection reported %.2f phantom qps", ctx.Metrics.QueriesPerSecond)
 	}
-	fmt.Println("verified idle context: collector self-queries excluded from qps")
+	if len(ctx.StatementSamples) != 0 {
+		log.Fatalf("idle inspection reported collector statements as workload: %+v", ctx.StatementSamples)
+	}
+	fmt.Println("verified idle context: collector self-queries excluded from qps and statement samples")
 }
 
 func verifyFocused(directory string) {

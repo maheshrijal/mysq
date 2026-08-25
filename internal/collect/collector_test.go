@@ -73,6 +73,14 @@ func TestDeriveMetricsRemovesSamplingQuery(t *testing.T) {
 	}
 }
 
+func TestSampledContextCancellationIsFatal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sampledContextError(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("sampled context error = %v, want context.Canceled", err)
+	}
+}
+
 func TestAttributeActiveUsersToDigestWithoutGuessing(t *testing.T) {
 	queries := []model.Query{{Digest: "A"}, {Digest: "B"}}
 	processes := []model.Process{
@@ -163,9 +171,10 @@ func TestDeriveStatementSamplesRanksCurrentDatabaseTime(t *testing.T) {
 		"fast": {Digest: "fast", Schema: "app", Statement: "SELECT * FROM users WHERE id = ?", Count: 20, TotalMillis: 200},
 	}
 	second := map[string]statementDigestCounter{
-		"slow": {Digest: "slow", Schema: "app", Statement: "SELECT * FROM orders WHERE id = ?", Count: 12, TotalMillis: 500},
-		"fast": {Digest: "fast", Schema: "app", Statement: "SELECT * FROM users WHERE id = ?", Count: 30, TotalMillis: 300},
-		"self": {Digest: "self", Statement: "SELECT `COUNT_STAR` , `SUM_TIMER_WAIT` FROM `performance_schema` . `events_statements_summary_by_digest`", Count: 1, TotalMillis: 1000},
+		"slow":   {Digest: "slow", Schema: "app", Statement: "SELECT * FROM orders WHERE id = ?", Count: 12, TotalMillis: 500},
+		"fast":   {Digest: "fast", Schema: "app", Statement: "SELECT * FROM users WHERE id = ?", Count: 30, TotalMillis: 300},
+		"self":   {Digest: "self", Statement: "SELECT `COUNT_STAR` , `SUM_TIMER_WAIT` FROM `performance_schema` . `events_statements_summary_by_digest`", Count: 1, TotalMillis: 1000},
+		"status": {Digest: "status", Statement: "SHOW GLOBAL STATUS", Count: 2, TotalMillis: 100},
 	}
 	samples := deriveStatementSamples(first, second, 2*time.Second, 10)
 	if len(samples) != 2 || samples[0].Digest != "slow" || samples[0].Calls != 2 || samples[0].CallsPerSecond != 1 ||

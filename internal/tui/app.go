@@ -1393,6 +1393,9 @@ func engine(ctx *model.Context, width int) string {
 				values = []string{compactMiddle(wait.Name, waitWidths[0]-1), fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s"}
 			}
 			out.WriteString(row(values, waitWidths, false) + "\n")
+			if compactLayout {
+				out.WriteString(identityContinuation(wait.Name, waitWidths[0], width))
+			}
 		}
 	}
 
@@ -1412,6 +1415,9 @@ func engine(ctx *model.Context, width int) string {
 				values = []string{compactPath(item.Name, ioWidths[0]-1), fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond)}
 			}
 			out.WriteString(row(values, ioWidths, false) + "\n")
+			if compactLayout {
+				out.WriteString(identityContinuation(item.Name, ioWidths[0], width))
+			}
 		}
 	}
 
@@ -1430,6 +1436,9 @@ func engine(ctx *model.Context, width int) string {
 				values = []string{compactMiddle(item.Name, errorWidths[0]-1), fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond)}
 			}
 			out.WriteString(row(values, errorWidths, false) + "\n")
+			if compactLayout {
+				out.WriteString(identityContinuation(item.Name, errorWidths[0], width))
+			}
 		}
 	}
 
@@ -1481,6 +1490,9 @@ func engine(ctx *model.Context, width int) string {
 				values = []string{compactMiddle(consumer.Name, memoryWidths[0]-1), humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes)}
 			}
 			out.WriteString(row(values, memoryWidths, false) + "\n")
+			if compactLayout {
+				out.WriteString(identityContinuation(consumer.Name, memoryWidths[0], width))
+			}
 		}
 	}
 	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Width(width).Render("Wait, file I/O, and error rates use their per-family sample windows; cumulative totals are retained for forensic context."))
@@ -1526,6 +1538,9 @@ func tablesView(ctx *model.Context, width int) string {
 				humanCount(table.Writes), duration(table.WriteLatencyMillis), pk, table.Schema + "." + table.Name}
 		}
 		out.WriteString(row(values, widths, false) + "\n")
+		if compactLayout {
+			out.WriteString(identityContinuation(table.Schema+"."+table.Name, widths[0], width))
+		}
 	}
 	if len(ctx.Indexes) > 0 {
 		out.WriteString("\n" + sectionTitle("INDEX ACTIVITY") + "\n")
@@ -1551,6 +1566,9 @@ func tablesView(ctx *model.Context, width int) string {
 				values = []string{compactMiddle(compactIdentity, indexWidths[0]-1), humanCount(index.Reads), humanCount(index.Writes), strings.TrimSpace(flags)}
 			}
 			out.WriteString(row(values, indexWidths, false) + "\n")
+			if compactLayout {
+				out.WriteString(identityContinuation(identity, indexWidths[0], width))
+			}
 		}
 	}
 	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Width(width).Render("Rows are InnoDB estimates. I/O counters are since Performance Schema reset."))
@@ -1579,6 +1597,9 @@ func connections(ctx *model.Context, width int) string {
 				values = []string{group.Kind, compactMiddle(group.Key, groupWidths[1]-1), fmt.Sprint(group.Total), fmt.Sprint(group.Active)}
 			}
 			out.WriteString(row(values, groupWidths, false) + "\n")
+			if compactLayout {
+				out.WriteString(identityContinuation(group.Key, groupWidths[1], width))
+			}
 			shown++
 		}
 		out.WriteString("\n" + sectionTitle("PROCESS SNAPSHOT") + "\n")
@@ -1588,6 +1609,7 @@ func connections(ctx *model.Context, width int) string {
 		out.WriteString("\n" + row([]string{"STATEMENT", "USER", "TIME", "WAIT"}, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
 			out.WriteString(row([]string{compactMiddle(process.Statement, processWidths[0]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processWidths, false) + "\n")
+			out.WriteString(identityContinuation(process.Statement, processWidths[0], width))
 		}
 	} else if width < 103 {
 		processWidths := []int{8, 12, 8, 18, max(22, width-46)}
@@ -1627,6 +1649,9 @@ func connections(ctx *model.Context, width int) string {
 				values = []string{compactMiddle(transaction.Statement, transactionWidths[0]-1), transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds)}
 			}
 			out.WriteString(row(values, transactionWidths, false) + "\n")
+			if compactLayout {
+				out.WriteString(identityContinuation(transaction.Statement, transactionWidths[0], width))
+			}
 		}
 	}
 	if len(ctx.MetadataLocks) > 0 {
@@ -1645,6 +1670,9 @@ func connections(ctx *model.Context, width int) string {
 				values = []string{compactMiddle(object, metadataWidths[0]-1), lock.Status, lock.User, lock.LockType}
 			}
 			out.WriteString(row(values, metadataWidths, false) + "\n")
+			if compactLayout {
+				out.WriteString(identityContinuation(object, metadataWidths[0], width))
+			}
 		}
 	}
 	return out.String()
@@ -1884,6 +1912,13 @@ func compactPath(value string, width int) string {
 	}
 	directory := strings.TrimSuffix(value, base)
 	return compactMiddle(directory, width-baseWidth) + base
+}
+
+func identityContinuation(value string, cellWidth, rowWidth int) string {
+	if len([]rune(value)) <= max(1, cellWidth-1) {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(muted).Width(rowWidth).Render("↳ "+value) + "\n"
 }
 
 func padBetween(left, right string, width int) string {
