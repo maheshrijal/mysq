@@ -353,6 +353,28 @@ func TestTooSmallScreenAcceptsOnlyQuit(t *testing.T) {
 	}
 }
 
+func TestTooSmallScreenFitsEveryShortHeight(t *testing.T) {
+	for width := 1; width < 52; width++ {
+		for height := 1; height < 18; height++ {
+			m := New(context.Background(), nil, nil)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+			view := updated.(Model).View()
+			lines := strings.Split(view, "\n")
+			if len(lines) > height {
+				t.Fatalf("%dx%d too-small view rendered %d lines:\n%s", width, height, len(lines), view)
+			}
+			for _, line := range lines {
+				if got := lipgloss.Width(line); got > width {
+					t.Fatalf("%dx%d too-small view rendered line width %d:\n%s", width, height, got, view)
+				}
+			}
+			if !strings.Contains(view, "q") {
+				t.Fatalf("%dx%d too-small view omitted quit hint:\n%s", width, height, view)
+			}
+		}
+	}
+}
+
 func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100}}
 	path := "/workspace/mysq-export-20260822-154220.547"

@@ -720,6 +720,21 @@ func (m Model) View() string {
 }
 
 func (m Model) tooSmall() string {
+	if m.height < 10 || m.width < 40 {
+		fit := func(value string) string {
+			if m.width <= 1 {
+				return "q"
+			}
+			return compact(value, m.width)
+		}
+		if m.height <= 1 {
+			return fit("q quit")
+		}
+		if m.height == 2 {
+			return fit("◆ MYSQ") + "\n" + fit("q quit")
+		}
+		return fit("◆ MYSQ") + "\n" + fit(fmt.Sprintf("Need 52×18 · current %d×%d", m.width, m.height)) + "\n" + fit("q quit")
+	}
 	message := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("◆ MYSQ") + "\n\n" +
 		lipgloss.NewStyle().Foreground(text).Bold(true).Render("A little more room, please") + "\n" +
 		lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Need 52×18 · current %d×%d", m.width, m.height)) + "\n\n" +
