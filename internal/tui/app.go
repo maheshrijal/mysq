@@ -37,34 +37,35 @@ const totalViews = 7
 var tabs = [totalViews]string{"Overview", "Connections", "Queries", "Engine", "Findings", "Tables", "Config"}
 
 type Model struct {
-	ctx                context.Context
-	inspect            Inspector
-	export             Exporter
-	snapshot           *model.Context
-	viewport           viewport.Model
-	spinner            spinner.Model
-	keyHelp            help.Model
-	keys               navigationKeyMap
-	filterInput        textinput.Model
-	width              int
-	height             int
-	tab                int
-	viewOffsets        [totalViews]int
-	queryIndex         int
-	queryDetail        bool
-	queryDetailOffset  int
-	loading            bool
-	exporting          bool
-	help               bool
-	filtering          bool
-	filters            [totalViews]string
-	filterBefore       string
-	filterOffsetBefore int
-	filterQueryBefore  int
-	status             string
-	exportPath         string
-	err                error
-	refreshed          time.Time
+	ctx                       context.Context
+	inspect                   Inspector
+	export                    Exporter
+	snapshot                  *model.Context
+	viewport                  viewport.Model
+	spinner                   spinner.Model
+	keyHelp                   help.Model
+	keys                      navigationKeyMap
+	filterInput               textinput.Model
+	width                     int
+	height                    int
+	tab                       int
+	viewOffsets               [totalViews]int
+	queryIndex                int
+	queryDetail               bool
+	queryDetailOffset         int
+	loading                   bool
+	exporting                 bool
+	help                      bool
+	filtering                 bool
+	filters                   [totalViews]string
+	filterBefore              string
+	filterOffsetBefore        int
+	filterQueryBefore         int
+	filterQueryIdentityBefore string
+	status                    string
+	exportPath                string
+	err                       error
+	refreshed                 time.Time
 }
 
 var (
@@ -151,6 +152,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshed = time.Now()
 			m.status = fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint)
 			m.rebuild()
+			if tabs[m.tab] == "Queries" && !m.queryDetail {
+				m.ensureQuerySelectionVisible()
+			}
 		}
 	case exportMessage:
 		m.exporting = false
@@ -414,6 +418,7 @@ func (m *Model) startFilter() tea.Cmd {
 	m.filterBefore = m.activeFilter()
 	m.filterOffsetBefore = m.currentOffset()
 	m.filterQueryBefore = m.queryIndex
+	m.filterQueryIdentityBefore = m.selectedQueryIdentity()
 	m.filterInput.SetValue(m.filterBefore)
 	m.filterInput.CursorEnd()
 	m.filtering = true
@@ -434,8 +439,10 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.filters[m.tab] = m.filterBefore
 		m.viewOffsets[m.tab] = m.filterOffsetBefore
-		m.queryIndex = m.filterQueryBefore
-		m.clampQuerySelection()
+		if !m.restoreQuerySelection(m.filterQueryIdentityBefore) {
+			m.queryIndex = m.filterQueryBefore
+			m.clampQuerySelection()
+		}
 		m.filtering = false
 		m.filterInput.Blur()
 		m.updateFilterStatus()
@@ -926,14 +933,15 @@ func (m *Model) rebuild() {
 }
 
 func (m *Model) ensureQuerySelectionVisible() {
-	// The query header occupies two lines. Keep the selected statement inside
+	// The query header occupies one line. Keep the selected statement inside
 	// the viewport as the engineer walks a long digest list.
-	line := m.queryIndex + 2
+	line := m.queryIndex + 1
 	if line < m.viewport.YOffset {
 		m.viewport.SetYOffset(line)
 	} else if line >= m.viewport.YOffset+m.viewport.Height {
 		m.viewport.SetYOffset(max(0, line-m.viewport.Height+1))
 	}
+	m.viewOffsets[m.tab] = m.viewport.YOffset
 }
 
 func (m Model) inspectCommand() tea.Cmd {
@@ -1415,7 +1423,7 @@ func engine(ctx *model.Context, width int) string {
 			out.WriteString(row([]string{humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes), humanCount(consumer.Allocations), consumer.Name}, memoryWidths, false) + "\n")
 		}
 	}
-	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Wait, file I/O, and error rates use the collection interval; cumulative totals are retained for forensic context."))
+	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render("Wait, file I/O, and error rates use their per-family sample windows; cumulative totals are retained for forensic context."))
 	return out.String()
 }
 

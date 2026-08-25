@@ -65,6 +65,14 @@ func TestOverviewPrioritizesCurrentMySQLInvestigationSignals(t *testing.T) {
 	}
 }
 
+func TestEngineExplainsPerFamilySampleWindows(t *testing.T) {
+	ctx := &model.Context{Metrics: model.Metrics{ConnectionsMax: 100}}
+	view := engine(ctx, 100)
+	if !strings.Contains(view, "per-family sample windows") || strings.Contains(view, "the collection interval") {
+		t.Fatalf("engine retained ambiguous sampling guidance:\n%s", view)
+	}
+}
+
 func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 	ctx := &model.Context{
 		Fingerprint: "abc", Server: model.Server{Host: "db", Port: 3306, Database: "app", Flavor: "MySQL", Version: "8.4.0"},
@@ -366,7 +374,7 @@ func TestQueryPagerKeysMoveSelectionAndKeepItVisible(t *testing.T) {
 	if m.queryIndex == 0 {
 		t.Fatalf("page down left query selection=%d offset=%d", m.queryIndex, m.viewport.YOffset)
 	}
-	selectedLine := m.queryIndex + 2
+	selectedLine := m.queryIndex + 1
 	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
 		t.Fatalf("selected line %d is outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
 	}
@@ -393,6 +401,29 @@ func TestQueryPagerKeysMoveSelectionAndKeepItVisible(t *testing.T) {
 	}
 }
 
+func TestWalkingUpKeepsSelectedQueryVisible(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		ctx.Queries = append(ctx.Queries, model.Query{Statement: fmt.Sprintf("SELECT %d FROM orders", i)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(Model)
+	for i := 0; i < 20; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m = updated.(Model)
+		selectedLine := m.queryIndex + 1
+		if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+			t.Fatalf("query %d line %d is outside viewport [%d,%d)", m.queryIndex, selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+		}
+	}
+}
+
 func TestResizeKeepsSelectedQueryVisible(t *testing.T) {
 	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
 	for i := 0; i < 30; i++ {
@@ -410,9 +441,17 @@ func TestResizeKeepsSelectedQueryVisible(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
 	m = updated.(Model)
-	selectedLine := m.queryIndex + 2
+	selectedLine := m.queryIndex + 1
 	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
 		t.Fatalf("selected line %d is outside resized viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+	if m.viewOffsets[m.tab] != m.viewport.YOffset {
+		t.Fatalf("resized viewport offset %d was not persisted: %d", m.viewport.YOffset, m.viewOffsets[m.tab])
+	}
+	updated, _ = m.Update(inspectMessage{context: ctx})
+	m = updated.(Model)
+	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("selected line %d is outside refreshed viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
 	}
 }
 
@@ -485,6 +524,39 @@ func TestFilterCancelAfterRefreshClampsRestoredQuerySelection(t *testing.T) {
 	m = updated.(Model)
 	if m.queryIndex != 0 || !strings.Contains(m.View(), "SELECT only FROM orders") {
 		t.Fatalf("filter cancel restored stale selection %d for refreshed query list:\n%s", m.queryIndex, m.View())
+	}
+}
+
+func TestFilterCancelAfterRefreshRestoresQueryIdentity(t *testing.T) {
+	old := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "first", Schema: "app", Statement: "SELECT first FROM orders"},
+			{Digest: "second", Schema: "app", Statement: "SELECT second FROM orders"},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = old
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	updated, _ = m.Update(inspectMessage{context: &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "second", Schema: "app", Statement: "SELECT second FROM orders"},
+			{Digest: "first", Schema: "app", Statement: "SELECT first FROM orders"},
+		},
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.queryIndex != 0 || !strings.Contains(m.View(), "SELECT second FROM orders") {
+		t.Fatalf("filter cancel lost query identity at index %d:\n%s", m.queryIndex, m.View())
 	}
 }
 

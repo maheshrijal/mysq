@@ -215,6 +215,21 @@ func verifyContext(path string) {
 	if ctx.SchemaVersion != model.SchemaVersion || ctx.Server.Flavor != "MySQL" || ctx.Server.Host != "127.0.0.1" {
 		log.Fatalf("unexpected identity: %+v", ctx.Server)
 	}
+	if ctx.IntervalMillis != ctx.SampleIntervals.GlobalStatus {
+		log.Fatalf("legacy interval %dms does not match global status interval %dms", ctx.IntervalMillis, ctx.SampleIntervals.GlobalStatus)
+	}
+	for name, interval := range map[string]int64{
+		"global status":      ctx.SampleIntervals.GlobalStatus,
+		"wait events":        ctx.SampleIntervals.WaitEvents,
+		"file I/O":           ctx.SampleIntervals.FileIO,
+		"server errors":      ctx.SampleIntervals.ServerErrors,
+		"statement digests":  ctx.SampleIntervals.StatementDigests,
+		"statement counters": ctx.SampleIntervals.StatementCounters,
+	} {
+		if interval <= 0 {
+			log.Fatalf("missing %s sample interval: %+v", name, ctx.SampleIntervals)
+		}
+	}
 	if len(ctx.Queries) == 0 || len(ctx.Tables) < 3 || len(ctx.Indexes) == 0 || len(ctx.Processes) == 0 || len(ctx.ConnectionGroups) == 0 || len(ctx.Findings) == 0 {
 		log.Fatalf("insufficient coverage: queries=%d tables=%d indexes=%d processes=%d connection_groups=%d findings=%d", len(ctx.Queries), len(ctx.Tables), len(ctx.Indexes), len(ctx.Processes), len(ctx.ConnectionGroups), len(ctx.Findings))
 	}
