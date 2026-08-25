@@ -33,13 +33,13 @@ send "?"
 expect -re {KEYBOARD HELP}
 send "\033"
 expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
-# Filter the current view to an impossible value, prove the empty filtered
-# state rendered, then clear it with Esc. The assertion is unique to the
-# post-filter frame and cannot match the input field or stale query rows.
+# Filter the current view to an impossible value, apply it, then clear it with
+# Esc. The post-Enter footer count is absent while the editor still has focus,
+# so a broken apply transition cannot satisfy this assertion from stale bytes.
 send "/"
 send "mysq-no-match"
 send "\r"
-expect -re {No queries match filter "mysq-no-match"}
+expect -re {Filter "mysq-no-match".*0/[0-9]+}
 send "\033"
 expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
 # Queries use vertical arrows for row selection and Enter/Esc for detail.

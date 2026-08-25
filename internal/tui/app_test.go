@@ -628,6 +628,46 @@ func TestRefreshPreservesQueryIdentityAndResetsDetailOffset(t *testing.T) {
 	}
 }
 
+func TestRefreshOffQueriesPreservesFilteredQueryIdentity(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "other", Schema: "app", Statement: "SELECT other"},
+			{Digest: "first", Schema: "app", Statement: "SELECT match first"},
+			{Digest: "second", Schema: "app", Statement: "SELECT match second"},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	m.filters[2] = "match"
+	m.queryIndex = 1
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(Model)
+	updated, _ = m.Update(inspectMessage{context: &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "second", Schema: "app", Statement: "SELECT match second"},
+			{Digest: "first", Schema: "app", Statement: "SELECT match first"},
+			{Digest: "other", Schema: "app", Statement: "SELECT other"},
+		},
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if m.tab != 2 || m.queryIndex != 0 {
+		t.Fatalf("off-tab refresh restored tab=%d query=%d, want Queries/0", m.tab, m.queryIndex)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !strings.Contains(m.View(), "SELECT match second") {
+		t.Fatalf("off-tab refresh lost filtered query identity:\n%s", m.View())
+	}
+}
+
 func TestFilterConsumesPrintableGlobalKeysAsText(t *testing.T) {
 	ctx := &model.Context{
 		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},

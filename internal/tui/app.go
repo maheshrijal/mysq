@@ -461,32 +461,28 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) clampQuerySelection() {
-	visible := m.filteredContext()
-	if visible == nil || len(visible.Queries) == 0 {
+	queries := m.filteredQueries()
+	if len(queries) == 0 {
 		m.queryIndex = 0
 		m.queryDetail = false
 		return
 	}
-	m.queryIndex = min(max(0, m.queryIndex), len(visible.Queries)-1)
+	m.queryIndex = min(max(0, m.queryIndex), len(queries)-1)
 }
 
 func (m Model) selectedQueryIdentity() string {
-	visible := m.filteredContext()
-	if visible == nil || m.queryIndex < 0 || m.queryIndex >= len(visible.Queries) {
+	queries := m.filteredQueries()
+	if m.queryIndex < 0 || m.queryIndex >= len(queries) {
 		return ""
 	}
-	return queryIdentity(visible.Queries[m.queryIndex])
+	return queryIdentity(queries[m.queryIndex])
 }
 
 func (m *Model) restoreQuerySelection(identity string) bool {
 	if identity == "" {
 		return false
 	}
-	visible := m.filteredContext()
-	if visible == nil {
-		return false
-	}
-	for index, query := range visible.Queries {
+	for index, query := range m.filteredQueries() {
 		if queryIdentity(query) == identity {
 			m.queryIndex = index
 			return true
@@ -500,6 +496,24 @@ func queryIdentity(query model.Query) string {
 		return query.Schema + "\x00" + query.Digest
 	}
 	return query.Schema + "\x00" + query.Statement
+}
+
+func (m Model) filteredQueries() []model.Query {
+	if m.snapshot == nil || m.filters[2] == "" {
+		if m.snapshot == nil {
+			return nil
+		}
+		return m.snapshot.Queries
+	}
+	filtered := make([]model.Query, 0, len(m.snapshot.Queries))
+	for _, query := range m.snapshot.Queries {
+		values := []string{query.Digest, query.Schema, query.Statement}
+		values = append(values, query.ActiveUsers...)
+		if containsFold(m.filters[2], values...) {
+			filtered = append(filtered, query)
+		}
+	}
+	return filtered
 }
 
 func (m *Model) applyFilterInputChange(before string) {
@@ -542,14 +556,7 @@ func (m Model) filteredContext() *model.Context {
 	filtered := *m.snapshot
 	switch tabs[m.tab] {
 	case "Queries":
-		filtered.Queries = make([]model.Query, 0, len(m.snapshot.Queries))
-		for _, query := range m.snapshot.Queries {
-			values := []string{query.Digest, query.Schema, query.Statement}
-			values = append(values, query.ActiveUsers...)
-			if containsFold(filter, values...) {
-				filtered.Queries = append(filtered.Queries, query)
-			}
-		}
+		filtered.Queries = m.filteredQueries()
 	case "Tables":
 		filtered.Indexes = make([]model.Index, 0, len(m.snapshot.Indexes))
 		indexTables := make(map[string]bool)
