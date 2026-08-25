@@ -14,7 +14,9 @@ set spawn_tty [exp_open -leaveopen -i $spawn_id]
 exec stty rows 38 columns 130 <@ $spawn_tty
 close $spawn_tty
 expect {
-  -re {Refreshed [0-9:]+ .* snapshot [0-9a-f]+} {}
+  # The scored health header is the stable loaded-state contract. Footer
+  # status text is intentionally responsive and may be compacted.
+  -re {● (HEALTHY|ATTENTION|CRITICAL)[[:space:]]+[0-9]+} {}
   timeout { exit 10 }
   eof { exit 11 }
 }
@@ -68,7 +70,12 @@ expect {
 }
 send "r"
 expect {
-  -re {Refreshed [0-9:]+ .* snapshot [0-9a-f]+} {}
+  -re {collecting} {}
+  timeout { exit 14 }
+  eof { exit 15 }
+}
+expect {
+  -re {● (HEALTHY|ATTENTION|CRITICAL)[[:space:]]+[0-9]+} {}
   timeout { exit 14 }
   eof { exit 15 }
 }
