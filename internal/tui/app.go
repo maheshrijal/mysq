@@ -129,7 +129,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.resizeViewport()
 		m.rebuild()
-		if tabs[m.tab] == "Queries" && !m.queryDetail {
+		if tabs[m.tab] == "Queries" && !m.queryDetail && !m.help {
 			m.ensureQuerySelectionVisible()
 		}
 	case inspectMessage:
@@ -152,7 +152,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshed = time.Now()
 			m.status = fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint)
 			m.rebuild()
-			if tabs[m.tab] == "Queries" && !m.queryDetail {
+			if tabs[m.tab] == "Queries" && !m.queryDetail && !m.help {
 				m.ensureQuerySelectionVisible()
 			}
 		}
@@ -195,6 +195,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Help, m.keys.Back):
 			m.help = false
 			m.rebuild()
+			if tabs[m.tab] == "Queries" && !m.queryDetail {
+				m.ensureQuerySelectionVisible()
+			}
 			return m, nil
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
@@ -236,14 +239,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.NextView):
-		if !m.queryDetail {
-			m.switchView((m.tab + 1) % len(tabs))
-		}
+		m.switchView((m.tab + 1) % len(tabs))
 		return m, nil
 	case key.Matches(msg, m.keys.PreviousView):
-		if !m.queryDetail {
-			m.switchView((m.tab + len(tabs) - 1) % len(tabs))
-		}
+		m.switchView((m.tab + len(tabs) - 1) % len(tabs))
 		return m, nil
 	case key.Matches(msg, m.keys.Jump):
 		if len(msg.Runes) == 1 {
@@ -292,6 +291,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) switchView(next int) {
 	m.saveCurrentOffset()
+	m.queryDetail = false
 	m.tab = next
 	if strings.HasPrefix(m.status, "Filter ") || m.status == "Filter cleared" {
 		m.status = ""

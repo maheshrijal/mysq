@@ -301,6 +301,40 @@ func TestHelpScrollsAndEscapeRestoresViewPosition(t *testing.T) {
 	}
 }
 
+func TestHelpResizeAndRefreshPreserveQueryListVisibility(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		ctx.Queries = append(ctx.Queries, model.Query{Digest: fmt.Sprintf("digest-%d", i), Schema: "app", Statement: fmt.Sprintf("SELECT %d FROM orders", i)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(Model)
+	wantOffset := m.viewOffsets[m.tab]
+	if wantOffset == 0 {
+		t.Fatal("deep query selection did not scroll")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 96, Height: 20})
+	m = updated.(Model)
+	updated, _ = m.Update(inspectMessage{context: ctx})
+	m = updated.(Model)
+	if !m.help || m.viewOffsets[m.tab] != wantOffset {
+		t.Fatalf("help resize/refresh changed underlying offset to %d, want %d", m.viewOffsets[m.tab], wantOffset)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	selectedLine := m.queryIndex + 1
+	if m.help || selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("closing help left selected line %d outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+}
+
 func TestKeyboardHelpIncludesEveryGlobalActionAtResponsiveWidths(t *testing.T) {
 	ctx := &model.Context{
 		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
@@ -687,6 +721,26 @@ func TestQuerySelectionOpensDetailAndEscapeReturnsToList(t *testing.T) {
 	}
 	if strings.Contains(view, "TMP-D") || strings.Contains(view, "EXAM/SENT") {
 		t.Fatalf("query list retained low-value headers:\n%s", view)
+	}
+}
+
+func TestQueryDetailAllowsDocumentedViewNavigation(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Digest: "query", Schema: "app", Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.tab != 3 || m.queryDetail {
+		t.Fatalf("tab from query detail selected tab=%d detail=%v, want Engine/false", m.tab, m.queryDetail)
 	}
 }
 

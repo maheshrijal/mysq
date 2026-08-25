@@ -77,6 +77,10 @@ func TestValidateOutputAcceptsLegacyFullContextOnlyForPairedBaseline(t *testing.
 	if err := validateOutput("inspect-full", marshalJSON(t, legacy), benchmarkSampleInterval, false); err == nil {
 		t.Fatal("unsupported baseline schema unexpectedly passed validation")
 	}
+	legacy.SchemaVersion = "1.0.0"
+	if err := validateOutput("inspect-full", marshalJSON(t, legacy), benchmarkSampleInterval, false); err == nil {
+		t.Fatal("legacy schema without the required benchmark evidence unexpectedly passed validation")
+	}
 }
 
 func TestValidateOutputRejectsIncompleteFullInspection(t *testing.T) {

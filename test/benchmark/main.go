@@ -378,7 +378,7 @@ func validateFullInspection(context model.Context, elapsed time.Duration, requir
 
 func supportedBaselineSchema(version string) bool {
 	switch version {
-	case "1.0.0", "1.1.0", "1.2.0", "1.3.0", model.SchemaVersion:
+	case "1.3.0", model.SchemaVersion:
 		return true
 	default:
 		return false
