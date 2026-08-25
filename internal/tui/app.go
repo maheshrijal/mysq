@@ -230,14 +230,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Help):
-		if m.exportPath == "" {
+		if !m.exporting && m.exportPath == "" {
 			m.saveCurrentOffset()
 			m.help = true
 			m.rebuild()
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Filter):
-		if m.filterable() && !m.queryDetail && m.snapshot != nil {
+		if !m.exporting && m.exportPath == "" && m.filterable() && !m.queryDetail && m.snapshot != nil {
 			return m, m.startFilter()
 		}
 		return m, nil

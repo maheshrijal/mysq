@@ -276,6 +276,43 @@ func TestExportKeyIsIgnoredWhileExportIsRunning(t *testing.T) {
 	}
 }
 
+func TestExportStateBlocksCompetingOverlays(t *testing.T) {
+	ctx := &model.Context{
+		Health:  model.Health{Score: 100},
+		Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), nil, func(*model.Context) (string, error) { return "bundle", nil })
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	for _, pressed := range []rune{'/', '?'} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{pressed}})
+		m = updated.(Model)
+		if m.filtering || m.help {
+			t.Fatalf("%q opened an overlay while export was running: filtering=%v help=%v", pressed, m.filtering, m.help)
+		}
+	}
+
+	updated, _ = m.Update(exportMessage{path: "/workspace/bundle"})
+	m = updated.(Model)
+	for _, pressed := range []rune{'/', '?'} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{pressed}})
+		m = updated.(Model)
+		if m.filtering || m.help {
+			t.Fatalf("%q opened an overlay behind export confirmation: filtering=%v help=%v", pressed, m.filtering, m.help)
+		}
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.exportPath != "" {
+		t.Fatalf("escape did not dismiss export confirmation: %q", m.exportPath)
+	}
+}
+
 func TestNarrowTerminalShowsHelpKeys(t *testing.T) {
 	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
 	m := New(context.Background(), nil, nil)

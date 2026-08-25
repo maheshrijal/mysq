@@ -9,7 +9,7 @@ No collector, web server, cloud account, or database-side objects are required.
 ```text
 ◆ MYSQ  MySQL intelligence, from the terminal
 ────────────────────────────────────────────────────────────────────────────────
-connected · 127.0.0.1:3306/app · MySQL 8.4.6 · primary · 1.0s sample
+connected · 127.0.0.1:3306/app · MySQL 8.4.6 · primary · 1.0s status sample
 
 Database health  ━━━━━━━━━━━━━━━━━┄┄┄┄┄┄┄   72/100
 qps 812.4  ·  tps 188.7  ·  running 9  ·  connections 18/151  ·  cache 99.86%
