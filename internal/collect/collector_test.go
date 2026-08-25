@@ -186,6 +186,37 @@ func TestDeriveStatementSamplesHandlesCounterReset(t *testing.T) {
 	}
 }
 
+func TestFullSampleIntervalsExposeEveryRateWindow(t *testing.T) {
+	result := &model.Context{}
+	recordFullSampleIntervals(result,
+		1100*time.Millisecond,
+		2100*time.Millisecond,
+		2200*time.Millisecond,
+		2300*time.Millisecond,
+		2400*time.Millisecond,
+		2500*time.Millisecond,
+	)
+	want := model.SampleIntervals{
+		GlobalStatus: 1100, WaitEvents: 2100, FileIO: 2200, ServerErrors: 2300,
+		StatementDigests: 2400, StatementCounters: 2500,
+	}
+	if result.IntervalMillis != want.GlobalStatus || result.SampleIntervals != want {
+		t.Fatalf("sample intervals = legacy %d, families %+v; want legacy %d, families %+v",
+			result.IntervalMillis, result.SampleIntervals, want.GlobalStatus, want)
+	}
+
+	first := map[string]waitCounter{"wait/io": {Name: "wait/io", Count: 10, TotalMillis: 100}}
+	second := map[string]waitCounter{"wait/io": {Name: "wait/io", Count: 31, TotalMillis: 310}}
+	waits := deriveWaitEvents(first, second, time.Duration(want.WaitEvents)*time.Millisecond)
+	if len(waits) != 1 {
+		t.Fatalf("derived waits = %+v", waits)
+	}
+	reconstructed := float64(waits[0].SampleCount) / waits[0].EventsPerSecond * 1000
+	if math.Abs(reconstructed-float64(want.WaitEvents)) > 0.001 {
+		t.Fatalf("published wait interval = %dms, reconstructed %.3fms", want.WaitEvents, reconstructed)
+	}
+}
+
 func TestDeriveEngineMetricsUsesIndependentSampleWindows(t *testing.T) {
 	first := map[string]string{"Questions": "100"}
 	second := map[string]string{"Questions": "111"}

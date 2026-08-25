@@ -37,7 +37,7 @@ func Text(w io.Writer, ctx *model.Context, options Options) error {
 	if ctx.Server.ReadOnly || ctx.Server.SuperReadOnly {
 		access = "read-only server"
 	}
-	identity := fmt.Sprintf("connected · %s:%d/%s · %s %s · %s · %.1fs sample",
+	identity := fmt.Sprintf("connected · %s:%d/%s · %s %s · %s · %.1fs status sample",
 		ctx.Server.Host, ctx.Server.Port, fallback(ctx.Server.Database, "(no database)"),
 		ctx.Server.Flavor, ctx.Server.Version, access, float64(ctx.IntervalMillis)/1000)
 	out.WriteString(p.muted.Render(identity) + "\n\n")

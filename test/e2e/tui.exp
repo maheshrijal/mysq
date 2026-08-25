@@ -33,16 +33,19 @@ send "?"
 expect -re {KEYBOARD HELP}
 send "\033"
 expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
-# Filter the current view, apply it, then clear it with Esc.
+# Filter the current view to an impossible value, prove the empty filtered
+# state rendered, then clear it with Esc. The assertion is unique to the
+# post-filter frame and cannot match the input field or stale query rows.
 send "/"
-send "orders"
+send "mysq-no-match"
 send "\r"
-expect -re {orders}
+expect -re {No queries match filter "mysq-no-match"}
 send "\033"
 expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
 # Queries use vertical arrows for row selection and Enter/Esc for detail.
 send "\033\[B"
 send "\r"
+expect -re {QUERY 2 OF [0-9]+}
 expect -re {NORMALIZED SQL}
 send "\033"
 expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
@@ -61,7 +64,9 @@ expect -re {MYSQL FILE I/O|MYSQL ERRORS AND WARNINGS}
 send "\033\[A"
 expect -re {● 4 ENGINE}
 send "\t"
+expect -re {● 5 FINDINGS}
 send "\t"
+expect -re {● 6 TABLES}
 send "e"
 expect {
   -re {Agent bundle exported:} {}

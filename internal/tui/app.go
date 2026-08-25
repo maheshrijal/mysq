@@ -128,19 +128,25 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.resizeViewport()
 		m.rebuild()
+		if tabs[m.tab] == "Queries" && !m.queryDetail {
+			m.ensureQuerySelectionVisible()
+		}
 	case inspectMessage:
 		m.loading = false
 		m.err = msg.err
 		if msg.err != nil {
 			m.status = "Refresh failed: " + compact(msg.err.Error(), max(20, m.width-20))
 		} else {
+			selectedQuery := m.selectedQueryIdentity()
+			wasQueryDetail := m.queryDetail
 			m.snapshot = msg.context
-			visible := m.filteredContext()
-			if visible == nil || len(visible.Queries) == 0 {
-				m.queryIndex = 0
-				m.queryDetail = false
-			} else {
-				m.queryIndex = min(m.queryIndex, len(visible.Queries)-1)
+			if !m.restoreQuerySelection(selectedQuery) {
+				m.clampQuerySelection()
+				if wasQueryDetail {
+					m.queryDetail = false
+				}
+			} else if wasQueryDetail {
+				m.queryDetailOffset = 0
 			}
 			m.refreshed = time.Now()
 			m.status = fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint)
@@ -253,6 +259,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		visible := m.filteredContext()
 		if tabs[m.tab] == "Queries" && !m.queryDetail && visible != nil && len(visible.Queries) > 0 {
 			m.saveCurrentOffset()
+			m.queryDetailOffset = 0
 			m.queryDetail = true
 			m.rebuild()
 		}
@@ -428,6 +435,7 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filters[m.tab] = m.filterBefore
 		m.viewOffsets[m.tab] = m.filterOffsetBefore
 		m.queryIndex = m.filterQueryBefore
+		m.clampQuerySelection()
 		m.filtering = false
 		m.filterInput.Blur()
 		m.updateFilterStatus()
@@ -443,6 +451,48 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.filterInput, command = m.filterInput.Update(msg)
 	m.applyFilterInputChange(before)
 	return m, command
+}
+
+func (m *Model) clampQuerySelection() {
+	visible := m.filteredContext()
+	if visible == nil || len(visible.Queries) == 0 {
+		m.queryIndex = 0
+		m.queryDetail = false
+		return
+	}
+	m.queryIndex = min(max(0, m.queryIndex), len(visible.Queries)-1)
+}
+
+func (m Model) selectedQueryIdentity() string {
+	visible := m.filteredContext()
+	if visible == nil || m.queryIndex < 0 || m.queryIndex >= len(visible.Queries) {
+		return ""
+	}
+	return queryIdentity(visible.Queries[m.queryIndex])
+}
+
+func (m *Model) restoreQuerySelection(identity string) bool {
+	if identity == "" {
+		return false
+	}
+	visible := m.filteredContext()
+	if visible == nil {
+		return false
+	}
+	for index, query := range visible.Queries {
+		if queryIdentity(query) == identity {
+			m.queryIndex = index
+			return true
+		}
+	}
+	return false
+}
+
+func queryIdentity(query model.Query) string {
+	if query.Digest != "" {
+		return query.Digest
+	}
+	return query.Schema + "\x00" + query.Statement
 }
 
 func (m *Model) applyFilterInputChange(before string) {
@@ -608,7 +658,11 @@ func (m Model) helpBindings() contextualHelp {
 	short = append(short, m.keys.Refresh, m.keys.Export, m.keys.Help, m.keys.Quit)
 
 	groups := [][]key.Binding{context, navigation, paging, actions}
-	if m.width < 96 {
+	probe := m.keyHelp
+	probe.ShowAll = true
+	probe.Width = 0
+	available := max(20, m.viewport.Width-2)
+	if lipgloss.Width(probe.View(contextualHelp{full: groups})) > available {
 		flattened := make([]key.Binding, 0, len(context)+len(navigation)+len(paging)+len(actions))
 		for _, group := range groups {
 			flattened = append(flattened, group...)
@@ -965,7 +1019,7 @@ func overview(ctx *model.Context, width int) string {
 		lower = lipgloss.JoinVertical(lipgloss.Left, pressureBox, findingBox)
 	}
 
-	identity := lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("%s %s · uptime %s · %.1fs collection window",
+	identity := lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("%s %s · uptime %s · %.1fs status window",
 		ctx.Server.Flavor, ctx.Server.Version, humanDuration(ctx.Server.UptimeSeconds), float64(ctx.IntervalMillis)/1000))
 	result := postureBox + "\n" + cards + "\n" + lower + "\n" + mysqlInvestigationPanels(ctx, width)
 	if conditional := overviewConditionalPanels(ctx, width); conditional != "" {

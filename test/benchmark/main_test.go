@@ -27,9 +27,9 @@ func TestValidateOutputRejectsEmptyNullAndWrongShapes(t *testing.T) {
 		{name: "waits", data: `[{}]`},
 		{name: "variables", data: `{}`},
 		{name: "engine", data: `{"connections_max":0,"redo_capacity_bytes":1}`},
-		{name: "inspect-full", data: `{"schema_version":"1.3.0","queries":[],"tables":[]}`},
+		{name: "inspect-full", data: `{"schema_version":"1.4.0","queries":[],"tables":[]}`},
 		{name: "inspect-full", data: `{"schema_version":123,"server":{"flavor":"MySQL","version":"8.4"},"queries":[{"digest":"abc","statement":"SELECT ?"}],"tables":[{"schema":"app","name":"orders","engine":"InnoDB"}]}`},
-		{name: "inspect-full", data: `{"schema_version":"1.3.0","server":{"flavor":"MySQL","version":"8.4"},"queries":[{}],"tables":[{}]}`},
+		{name: "inspect-full", data: `{"schema_version":"1.4.0","server":{"flavor":"MySQL","version":"8.4"},"queries":[{}],"tables":[{}]}`},
 	} {
 		t.Run(test.name+"_"+strings.ReplaceAll(test.data, " ", "_"), func(t *testing.T) {
 			if err := validateOutput(test.name, []byte(test.data), benchmarkSampleInterval); err == nil {
@@ -68,6 +68,7 @@ func TestValidateOutputRejectsIncompleteFullInspection(t *testing.T) {
 		mutate func(*model.Context)
 	}{
 		{name: "short interval marker", mutate: func(context *model.Context) { context.IntervalMillis = 99 }},
+		{name: "missing family interval", mutate: func(context *model.Context) { context.SampleIntervals.WaitEvents = 0 }},
 		{name: "indexes", mutate: func(context *model.Context) { context.Indexes = nil }},
 		{name: "locks collection", mutate: func(context *model.Context) { context.Locks = nil }},
 		{name: "file io", mutate: func(context *model.Context) { context.FileIO = nil }},
@@ -192,12 +193,17 @@ func validFullContext() model.Context {
 	return model.Context{
 		SchemaVersion:  model.SchemaVersion,
 		IntervalMillis: benchmarkSampleInterval.Milliseconds(),
-		Server:         model.Server{Flavor: "MySQL", Version: "8.4.6"},
-		Findings:       []model.Finding{{ID: "fixture"}},
-		Queries:        []model.Query{{Digest: "abc", Statement: "SELECT ?"}},
-		Tables:         []model.Table{{Schema: "app", Name: "orders", Engine: "InnoDB"}},
-		Indexes:        []model.Index{{Schema: "app", Table: "orders", Name: "PRIMARY"}},
-		Processes:      []model.Process{{ID: 1}},
+		SampleIntervals: model.SampleIntervals{
+			GlobalStatus: benchmarkSampleInterval.Milliseconds(), WaitEvents: benchmarkSampleInterval.Milliseconds(),
+			FileIO: benchmarkSampleInterval.Milliseconds(), ServerErrors: benchmarkSampleInterval.Milliseconds(),
+			StatementDigests: benchmarkSampleInterval.Milliseconds(), StatementCounters: benchmarkSampleInterval.Milliseconds(),
+		},
+		Server:    model.Server{Flavor: "MySQL", Version: "8.4.6"},
+		Findings:  []model.Finding{{ID: "fixture"}},
+		Queries:   []model.Query{{Digest: "abc", Statement: "SELECT ?"}},
+		Tables:    []model.Table{{Schema: "app", Name: "orders", Engine: "InnoDB"}},
+		Indexes:   []model.Index{{Schema: "app", Table: "orders", Name: "PRIMARY"}},
+		Processes: []model.Process{{ID: 1}},
 		ConnectionGroups: []model.ConnectionGroup{
 			{Kind: "user", Key: "loadgen", Total: 1},
 		},

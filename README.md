@@ -82,7 +82,7 @@ An export is written atomically and refuses to overwrite an existing path. It co
 |---|---|
 | `summary.md` | Findings-first narrative for a human or agent |
 | `context.json` | Complete versioned diagnostic contract |
-| `schema/context-1.3.0.json` | JSON Schema for validation and tool generation |
+| `schema/context-1.4.0.json` | JSON Schema for validation and tool generation |
 | `findings.json` / `metrics.json` | Small deterministic reasoning inputs |
 | `queries.csv` | Normalized statement digests, tail latency, errors, and cost |
 | `statement-samples.csv` | Statements ranked by database time during the collection interval |

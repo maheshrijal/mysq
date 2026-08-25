@@ -322,7 +322,7 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		result.StatementSamples = deriveStatementSamples(firstDigests, secondDigests, digestsElapsed, c.QueryLimit)
 	}
 	statementSampleAvailable := c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr)
-	result.IntervalMillis = statusElapsed.Milliseconds()
+	recordFullSampleIntervals(result, statusElapsed, waitsElapsed, fileIOElapsed, errorsElapsed, digestsElapsed, statementsElapsed)
 	result.GlobalStatus = second
 	result.Server.UptimeSeconds = unsigned(second["Uptime"])
 	historyListLength := result.Metrics.HistoryListLength
@@ -334,6 +334,18 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	applyInstrumentationStatus(&result.Instrumentation, second)
 	result.Fingerprint = fingerprint(result.Server)
 	return result, nil
+}
+
+func recordFullSampleIntervals(result *model.Context, status, waits, fileIO, serverErrors, statementDigests, statementCounters time.Duration) {
+	result.IntervalMillis = status.Milliseconds()
+	result.SampleIntervals = model.SampleIntervals{
+		GlobalStatus:      status.Milliseconds(),
+		WaitEvents:        waits.Milliseconds(),
+		FileIO:            fileIO.Milliseconds(),
+		ServerErrors:      serverErrors.Milliseconds(),
+		StatementDigests:  statementDigests.Milliseconds(),
+		StatementCounters: statementCounters.Milliseconds(),
+	}
 }
 
 func (c *Collector) openConnection(ctx context.Context, target Target) (*sql.DB, *sql.Conn, error) {
@@ -482,6 +494,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 		result.WaitEvents = deriveWaitEvents(first, second, elapsed)
 		result.IntervalMillis = elapsed.Milliseconds()
+		result.SampleIntervals.WaitEvents = elapsed.Milliseconds()
 	case "io":
 		first, firstErr := c.collectFileIOCounters(ctx, conn)
 		started, err := c.waitForFocusedSample(ctx, result, "file I/O", firstErr)
@@ -495,6 +508,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 		result.FileIO = deriveFileIO(first, second, elapsed)
 		result.IntervalMillis = elapsed.Milliseconds()
+		result.SampleIntervals.FileIO = elapsed.Milliseconds()
 	case "errors":
 		first, firstErr := c.collectErrorCounters(ctx, conn)
 		started, err := c.waitForFocusedSample(ctx, result, "server errors", firstErr)
@@ -508,6 +522,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 		result.ServerErrors = deriveServerErrors(first, second, elapsed)
 		result.IntervalMillis = elapsed.Milliseconds()
+		result.SampleIntervals.ServerErrors = elapsed.Milliseconds()
 	case "memory":
 		if err := c.focusedProbe(result, "memory consumers", func() error {
 			var probeErr error
@@ -617,6 +632,8 @@ func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, re
 	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
 	statementElapsed := time.Since(statementStarted)
 	result.IntervalMillis = statusElapsed.Milliseconds()
+	result.SampleIntervals.GlobalStatus = statusElapsed.Milliseconds()
+	result.SampleIntervals.StatementCounters = statementElapsed.Milliseconds()
 	result.GlobalStatus = second
 	statementAvailable := c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr)
 	result.Metrics = deriveEngineMetrics(first, second, result.Variables, firstStatements, secondStatements,

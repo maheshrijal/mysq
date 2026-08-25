@@ -311,6 +311,18 @@ func validateFullInspection(context model.Context, elapsed time.Duration) error 
 	if context.IntervalMillis < benchmarkSampleInterval.Milliseconds() {
 		return fmt.Errorf("full inspection interval is %dms, want at least %dms", context.IntervalMillis, benchmarkSampleInterval.Milliseconds())
 	}
+	intervals := context.SampleIntervals
+	if context.IntervalMillis != intervals.GlobalStatus {
+		return fmt.Errorf("legacy interval is %dms, want global status interval %dms", context.IntervalMillis, intervals.GlobalStatus)
+	}
+	for name, interval := range map[string]int64{
+		"global status": intervals.GlobalStatus, "wait events": intervals.WaitEvents, "file I/O": intervals.FileIO,
+		"server errors": intervals.ServerErrors, "statement digests": intervals.StatementDigests, "statement counters": intervals.StatementCounters,
+	} {
+		if interval < benchmarkSampleInterval.Milliseconds() {
+			return fmt.Errorf("%s interval is %dms, want at least %dms", name, interval, benchmarkSampleInterval.Milliseconds())
+		}
+	}
 	if context.SchemaVersion != model.SchemaVersion || context.Server.Flavor != "MySQL" || context.Server.Version == "" {
 		return errors.New("missing full inspection server identity")
 	}
