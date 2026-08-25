@@ -338,6 +338,7 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	result.Metrics.HistoryListLength = historyListLength
 	applyInstrumentationStatus(&result.Instrumentation, second)
 	result.Fingerprint = fingerprint(result.Server)
+	normalizeRequiredCollections(result)
 	return result, nil
 }
 
@@ -387,17 +388,71 @@ func (c *Collector) openConnection(ctx context.Context, target Target) (*sql.DB,
 }
 
 func newContext(version string, target Target) *model.Context {
-	return &model.Context{
+	result := &model.Context{
 		SchemaVersion: model.SchemaVersion,
 		ToolVersion:   version,
 		CollectedAt:   time.Now().UTC(),
-		Variables:     map[string]string{},
-		GlobalStatus:  map[string]string{},
 		Server: model.Server{
 			Host:     target.Host,
 			Port:     target.Port,
 			Database: target.Database,
 		},
+	}
+	normalizeRequiredCollections(result)
+	return result
+}
+
+func normalizeRequiredCollections(result *model.Context) {
+	if result.Findings == nil {
+		result.Findings = []model.Finding{}
+	}
+	if result.Queries == nil {
+		result.Queries = []model.Query{}
+	}
+	if result.Tables == nil {
+		result.Tables = []model.Table{}
+	}
+	if result.Indexes == nil {
+		result.Indexes = []model.Index{}
+	}
+	if result.Processes == nil {
+		result.Processes = []model.Process{}
+	}
+	if result.ConnectionGroups == nil {
+		result.ConnectionGroups = []model.ConnectionGroup{}
+	}
+	if result.Locks == nil {
+		result.Locks = []model.LockWait{}
+	}
+	if result.Transactions == nil {
+		result.Transactions = []model.Transaction{}
+	}
+	if result.MetadataLocks == nil {
+		result.MetadataLocks = []model.MetadataLock{}
+	}
+	if result.WaitEvents == nil {
+		result.WaitEvents = []model.WaitEvent{}
+	}
+	if result.FileIO == nil {
+		result.FileIO = []model.FileIO{}
+	}
+	if result.ServerErrors == nil {
+		result.ServerErrors = []model.ServerError{}
+	}
+	if result.MemoryConsumers == nil {
+		result.MemoryConsumers = []model.MemoryConsumer{}
+	}
+	if result.StatementSamples == nil {
+		result.StatementSamples = []model.StatementSample{}
+	}
+	if result.Capabilities == nil {
+		result.Capabilities = []model.Capability{}
+	}
+	if result.Variables == nil {
+		result.Variables = map[string]string{}
+	}
+	if result.GlobalStatus == nil {
+		result.GlobalStatus = map[string]string{}
 	}
 }
 
@@ -575,6 +630,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 	default:
 		return nil, fmt.Errorf("unknown diagnostic section %q", section)
 	}
+	normalizeRequiredCollections(result)
 	return result, nil
 }
 
@@ -1105,13 +1161,14 @@ func attributeActiveUsers(queries []model.Query, processes []model.Process) {
 		if process.Digest == "" || process.User == "" || strings.EqualFold(process.Command, "Sleep") {
 			continue
 		}
-		if users[process.Digest] == nil {
-			users[process.Digest] = make(map[string]bool)
+		identity := statementDigestIdentity(process.Database, process.Digest)
+		if users[identity] == nil {
+			users[identity] = make(map[string]bool)
 		}
-		users[process.Digest][process.User] = true
+		users[identity][process.User] = true
 	}
 	for index := range queries {
-		for user := range users[queries[index].Digest] {
+		for user := range users[statementDigestIdentity(queries[index].Schema, queries[index].Digest)] {
 			queries[index].ActiveUsers = append(queries[index].ActiveUsers, user)
 		}
 		sort.Strings(queries[index].ActiveUsers)
@@ -1293,7 +1350,7 @@ func (c *Collector) collectStatementDigestCounters(ctx context.Context, conn *sq
 			return nil, err
 		}
 		item.Statement = sanitize.SQL(item.Statement)
-		result[item.Digest] = item
+		result[statementDigestIdentity(item.Schema, item.Digest)] = item
 	}
 	return result, rows.Err()
 }
@@ -1305,18 +1362,18 @@ func deriveStatementSamples(first, second map[string]statementDigestCounter, ela
 	}
 	result := make([]model.StatementSample, 0)
 	totalMillis := 0.0
-	for digest, current := range second {
+	for identity, current := range second {
 		if internalStatementSample(current.Statement) {
 			continue
 		}
-		previous := first[digest]
+		previous := first[identity]
 		calls := counterDelta(previous.Count, current.Count)
 		databaseTime := floatDelta(previous.TotalMillis, current.TotalMillis)
 		if calls == 0 && databaseTime == 0 {
 			continue
 		}
 		result = append(result, model.StatementSample{
-			Digest: digest, Schema: current.Schema, Statement: current.Statement, Calls: calls,
+			Digest: current.Digest, Schema: current.Schema, Statement: current.Statement, Calls: calls,
 			CallsPerSecond: float64(calls) / seconds, DatabaseTimeMillis: databaseTime,
 			DatabaseTimeMillisPerSecond: databaseTime / seconds,
 		})
@@ -1331,12 +1388,19 @@ func deriveStatementSamples(first, second map[string]statementDigestCounter, ela
 		if result[i].DatabaseTimeMillis != result[j].DatabaseTimeMillis {
 			return result[i].DatabaseTimeMillis > result[j].DatabaseTimeMillis
 		}
-		return result[i].Digest < result[j].Digest
+		if result[i].Digest != result[j].Digest {
+			return result[i].Digest < result[j].Digest
+		}
+		return result[i].Schema < result[j].Schema
 	})
 	if limit > 0 && len(result) > limit {
 		result = result[:limit]
 	}
 	return result
+}
+
+func statementDigestIdentity(schema, digest string) string {
+	return schema + "\x00" + digest
 }
 
 func internalStatementSample(statement string) bool {

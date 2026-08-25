@@ -823,6 +823,80 @@ func TestActiveFilterDoesNotHideOperationFailures(t *testing.T) {
 	}
 }
 
+func TestRefreshBlocksFilterEditingAndKeepsFailureVisible(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), func(context.Context) (*model.Context, error) { return ctx, nil }, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	updated, command := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = updated.(Model)
+	if !m.loading || command == nil {
+		t.Fatal("refresh did not enter loading state")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	if m.filtering {
+		t.Fatal("filter editor opened during refresh")
+	}
+	updated, _ = m.Update(inspectMessage{err: errors.New("refresh probe failed")})
+	if view := updated.(Model).View(); !strings.Contains(view, "Refresh failed") {
+		t.Fatalf("refresh failure disappeared after blocked filter attempt:\n%s", view)
+	}
+}
+
+func TestActiveFilterDoesNotHideExportProgress(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), nil, func(*model.Context) (string, error) { return "bundle", nil })
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	m.filters[2] = "orders"
+	updated, command := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	updated, command = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if !m.exporting || command == nil {
+		t.Fatal("export did not start")
+	}
+	if view := m.View(); !strings.Contains(view, "Writing agent bundle") {
+		t.Fatalf("active filter hid export progress:\n%s", view)
+	}
+}
+
+func TestConnectionsFilterCountsOnlyRenderableGroups(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		ConnectionGroups: []model.ConnectionGroup{
+			{Kind: "host", Key: "10.0.0.2", Total: 1},
+			{Kind: "user", Key: "worker", Total: 1},
+			{Kind: "user_host", Key: "worker@10.0.0.2", Total: 1},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 1
+	m.filters[1] = "worker@10.0.0.2"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	if matched, total := m.filterCounts(); matched != 0 || total != 2 {
+		t.Fatalf("connection filter count = %d/%d, want 0/2 renderable groups", matched, total)
+	}
+	view := m.View()
+	if !strings.Contains(view, "No connections match filter") || strings.Contains(view, "CONNECTION BREAKDOWN") {
+		t.Fatalf("hidden user_host group leaked into filtered view:\n%s", view)
+	}
+}
+
 func TestFilteredQueryShareUsesCompleteSnapshot(t *testing.T) {
 	ctx := &model.Context{
 		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},

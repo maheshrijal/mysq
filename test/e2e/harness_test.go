@@ -57,3 +57,17 @@ func TestHarnessOnlyPausesRecurringHealthcheckForIdleProbe(t *testing.T) {
 		t.Fatal("MySQL fixture restored a permanently green readiness sentinel")
 	}
 }
+
+func TestPTYRefreshRequiresSuccessSignal(t *testing.T) {
+	data, err := os.ReadFile("tui.exp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, after, found := strings.Cut(string(data), `send "r"`)
+	if !found {
+		t.Fatal("PTY flow no longer triggers a manual refresh")
+	}
+	if !strings.Contains(after, `{Refreshed [0-9:]+ .* snapshot [0-9a-f]+}`) {
+		t.Fatal("PTY flow does not require a refresh-success-only signal")
+	}
+}

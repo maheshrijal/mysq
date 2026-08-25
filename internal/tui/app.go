@@ -63,7 +63,7 @@ type Model struct {
 	filterQueryBefore         int
 	filterQueryIdentityBefore string
 	status                    string
-	statusError               bool
+	statusOverridesFilter     bool
 	exportPath                string
 	err                       error
 	refreshed                 time.Time
@@ -151,7 +151,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.queryDetailOffset = 0
 			}
 			m.refreshed = time.Now()
-			m.setStatus(fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint), false)
+			m.setStatus(fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint), true)
 			m.rebuild()
 			if tabs[m.tab] == "Queries" && !m.queryDetail && !m.help {
 				m.ensureQuerySelectionVisible()
@@ -164,7 +164,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Export failed: "+compact(msg.err.Error(), max(20, m.width-20)), true)
 		} else {
 			m.exportPath = msg.path
-			m.setStatus("Agent bundle exported: "+msg.path, false)
+			m.setStatus("Agent bundle exported: "+msg.path, true)
 		}
 		m.resizeViewport()
 		m.rebuild()
@@ -244,7 +244,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Filter):
-		if !m.exporting && m.exportPath == "" && m.filterable() && !m.queryDetail && m.snapshot != nil {
+		if !m.loading && !m.exporting && m.exportPath == "" && m.filterable() && !m.queryDetail && m.snapshot != nil {
 			return m, m.startFilter()
 		}
 		return m, nil
@@ -284,7 +284,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.exportPath = ""
 			m.resizeViewport()
 			m.loading = true
-			m.setStatus("Refreshing every diagnostic probe…", false)
+			m.setStatus("Refreshing every diagnostic probe…", true)
 			return m, tea.Batch(m.inspectCommand(), m.spinner.Tick)
 		}
 		return m, nil
@@ -292,7 +292,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.loading && !m.exporting && m.exportPath == "" && m.snapshot != nil {
 			m.resizeViewport()
 			m.exporting = true
-			m.setStatus("Writing agent bundle…", false)
+			m.setStatus("Writing agent bundle…", true)
 			return m, m.exportCommand()
 		}
 	}
@@ -558,9 +558,9 @@ func (m *Model) updateFilterStatus() {
 	m.setStatus(fmt.Sprintf("Filter %q · %d/%d matches", m.activeFilter(), matched, total), false)
 }
 
-func (m *Model) setStatus(status string, isError bool) {
+func (m *Model) setStatus(status string, overridesFilter bool) {
 	m.status = status
-	m.statusError = isError
+	m.statusOverridesFilter = overridesFilter
 }
 
 func (m Model) filteredContext() *model.Context {
@@ -594,8 +594,9 @@ func (m Model) filteredContext() *model.Context {
 				filtered.Processes = append(filtered.Processes, process)
 			}
 		}
-		filtered.ConnectionGroups = make([]model.ConnectionGroup, 0, len(m.snapshot.ConnectionGroups))
-		for _, group := range m.snapshot.ConnectionGroups {
+		groups := renderableConnectionGroups(m.snapshot.ConnectionGroups)
+		filtered.ConnectionGroups = make([]model.ConnectionGroup, 0, len(groups))
+		for _, group := range groups {
 			if containsFold(filter, group.Kind, group.Key) {
 				filtered.ConnectionGroups = append(filtered.ConnectionGroups, group)
 			}
@@ -655,8 +656,8 @@ func (m Model) filterCounts() (int, int) {
 	case "Tables":
 		return len(filtered.Tables) + len(filtered.Indexes), len(m.snapshot.Tables) + len(m.snapshot.Indexes)
 	case "Connections":
-		return len(filtered.Processes) + len(filtered.ConnectionGroups) + len(filtered.Locks) + len(filtered.Transactions) + len(filtered.MetadataLocks),
-			len(m.snapshot.Processes) + len(m.snapshot.ConnectionGroups) + len(m.snapshot.Locks) + len(m.snapshot.Transactions) + len(m.snapshot.MetadataLocks)
+		return len(filtered.Processes) + len(renderableConnectionGroups(filtered.ConnectionGroups)) + len(filtered.Locks) + len(filtered.Transactions) + len(filtered.MetadataLocks),
+			len(m.snapshot.Processes) + len(renderableConnectionGroups(m.snapshot.ConnectionGroups)) + len(m.snapshot.Locks) + len(m.snapshot.Transactions) + len(m.snapshot.MetadataLocks)
 	case "Findings":
 		return len(filtered.Findings), len(m.snapshot.Findings)
 	default:
@@ -889,7 +890,7 @@ func (m Model) footer() string {
 		line := padBetween(lipgloss.NewStyle().Foreground(muted).Render("Contextual keys · "+tabs[m.tab]), keys, max(1, m.width-2))
 		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
 	}
-	if m.activeFilter() != "" && !m.statusError {
+	if m.activeFilter() != "" && !m.statusOverridesFilter {
 		matched, total := m.filterCounts()
 		status = fmt.Sprintf("Filter %q · %d/%d", m.activeFilter(), matched, total)
 	}
@@ -1599,7 +1600,8 @@ func tablesView(ctx *model.Context, width int) string {
 func connections(ctx *model.Context, width int) string {
 	var out strings.Builder
 	compactLayout := width < 82
-	if len(ctx.ConnectionGroups) > 0 {
+	groups := renderableConnectionGroups(ctx.ConnectionGroups)
+	if len(groups) > 0 {
 		out.WriteString(sectionTitle("CONNECTION BREAKDOWN") + "\n")
 		groupWidths := []int{10, max(18, width-42), 8, 8, 8, 8}
 		groupHeadings := []string{"GROUP", "VALUE", "TOTAL", "ACTIVE", "SLEEP", "OTHER"}
@@ -1608,18 +1610,13 @@ func connections(ctx *model.Context, width int) string {
 			groupHeadings = []string{"GROUP", "VALUE", "TOTAL", "ACTIVE"}
 		}
 		out.WriteString(row(groupHeadings, groupWidths, true) + "\n")
-		shown := 0
-		for _, group := range ctx.ConnectionGroups {
-			if group.Kind == "user_host" || shown >= 12 {
-				continue
-			}
+		for _, group := range groups {
 			values := []string{group.Kind, group.Key, fmt.Sprint(group.Total), fmt.Sprint(group.Active), fmt.Sprint(group.Sleeping), fmt.Sprint(group.Other)}
 			if compactLayout {
 				values = []string{group.Kind, compactMiddle(group.Key, groupWidths[1]-1), fmt.Sprint(group.Total), fmt.Sprint(group.Active)}
 			}
 			out.WriteString(row(values, groupWidths, false) + "\n")
 			out.WriteString(identityContinuation(group.Key, groupWidths[1], width))
-			shown++
 		}
 		out.WriteString("\n" + sectionTitle("PROCESS SNAPSHOT") + "\n")
 	}
@@ -1697,6 +1694,20 @@ func connections(ctx *model.Context, width int) string {
 		}
 	}
 	return out.String()
+}
+
+func renderableConnectionGroups(groups []model.ConnectionGroup) []model.ConnectionGroup {
+	result := make([]model.ConnectionGroup, 0, min(12, len(groups)))
+	for _, group := range groups {
+		if group.Kind == "user_host" {
+			continue
+		}
+		result = append(result, group)
+		if len(result) == 12 {
+			break
+		}
+	}
+	return result
 }
 
 func processActivity(process model.Process) string {

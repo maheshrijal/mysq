@@ -2,6 +2,7 @@ package collect
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -108,6 +109,55 @@ func TestAttributeActiveUsersToDigestWithoutGuessing(t *testing.T) {
 	}
 }
 
+func TestAttributeActiveUsersScopesDigestBySchema(t *testing.T) {
+	queries := []model.Query{
+		{Schema: "app_a", Digest: "shared"},
+		{Schema: "app_b", Digest: "shared"},
+	}
+	processes := []model.Process{
+		{Database: "app_a", Digest: "shared", User: "worker_a", Command: "Query"},
+		{Database: "app_b", Digest: "shared", User: "worker_b", Command: "Query"},
+	}
+	attributeActiveUsers(queries, processes)
+	if got := strings.Join(queries[0].ActiveUsers, ","); got != "worker_a" {
+		t.Fatalf("app_a active users = %q, want worker_a", got)
+	}
+	if got := strings.Join(queries[1].ActiveUsers, ","); got != "worker_b" {
+		t.Fatalf("app_b active users = %q, want worker_b", got)
+	}
+}
+
+func TestRequiredCollectionsMarshalAsArraysAfterDegradedProbe(t *testing.T) {
+	result := newContext("test", Target{})
+	result.Queries = nil
+	result.WaitEvents = nil
+	result.StatementSamples = nil
+	result.Capabilities = nil
+	normalizeRequiredCollections(result)
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{
+		"findings", "queries", "tables", "indexes", "processes", "connection_groups", "locks",
+		"transactions", "metadata_locks", "wait_events", "file_io", "server_errors",
+		"memory_consumers", "statement_samples", "capabilities",
+	} {
+		if got := string(object[field]); got != "[]" {
+			t.Fatalf("required collection %q marshaled as %s, want []", field, got)
+		}
+	}
+	for _, field := range []string{"variables", "global_status"} {
+		if got := string(object[field]); got != "{}" {
+			t.Fatalf("required map %q marshaled as %s, want {}", field, got)
+		}
+	}
+}
+
 func TestSummarizeProcessesByUserHostAndPair(t *testing.T) {
 	groups := summarizeProcesses([]model.Process{
 		{User: "app", Host: "10.0.0.1:5000", Command: "Query", Statement: "SELECT ?"},
@@ -203,6 +253,27 @@ func TestDeriveStatementSamplesHandlesCounterReset(t *testing.T) {
 	samples := deriveStatementSamples(first, second, time.Second, 10)
 	if len(samples) != 0 {
 		t.Fatalf("counter reset was not handled: %+v", samples)
+	}
+}
+
+func TestDeriveStatementSamplesScopesDigestBySchema(t *testing.T) {
+	first := map[string]statementDigestCounter{
+		statementDigestIdentity("app_a", "shared"): {Digest: "shared", Schema: "app_a", Statement: "SELECT id FROM orders", Count: 10, TotalMillis: 100},
+		statementDigestIdentity("app_b", "shared"): {Digest: "shared", Schema: "app_b", Statement: "SELECT id FROM orders", Count: 20, TotalMillis: 200},
+	}
+	second := map[string]statementDigestCounter{
+		statementDigestIdentity("app_a", "shared"): {Digest: "shared", Schema: "app_a", Statement: "SELECT id FROM orders", Count: 12, TotalMillis: 300},
+		statementDigestIdentity("app_b", "shared"): {Digest: "shared", Schema: "app_b", Statement: "SELECT id FROM orders", Count: 25, TotalMillis: 260},
+	}
+	samples := deriveStatementSamples(first, second, time.Second, 10)
+	if len(samples) != 2 {
+		t.Fatalf("schema-scoped samples = %+v, want two rows", samples)
+	}
+	if samples[0].Schema != "app_a" || samples[0].Digest != "shared" || samples[0].Calls != 2 || samples[0].DatabaseTimeMillis != 200 {
+		t.Fatalf("app_a sample = %+v", samples[0])
+	}
+	if samples[1].Schema != "app_b" || samples[1].Digest != "shared" || samples[1].Calls != 5 || samples[1].DatabaseTimeMillis != 60 {
+		t.Fatalf("app_b sample = %+v", samples[1])
 	}
 }
 

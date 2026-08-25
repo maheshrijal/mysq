@@ -80,7 +80,7 @@ expect {
   eof { exit 15 }
 }
 expect {
-  -re {● (HEALTHY|ATTENTION|CRITICAL)[[:space:]]+[0-9]+} {}
+  -re {Refreshed [0-9:]+ .* snapshot [0-9a-f]+} {}
   timeout { exit 14 }
   eof { exit 15 }
 }
