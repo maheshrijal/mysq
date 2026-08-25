@@ -40,6 +40,7 @@ func TestHarnessOnlyPausesRecurringHealthcheckForIdleProbe(t *testing.T) {
 	compose := string(composeData)
 	for _, expected := range []string{
 		`docker exec "$mysql_container" touch /tmp/mysq-health-paused`,
+		"sleep 4",
 		`docker exec "$mysql_container" rm -f /tmp/mysq-health-paused`,
 	} {
 		if !strings.Contains(runScript, expected) {
@@ -48,6 +49,9 @@ func TestHarnessOnlyPausesRecurringHealthcheckForIdleProbe(t *testing.T) {
 	}
 	if !strings.Contains(compose, `test -f /tmp/mysq-health-paused || mysqladmin ping`) {
 		t.Fatal("MySQL fixture healthcheck is not recurring outside the bounded idle probe")
+	}
+	if !strings.Contains(compose, "timeout: 3s") {
+		t.Fatal("E2E harness drain bound is no longer tied to the healthcheck timeout")
 	}
 	if strings.Contains(compose, "mysq-health-ready") {
 		t.Fatal("MySQL fixture restored a permanently green readiness sentinel")

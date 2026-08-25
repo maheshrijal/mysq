@@ -106,7 +106,9 @@ stop_load
 # digest-sampler SELECTs as workload inside the global-status window. Briefly
 # pause the recurring liveness query and let any in-flight check finish first.
 docker exec "$mysql_container" touch /tmp/mysq-health-paused
-sleep 2.2
+# The healthcheck timeout is 3s; four seconds guarantees an already-running
+# mysqladmin invocation has finished before the zero-question window opens.
+sleep 4
 MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --no-store --interval 250ms >"$work_dir/idle-context.json"
 go run ./test/e2e/verify --idle-context "$work_dir/idle-context.json"
 docker exec "$mysql_container" rm -f /tmp/mysq-health-paused
