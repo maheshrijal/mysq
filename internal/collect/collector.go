@@ -273,10 +273,10 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	fileIOStarted := time.Now()
 	firstErrors, firstErrorErr := c.collectErrorCounters(ctx, conn)
 	errorsStarted := time.Now()
-	firstStatements, firstStatementErr := c.collectStatementCounters(ctx, conn)
-	statementsStarted := time.Now()
 	firstDigests, firstDigestErr := c.collectStatementDigestCounters(ctx, conn)
 	digestsStarted := time.Now()
+	firstStatements, firstStatementErr := c.collectStatementCounters(ctx, conn)
+	statementsStarted := time.Now()
 	first, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect initial global status: %w", err)
@@ -299,6 +299,8 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		return nil, fmt.Errorf("collect final global status: %w", err)
 	}
 	statusElapsed := time.Since(statusStarted)
+	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
+	statementsElapsed := time.Since(statementsStarted)
 	secondDigests, secondDigestErr := c.collectStatementDigestCounters(ctx, conn)
 	digestsElapsed := time.Since(digestsStarted)
 	secondWaits, secondWaitErr := c.collectWaitCounters(ctx, conn)
@@ -307,8 +309,6 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	fileIOElapsed := time.Since(fileIOStarted)
 	secondErrors, secondErrorErr := c.collectErrorCounters(ctx, conn)
 	errorsElapsed := time.Since(errorsStarted)
-	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
-	statementsElapsed := time.Since(statementsStarted)
 	if err := sampledContextError(ctx); err != nil {
 		return nil, err
 	}
@@ -1325,6 +1325,10 @@ func deriveStatementSamples(first, second map[string]statementDigestCounter, ela
 func internalStatementSample(statement string) bool {
 	canonical := strings.NewReplacer("`", "", " ", "").Replace(strings.ToUpper(statement))
 	if canonical == "SHOWGLOBALSTATUS" {
+		return true
+	}
+	if strings.Contains(canonical, "PERFORMANCE_SCHEMA.EVENTS_STATEMENTS_SUMMARY_GLOBAL_BY_EVENT_NAME") &&
+		strings.Contains(canonical, "SUM_ERRORS") && strings.Contains(canonical, "SUM_WARNINGS") {
 		return true
 	}
 	return strings.Contains(canonical, "PERFORMANCE_SCHEMA.EVENTS_STATEMENTS_SUMMARY_BY_DIGEST") &&

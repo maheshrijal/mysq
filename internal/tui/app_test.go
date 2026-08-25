@@ -140,7 +140,8 @@ func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
 		}},
 		Processes: []model.Process{
 			{ID: 101, User: "app", Seconds: 2, Statement: "SELECT * FROM orders WHERE tenant_id = ?"},
-			{ID: 102, User: "app", Seconds: 2, Statement: "SELECT * FROM refunds WHERE tenant_id = ?"},
+			{ID: 102, User: "app", Seconds: 2, Statement: "SELECT * FROM orders WHERE tenant_id = ?"},
+			{ID: 103, User: "app", Seconds: 2, Statement: "SELECT * FROM refunds WHERE tenant_id = ?"},
 		},
 		Transactions: []model.Transaction{{ID: "trx-1", User: "app", AgeSeconds: 3, Statement: "UPDATE narrow_trx"}},
 		MetadataLocks: []model.MetadataLock{{
@@ -152,7 +153,7 @@ func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
 		}},
 	}
 
-	for _, size := range []tea.WindowSizeMsg{{Width: 52, Height: 18}, {Width: 60, Height: 24}} {
+	for _, size := range []tea.WindowSizeMsg{{Width: 52, Height: 18}, {Width: 60, Height: 24}, {Width: 84, Height: 24}, {Width: 86, Height: 24}, {Width: 94, Height: 24}} {
 		m := New(context.Background(), nil, nil)
 		m.loading = false
 		m.snapshot = ctx
@@ -165,7 +166,7 @@ func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
 		}{
 			{tab: 3, expected: []string{"wait_alpha", "wait_beta", "/var/lib/mysql/analytics/orders_2025.ibd", "/var/lib/mysql/analytics/orders_2026.ibd", "DEADLOCK_ALPHA", "DEADLOCK_BETA", "mem_alpha", "mem_beta"}},
 			{tab: 5, expected: []string{"analytics.orders_archive_2025", "analytics.orders_archive_2026", "analytics.customer_orders_daily_archive", "analytics.customer_refunds_daily_archive", "idx_customer_created_at", "idx_customer_status", "idx_customer_domestic_archive", "idx_customer_overseas_archive"}},
-			{tab: 1, expected: []string{"narrow_user", "SELECT * FROM orders WHERE tenant_id = ?", "SELECT * FROM refunds WHERE tenant_id = ?", "UPDATE narrow_trx", "app.narrow_object", "analytics.customer_orders_daily_archive", "analytics.customer_refunds_daily_archive"}},
+			{tab: 1, expected: []string{"narrow_user", "101", "102", "103", "SELECT * FROM orders WHERE tenant_id = ?", "SELECT * FROM refunds WHERE tenant_id = ?", "UPDATE narrow_trx", "app.narrow_object", "analytics.customer_orders_daily_archive", "analytics.customer_refunds_daily_archive"}},
 		} {
 			m.tab = check.tab
 			m.rebuild()
@@ -173,6 +174,20 @@ func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
 			for _, expected := range check.expected {
 				if !strings.Contains(rendered, expected) {
 					t.Fatalf("%dx%d %s view clipped identity %q:\n%s", size.Width, size.Height, tabs[check.tab], expected, rendered)
+				}
+			}
+			if check.tab == 1 && size.Width == 52 {
+				for _, id := range []string{"101", "102"} {
+					associated := false
+					for _, line := range strings.Split(rendered, "\n") {
+						if strings.Contains(line, id) && strings.Contains(line, "SELECT") {
+							associated = true
+							break
+						}
+					}
+					if !associated {
+						t.Fatalf("52x18 Connections view did not associate process %s with its statement:\n%s", id, rendered)
+					}
 				}
 			}
 		}

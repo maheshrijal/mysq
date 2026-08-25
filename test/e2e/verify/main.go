@@ -58,8 +58,12 @@ func verifyIdleContext(path string) {
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		log.Fatal(err)
 	}
-	if ctx.Metrics.QueriesPerSecond != 0 {
-		log.Fatalf("idle inspection reported %.2f phantom qps", ctx.Metrics.QueriesPerSecond)
+	if ctx.SampleIntervals.GlobalStatus <= 0 {
+		log.Fatalf("idle inspection omitted global-status interval: %+v", ctx.SampleIntervals)
+	}
+	sampledQuestions := ctx.Metrics.QueriesPerSecond * float64(ctx.SampleIntervals.GlobalStatus) / 1000
+	if sampledQuestions >= 1.5 {
+		log.Fatalf("idle inspection reported %.2f questions in its status window (%.2f qps)", sampledQuestions, ctx.Metrics.QueriesPerSecond)
 	}
 	if len(ctx.StatementSamples) != 0 {
 		log.Fatalf("idle inspection reported collector statements as workload: %+v", ctx.StatementSamples)

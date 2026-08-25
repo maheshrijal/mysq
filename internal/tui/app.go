@@ -1387,15 +1387,15 @@ func engine(ctx *model.Context, width int) string {
 		}
 		out.WriteString(row(waitHeadings, waitWidths, true) + "\n")
 		for _, wait := range ctx.WaitEvents {
+			identityWidth := waitWidths[len(waitWidths)-1]
 			values := []string{fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s",
 				fmt.Sprintf("%.1f", wait.EventsPerSecond), duration(wait.TotalLatencyMillis), wait.Name}
 			if compactLayout {
+				identityWidth = waitWidths[0]
 				values = []string{compactMiddle(wait.Name, waitWidths[0]-1), fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s"}
 			}
 			out.WriteString(row(values, waitWidths, false) + "\n")
-			if compactLayout {
-				out.WriteString(identityContinuation(wait.Name, waitWidths[0], width))
-			}
+			out.WriteString(identityContinuation(wait.Name, identityWidth, width))
 		}
 	}
 
@@ -1409,15 +1409,15 @@ func engine(ctx *model.Context, width int) string {
 		}
 		out.WriteString(row(ioHeadings, ioWidths, true) + "\n")
 		for _, item := range ctx.FileIO[:min(12, len(ctx.FileIO))] {
+			identityWidth := ioWidths[len(ioWidths)-1]
 			values := []string{fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond),
 				duration(item.MeanReadLatencyMillis), duration(item.MeanWriteLatencyMillis), item.Name}
 			if compactLayout {
+				identityWidth = ioWidths[0]
 				values = []string{compactPath(item.Name, ioWidths[0]-1), fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond)}
 			}
 			out.WriteString(row(values, ioWidths, false) + "\n")
-			if compactLayout {
-				out.WriteString(identityContinuation(item.Name, ioWidths[0], width))
-			}
+			out.WriteString(identityContinuation(item.Name, identityWidth, width))
 		}
 	}
 
@@ -1431,14 +1431,14 @@ func engine(ctx *model.Context, width int) string {
 		}
 		out.WriteString(row(errorHeadings, errorWidths, true) + "\n")
 		for _, item := range ctx.ServerErrors[:min(10, len(ctx.ServerErrors))] {
+			identityWidth := errorWidths[len(errorWidths)-1]
 			values := []string{fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond), humanCount(item.Raised), item.LastSeen, item.Name}
 			if compactLayout {
+				identityWidth = errorWidths[0]
 				values = []string{compactMiddle(item.Name, errorWidths[0]-1), fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond)}
 			}
 			out.WriteString(row(values, errorWidths, false) + "\n")
-			if compactLayout {
-				out.WriteString(identityContinuation(item.Name, errorWidths[0], width))
-			}
+			out.WriteString(identityContinuation(item.Name, identityWidth, width))
 		}
 	}
 
@@ -1485,14 +1485,14 @@ func engine(ctx *model.Context, width int) string {
 		}
 		out.WriteString(row(memoryHeadings, memoryWidths, true) + "\n")
 		for _, consumer := range ctx.MemoryConsumers {
+			identityWidth := memoryWidths[len(memoryWidths)-1]
 			values := []string{humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes), humanCount(consumer.Allocations), consumer.Name}
 			if compactLayout {
+				identityWidth = memoryWidths[0]
 				values = []string{compactMiddle(consumer.Name, memoryWidths[0]-1), humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes)}
 			}
 			out.WriteString(row(values, memoryWidths, false) + "\n")
-			if compactLayout {
-				out.WriteString(identityContinuation(consumer.Name, memoryWidths[0], width))
-			}
+			out.WriteString(identityContinuation(consumer.Name, identityWidth, width))
 		}
 	}
 	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Width(width).Render("Wait, file I/O, and error rates use their per-family sample windows; cumulative totals are retained for forensic context."))
@@ -1526,21 +1526,21 @@ func tablesView(ctx *model.Context, width int) string {
 	}
 	out.WriteString(row(headings, widths, true) + "\n")
 	for _, table := range ctx.Tables {
+		identityWidth := widths[len(widths)-1]
 		pk := "yes"
 		if !table.HasPrimaryKey {
 			pk = "NO"
 		}
 		values := []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), humanCount(table.Writes), pk, table.Schema + "." + table.Name}
 		if compactLayout {
+			identityWidth = widths[0]
 			values = []string{compactMiddle(table.Schema+"."+table.Name, widths[0]-1), humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), pk}
 		} else if wide {
 			values = []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), duration(table.ReadLatencyMillis),
 				humanCount(table.Writes), duration(table.WriteLatencyMillis), pk, table.Schema + "." + table.Name}
 		}
 		out.WriteString(row(values, widths, false) + "\n")
-		if compactLayout {
-			out.WriteString(identityContinuation(table.Schema+"."+table.Name, widths[0], width))
-		}
+		out.WriteString(identityContinuation(table.Schema+"."+table.Name, identityWidth, width))
 	}
 	if len(ctx.Indexes) > 0 {
 		out.WriteString("\n" + sectionTitle("INDEX ACTIVITY") + "\n")
@@ -1552,6 +1552,7 @@ func tablesView(ctx *model.Context, width int) string {
 		}
 		out.WriteString(row(indexHeadings, indexWidths, true) + "\n")
 		for _, index := range ctx.Indexes {
+			identityWidth := indexWidths[len(indexWidths)-1]
 			flags := ""
 			if index.Unique {
 				flags += "unique "
@@ -1562,13 +1563,12 @@ func tablesView(ctx *model.Context, width int) string {
 			identity := index.Schema + "." + index.Table + "." + index.Name + " (" + index.Columns + ")"
 			values := []string{humanCount(index.Reads), humanCount(index.Writes), humanCount(index.Cardinality), strings.TrimSpace(flags), identity}
 			if compactLayout {
+				identityWidth = indexWidths[0]
 				compactIdentity := index.Schema + "." + index.Table + "." + index.Name
 				values = []string{compactMiddle(compactIdentity, indexWidths[0]-1), humanCount(index.Reads), humanCount(index.Writes), strings.TrimSpace(flags)}
 			}
 			out.WriteString(row(values, indexWidths, false) + "\n")
-			if compactLayout {
-				out.WriteString(identityContinuation(identity, indexWidths[0], width))
-			}
+			out.WriteString(identityContinuation(identity, identityWidth, width))
 		}
 	}
 	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Width(width).Render("Rows are InnoDB estimates. I/O counters are since Performance Schema reset."))
@@ -1597,31 +1597,31 @@ func connections(ctx *model.Context, width int) string {
 				values = []string{group.Kind, compactMiddle(group.Key, groupWidths[1]-1), fmt.Sprint(group.Total), fmt.Sprint(group.Active)}
 			}
 			out.WriteString(row(values, groupWidths, false) + "\n")
-			if compactLayout {
-				out.WriteString(identityContinuation(group.Key, groupWidths[1], width))
-			}
+			out.WriteString(identityContinuation(group.Key, groupWidths[1], width))
 			shown++
 		}
 		out.WriteString("\n" + sectionTitle("PROCESS SNAPSHOT") + "\n")
 	}
 	if compactLayout {
-		processWidths := []int{max(18, width-28), 10, 8, 10}
-		out.WriteString("\n" + row([]string{"STATEMENT", "USER", "TIME", "WAIT"}, processWidths, true) + "\n")
+		processWidths := []int{7, max(16, width-32), 9, 7, 9}
+		out.WriteString("\n" + row([]string{"ID", "STATEMENT", "USER", "TIME", "WAIT"}, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
-			out.WriteString(row([]string{compactMiddle(process.Statement, processWidths[0]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processWidths, false) + "\n")
-			out.WriteString(identityContinuation(process.Statement, processWidths[0], width))
+			out.WriteString(row([]string{compactMiddle(fmt.Sprint(process.ID), processWidths[0]-1), compactMiddle(process.Statement, processWidths[1]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processWidths, false) + "\n")
+			out.WriteString(identityContinuation(process.Statement, processWidths[1], width))
 		}
 	} else if width < 103 {
 		processWidths := []int{8, 12, 8, 18, max(22, width-46)}
 		out.WriteString("\n" + row([]string{"ID", "USER", "TIME", "WAIT", "STATEMENT"}, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
 			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processWidths, false) + "\n")
+			out.WriteString(identityContinuation(process.Statement, processWidths[len(processWidths)-1], width))
 		}
 	} else {
 		processWidths := []int{8, 13, 18, 8, 28, max(28, width-75)}
 		out.WriteString("\n" + row([]string{"ID", "USER", "HOST", "TIME", "WAIT", "STATEMENT"}, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
 			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processWidths, false) + "\n")
+			out.WriteString(identityContinuation(process.Statement, processWidths[len(processWidths)-1], width))
 		}
 	}
 	if len(ctx.Processes) == 0 {
@@ -1644,14 +1644,14 @@ func connections(ctx *model.Context, width int) string {
 		}
 		out.WriteString(row(transactionHeadings, transactionWidths, true) + "\n")
 		for _, transaction := range ctx.Transactions {
+			identityWidth := transactionWidths[len(transactionWidths)-1]
 			values := []string{transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds), humanCount(transaction.RowsLocked), humanCount(transaction.RowsModified), transaction.Statement}
 			if compactLayout {
+				identityWidth = transactionWidths[0]
 				values = []string{compactMiddle(transaction.Statement, transactionWidths[0]-1), transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds)}
 			}
 			out.WriteString(row(values, transactionWidths, false) + "\n")
-			if compactLayout {
-				out.WriteString(identityContinuation(transaction.Statement, transactionWidths[0], width))
-			}
+			out.WriteString(identityContinuation(transaction.Statement, identityWidth, width))
 		}
 	}
 	if len(ctx.MetadataLocks) > 0 {
@@ -1665,14 +1665,14 @@ func connections(ctx *model.Context, width int) string {
 		out.WriteString(row(metadataHeadings, metadataWidths, true) + "\n")
 		for _, lock := range ctx.MetadataLocks {
 			object := strings.TrimPrefix(lock.Schema+"."+lock.Object, ".")
+			identityWidth := metadataWidths[len(metadataWidths)-1]
 			values := []string{lock.Status, lock.User, lock.LockType, lock.Duration, lock.ObjectType, object}
 			if compactLayout {
+				identityWidth = metadataWidths[0]
 				values = []string{compactMiddle(object, metadataWidths[0]-1), lock.Status, lock.User, lock.LockType}
 			}
 			out.WriteString(row(values, metadataWidths, false) + "\n")
-			if compactLayout {
-				out.WriteString(identityContinuation(object, metadataWidths[0], width))
-			}
+			out.WriteString(identityContinuation(object, identityWidth, width))
 		}
 	}
 	return out.String()
