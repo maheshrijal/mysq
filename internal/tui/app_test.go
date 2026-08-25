@@ -904,6 +904,14 @@ func TestActiveFilterDoesNotHideOperationFailures(t *testing.T) {
 			if !strings.Contains(view, test.want) {
 				t.Fatalf("active filter hid %s failure:\n%s", test.name, view)
 			}
+			updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = updated.(Model)
+			if m.activeFilter() != "" {
+				t.Fatalf("Esc did not clear filter after %s failure", test.name)
+			}
+			if view := m.View(); !strings.Contains(view, test.want) {
+				t.Fatalf("clearing filter erased completed %s failure:\n%s", test.name, view)
+			}
 		})
 	}
 }
