@@ -546,7 +546,9 @@ func (m *Model) clearFilter() {
 	if tabs[m.tab] == "Queries" {
 		m.queryIndex = 0
 	}
-	m.setStatus("Filter cleared", false)
+	if !m.loading && !m.exporting {
+		m.setStatus("Filter cleared", false)
+	}
 	m.rebuild()
 }
 

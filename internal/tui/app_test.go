@@ -957,6 +957,44 @@ func TestActiveFilterDoesNotHideExportProgress(t *testing.T) {
 	}
 }
 
+func TestClearingFilterPreservesInFlightOperationStatus(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	for _, test := range []struct {
+		name string
+		key  rune
+		want string
+	}{
+		{name: "refresh", key: 'r', want: "Refreshing every diagnostic prob"},
+		{name: "export", key: 'e', want: "Writing agent bundle"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := New(context.Background(), func(context.Context) (*model.Context, error) { return ctx, nil }, func(*model.Context) (string, error) { return "bundle", nil })
+			m.loading = false
+			m.snapshot = ctx
+			m.tab = 2
+			m.filters[2] = "orders"
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+			m = updated.(Model)
+			updated, command := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{test.key}})
+			m = updated.(Model)
+			if command == nil {
+				t.Fatalf("%s did not start", test.name)
+			}
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = updated.(Model)
+			if m.activeFilter() != "" {
+				t.Fatalf("Esc did not clear filter during %s", test.name)
+			}
+			if view := m.View(); !strings.Contains(view, test.want) {
+				t.Fatalf("clearing filter hid in-flight %s status:\n%s", test.name, view)
+			}
+		})
+	}
+}
+
 func TestSuccessfulOperationsRestoreActiveFilterStatus(t *testing.T) {
 	ctx := &model.Context{
 		Fingerprint: "abc123", Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
