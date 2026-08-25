@@ -213,6 +213,34 @@ func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	}
 }
 
+func TestExportConfirmationKeepsSelectedQueryVisible(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		ctx.Queries = append(ctx.Queries, model.Query{Statement: fmt.Sprintf("SELECT %d FROM orders", i)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m = updated.(Model)
+
+	for i := 0; i < m.viewport.Height-1; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+	selectedLine := m.queryIndex + 1
+	if selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("test setup left selected line %d outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+
+	updated, _ = m.Update(exportMessage{path: "/workspace/bundle"})
+	m = updated.(Model)
+	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("export confirmation left selected line %d outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+}
+
 func TestExportKeyIsIgnoredWhileExportIsRunning(t *testing.T) {
 	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
 	m := New(context.Background(), nil, func(*model.Context) (string, error) { return "bundle", nil })

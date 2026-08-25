@@ -167,6 +167,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resizeViewport()
 		m.rebuild()
+		if tabs[m.tab] == "Queries" && !m.queryDetail && !m.help {
+			m.ensureQuerySelectionVisible()
+		}
 	}
 
 	var command tea.Cmd
