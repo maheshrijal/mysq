@@ -25,6 +25,19 @@ send "\033\[C"
 expect -re {● 2 CONNECTIONS}
 send "\033\[C"
 expect -re {● 3 QUERIES}
+# Contextual help is a real scrollable view and Esc returns to the current
+# query list without changing tabs.
+send "?"
+expect -re {KEYBOARD HELP}
+send "\033"
+expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
+# Filter the current view, apply it, then clear it with Esc.
+send "/"
+send "orders"
+send "\r"
+expect -re {orders}
+send "\033"
+expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
 # Queries use vertical arrows for row selection and Enter/Esc for detail.
 send "\033\[B"
 send "\r"

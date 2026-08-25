@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -29,27 +32,39 @@ type exportMessage struct {
 	err  error
 }
 
-var tabs = []string{"Overview", "Connections", "Queries", "Engine", "Findings", "Tables", "Config"}
+const totalViews = 7
+
+var tabs = [totalViews]string{"Overview", "Connections", "Queries", "Engine", "Findings", "Tables", "Config"}
 
 type Model struct {
-	ctx         context.Context
-	inspect     Inspector
-	export      Exporter
-	snapshot    *model.Context
-	viewport    viewport.Model
-	spinner     spinner.Model
-	width       int
-	height      int
-	tab         int
-	queryIndex  int
-	queryDetail bool
-	loading     bool
-	exporting   bool
-	help        bool
-	status      string
-	exportPath  string
-	err         error
-	refreshed   time.Time
+	ctx                context.Context
+	inspect            Inspector
+	export             Exporter
+	snapshot           *model.Context
+	viewport           viewport.Model
+	spinner            spinner.Model
+	keyHelp            help.Model
+	keys               navigationKeyMap
+	filterInput        textinput.Model
+	width              int
+	height             int
+	tab                int
+	viewOffsets        [totalViews]int
+	queryIndex         int
+	queryDetail        bool
+	queryDetailOffset  int
+	loading            bool
+	exporting          bool
+	help               bool
+	filtering          bool
+	filters            [totalViews]string
+	filterBefore       string
+	filterOffsetBefore int
+	filterQueryBefore  int
+	status             string
+	exportPath         string
+	err                error
+	refreshed          time.Time
 }
 
 var (
@@ -78,9 +93,25 @@ func New(ctx context.Context, inspect Inspector, export Exporter) Model {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = lipgloss.NewStyle().Foreground(cyan)
+	keyHelp := help.New()
+	keyHelp.Styles.ShortKey = lipgloss.NewStyle().Foreground(cyan).Bold(true)
+	keyHelp.Styles.ShortDesc = lipgloss.NewStyle().Foreground(muted)
+	keyHelp.Styles.ShortSeparator = lipgloss.NewStyle().Foreground(border)
+	keyHelp.Styles.FullKey = lipgloss.NewStyle().Foreground(cyan).Bold(true)
+	keyHelp.Styles.FullDesc = lipgloss.NewStyle().Foreground(text)
+	keyHelp.Styles.FullSeparator = lipgloss.NewStyle().Foreground(border)
+	keyHelp.Styles.Ellipsis = lipgloss.NewStyle().Foreground(muted)
+	filterInput := textinput.New()
+	filterInput.Prompt = "/ "
+	filterInput.Placeholder = "filter current view"
+	filterInput.PromptStyle = lipgloss.NewStyle().Foreground(cyan).Bold(true)
+	filterInput.TextStyle = lipgloss.NewStyle().Foreground(text)
+	filterInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(muted)
+	filterInput.Cursor.Style = lipgloss.NewStyle().Foreground(cyan)
 	return Model{
 		ctx: ctx, inspect: inspect, export: export, spinner: spin,
-		viewport: viewport.New(80, 20), loading: true,
+		viewport: viewport.New(80, 20), keyHelp: keyHelp, keys: defaultNavigationKeyMap(), filterInput: filterInput,
+		loading: true,
 	}
 }
 
@@ -88,86 +119,11 @@ func (m Model) Init() tea.Cmd { return tea.Batch(m.spinner.Tick, m.inspectComman
 
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	var commands []tea.Cmd
-	updateViewport := true
 	switch msg := message.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "tab", "right", "l":
-			if m.queryDetail {
-				break
-			}
-			m.tab = (m.tab + 1) % len(tabs)
-			m.rebuild()
-			updateViewport = false
-		case "shift+tab", "left", "h":
-			if m.queryDetail {
-				break
-			}
-			m.tab = (m.tab + len(tabs) - 1) % len(tabs)
-			m.rebuild()
-			updateViewport = false
-		case "down":
-			if tabs[m.tab] == "Queries" && !m.queryDetail && m.snapshot != nil && len(m.snapshot.Queries) > 0 {
-				m.queryIndex = min(m.queryIndex+1, len(m.snapshot.Queries)-1)
-				m.rebuild()
-				m.ensureQuerySelectionVisible()
-				updateViewport = false
-			}
-		case "up":
-			if tabs[m.tab] == "Queries" && !m.queryDetail && m.snapshot != nil && len(m.snapshot.Queries) > 0 {
-				m.queryIndex = max(0, m.queryIndex-1)
-				m.rebuild()
-				m.ensureQuerySelectionVisible()
-				updateViewport = false
-			}
-		case "enter":
-			if tabs[m.tab] == "Queries" && !m.queryDetail && m.snapshot != nil && len(m.snapshot.Queries) > 0 {
-				m.queryDetail = true
-				m.rebuild()
-				updateViewport = false
-			}
-		case "1", "2", "3", "4", "5", "6", "7":
-			m.queryDetail = false
-			m.tab = int(msg.Runes[0] - '1')
-			m.rebuild()
-			updateViewport = false
-		case "r":
-			if !m.loading && !m.exporting {
-				m.exportPath = ""
-				m.resizeViewport()
-				m.loading = true
-				m.status = "Refreshing every diagnostic probe…"
-				commands = append(commands, m.inspectCommand(), m.spinner.Tick)
-			}
-		case "e":
-			if !m.loading && !m.exporting && m.exportPath == "" && m.snapshot != nil {
-				m.exportPath = ""
-				m.resizeViewport()
-				m.exporting = true
-				m.status = "Writing agent bundle…"
-				commands = append(commands, m.exportCommand())
-			}
-		case "esc":
-			if m.queryDetail {
-				m.queryDetail = false
-				m.rebuild()
-				m.ensureQuerySelectionVisible()
-				updateViewport = false
-			} else if m.exportPath != "" {
-				m.exportPath = ""
-				m.resizeViewport()
-				m.rebuild()
-			}
-		case "?":
-			m.help = !m.help
-		case "g":
-			m.viewport.GotoTop()
-		case "G":
-			m.viewport.GotoBottom()
-		}
+		return m.handleKey(msg)
 	case tea.WindowSizeMsg:
+		m.saveCurrentOffset()
 		m.width = msg.Width
 		m.height = msg.Height
 		m.resizeViewport()
@@ -179,11 +135,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Refresh failed: " + compact(msg.err.Error(), max(20, m.width-20))
 		} else {
 			m.snapshot = msg.context
-			if len(m.snapshot.Queries) == 0 {
+			visible := m.filteredContext()
+			if visible == nil || len(visible.Queries) == 0 {
 				m.queryIndex = 0
 				m.queryDetail = false
 			} else {
-				m.queryIndex = min(m.queryIndex, len(m.snapshot.Queries)-1)
+				m.queryIndex = min(m.queryIndex, len(visible.Queries)-1)
 			}
 			m.refreshed = time.Now()
 			m.status = fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint)
@@ -205,11 +162,470 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	var command tea.Cmd
 	m.spinner, command = m.spinner.Update(message)
 	commands = append(commands, command)
-	if updateViewport {
-		m.viewport, command = m.viewport.Update(message)
+	m.viewport, command = m.viewport.Update(message)
+	commands = append(commands, command)
+	if m.filtering {
+		before := m.filterInput.Value()
+		m.filterInput, command = m.filterInput.Update(message)
 		commands = append(commands, command)
+		m.applyFilterInputChange(before)
 	}
 	return m, tea.Batch(commands...)
+}
+
+func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+	if m.filtering {
+		return m.updateFilter(msg)
+	}
+	if m.help {
+		switch {
+		case key.Matches(msg, m.keys.Help, m.keys.Back):
+			m.help = false
+			m.rebuild()
+			return m, nil
+		case key.Matches(msg, m.keys.Quit):
+			return m, tea.Quit
+		case m.scroll(msg, false):
+			return m, nil
+		default:
+			return m, nil
+		}
+	}
+
+	switch {
+	case key.Matches(msg, m.keys.Quit):
+		return m, tea.Quit
+	case key.Matches(msg, m.keys.Back):
+		switch {
+		case m.exportPath != "":
+			m.exportPath = ""
+			m.resizeViewport()
+			m.rebuild()
+		case m.queryDetail:
+			m.saveCurrentOffset()
+			m.queryDetail = false
+			m.rebuild()
+			m.ensureQuerySelectionVisible()
+		case m.activeFilter() != "":
+			m.clearFilter()
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Help):
+		if m.exportPath == "" {
+			m.saveCurrentOffset()
+			m.help = true
+			m.rebuild()
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Filter):
+		if m.filterable() && !m.queryDetail && m.snapshot != nil {
+			return m, m.startFilter()
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.NextView):
+		if !m.queryDetail {
+			m.switchView((m.tab + 1) % len(tabs))
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.PreviousView):
+		if !m.queryDetail {
+			m.switchView((m.tab + len(tabs) - 1) % len(tabs))
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Jump):
+		if len(msg.Runes) == 1 {
+			m.saveCurrentOffset()
+			m.queryDetail = false
+			m.tab = int(msg.Runes[0] - '1')
+			if strings.HasPrefix(m.status, "Filter ") || m.status == "Filter cleared" {
+				m.status = ""
+			}
+			m.rebuild()
+			if tabs[m.tab] == "Queries" {
+				m.ensureQuerySelectionVisible()
+			}
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Open):
+		visible := m.filteredContext()
+		if tabs[m.tab] == "Queries" && !m.queryDetail && visible != nil && len(visible.Queries) > 0 {
+			m.saveCurrentOffset()
+			m.queryDetail = true
+			m.rebuild()
+		}
+		return m, nil
+	case m.scroll(msg, tabs[m.tab] == "Queries" && !m.queryDetail):
+		return m, nil
+	case key.Matches(msg, m.keys.Refresh):
+		if !m.loading && !m.exporting {
+			m.exportPath = ""
+			m.resizeViewport()
+			m.loading = true
+			m.status = "Refreshing every diagnostic probe…"
+			return m, tea.Batch(m.inspectCommand(), m.spinner.Tick)
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Export):
+		if !m.loading && !m.exporting && m.exportPath == "" && m.snapshot != nil {
+			m.resizeViewport()
+			m.exporting = true
+			m.status = "Writing agent bundle…"
+			return m, m.exportCommand()
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) switchView(next int) {
+	m.saveCurrentOffset()
+	m.tab = next
+	if strings.HasPrefix(m.status, "Filter ") || m.status == "Filter cleared" {
+		m.status = ""
+	}
+	m.rebuild()
+	if tabs[m.tab] == "Queries" {
+		m.ensureQuerySelectionVisible()
+	}
+}
+
+func (m *Model) scroll(msg tea.KeyMsg, selectQueries bool) bool {
+	visible := m.filteredContext()
+	queryCount := 0
+	if visible != nil {
+		queryCount = len(visible.Queries)
+	}
+	page := max(1, m.viewport.Height-3)
+	halfPage := max(1, page/2)
+	queryTarget := m.queryIndex
+
+	switch {
+	case key.Matches(msg, m.keys.Up):
+		if selectQueries {
+			queryTarget--
+		} else {
+			m.viewport.LineUp(1)
+		}
+	case key.Matches(msg, m.keys.Down):
+		if selectQueries {
+			queryTarget++
+		} else {
+			m.viewport.LineDown(1)
+		}
+	case key.Matches(msg, m.keys.PageUp):
+		if selectQueries {
+			queryTarget -= page
+		} else {
+			m.viewport.PageUp()
+		}
+	case key.Matches(msg, m.keys.PageDown):
+		if selectQueries {
+			queryTarget += page
+		} else {
+			m.viewport.PageDown()
+		}
+	case key.Matches(msg, m.keys.HalfPageUp):
+		if selectQueries {
+			queryTarget -= halfPage
+		} else {
+			m.viewport.HalfPageUp()
+		}
+	case key.Matches(msg, m.keys.HalfPageDown):
+		if selectQueries {
+			queryTarget += halfPage
+		} else {
+			m.viewport.HalfPageDown()
+		}
+	case key.Matches(msg, m.keys.Top):
+		if selectQueries {
+			queryTarget = 0
+		} else {
+			m.viewport.GotoTop()
+		}
+	case key.Matches(msg, m.keys.Bottom):
+		if selectQueries {
+			queryTarget = queryCount - 1
+		} else {
+			m.viewport.GotoBottom()
+		}
+	default:
+		return false
+	}
+
+	if selectQueries {
+		if queryCount == 0 {
+			m.queryIndex = 0
+			return true
+		}
+		m.saveCurrentOffset()
+		m.queryIndex = min(max(0, queryTarget), queryCount-1)
+		m.rebuild()
+		m.ensureQuerySelectionVisible()
+	}
+	if !m.help {
+		m.saveCurrentOffset()
+	}
+	return true
+}
+
+func (m *Model) saveCurrentOffset() {
+	if m.help || len(m.viewOffsets) != len(tabs) || m.tab < 0 || m.tab >= len(tabs) {
+		return
+	}
+	if m.queryDetail {
+		m.queryDetailOffset = m.viewport.YOffset
+		return
+	}
+	m.viewOffsets[m.tab] = m.viewport.YOffset
+}
+
+func (m Model) currentOffset() int {
+	if m.queryDetail {
+		return m.queryDetailOffset
+	}
+	if len(m.viewOffsets) == len(tabs) && m.tab >= 0 && m.tab < len(tabs) {
+		return m.viewOffsets[m.tab]
+	}
+	return 0
+}
+
+func (m Model) filterable() bool {
+	return tabs[m.tab] == "Connections" || tabs[m.tab] == "Queries" || tabs[m.tab] == "Findings" || tabs[m.tab] == "Tables"
+}
+
+func (m Model) activeFilter() string {
+	if len(m.filters) != len(tabs) || m.tab < 0 || m.tab >= len(tabs) {
+		return ""
+	}
+	return m.filters[m.tab]
+}
+
+func (m *Model) startFilter() tea.Cmd {
+	m.saveCurrentOffset()
+	m.filterBefore = m.activeFilter()
+	m.filterOffsetBefore = m.currentOffset()
+	m.filterQueryBefore = m.queryIndex
+	m.filterInput.SetValue(m.filterBefore)
+	m.filterInput.CursorEnd()
+	m.filtering = true
+	m.status = "Filtering " + strings.ToLower(tabs[m.tab]) + "…"
+	return m.filterInput.Focus()
+}
+
+func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		value := strings.TrimSpace(m.filterInput.Value())
+		m.filterInput.SetValue(value)
+		m.filters[m.tab] = value
+		m.filtering = false
+		m.filterInput.Blur()
+		m.updateFilterStatus()
+		return m, nil
+	case "esc":
+		m.filters[m.tab] = m.filterBefore
+		m.viewOffsets[m.tab] = m.filterOffsetBefore
+		m.queryIndex = m.filterQueryBefore
+		m.filtering = false
+		m.filterInput.Blur()
+		m.updateFilterStatus()
+		m.rebuild()
+		if tabs[m.tab] == "Queries" {
+			m.ensureQuerySelectionVisible()
+		}
+		return m, nil
+	}
+
+	before := m.filterInput.Value()
+	var command tea.Cmd
+	m.filterInput, command = m.filterInput.Update(msg)
+	m.applyFilterInputChange(before)
+	return m, command
+}
+
+func (m *Model) applyFilterInputChange(before string) {
+	if m.filterInput.Value() == before {
+		return
+	}
+	m.filters[m.tab] = m.filterInput.Value()
+	m.viewOffsets[m.tab] = 0
+	if tabs[m.tab] == "Queries" {
+		m.queryIndex = 0
+	}
+	m.rebuild()
+}
+
+func (m *Model) clearFilter() {
+	m.filters[m.tab] = ""
+	m.filterInput.Reset()
+	m.viewOffsets[m.tab] = 0
+	if tabs[m.tab] == "Queries" {
+		m.queryIndex = 0
+	}
+	m.status = "Filter cleared"
+	m.rebuild()
+}
+
+func (m *Model) updateFilterStatus() {
+	if m.activeFilter() == "" {
+		m.status = "Filter cleared"
+		return
+	}
+	matched, total := m.filterCounts()
+	m.status = fmt.Sprintf("Filter %q · %d/%d matches", m.activeFilter(), matched, total)
+}
+
+func (m Model) filteredContext() *model.Context {
+	if m.snapshot == nil || m.activeFilter() == "" {
+		return m.snapshot
+	}
+	filter := m.activeFilter()
+	filtered := *m.snapshot
+	switch tabs[m.tab] {
+	case "Queries":
+		filtered.Queries = make([]model.Query, 0, len(m.snapshot.Queries))
+		for _, query := range m.snapshot.Queries {
+			values := []string{query.Digest, query.Schema, query.Statement}
+			values = append(values, query.ActiveUsers...)
+			if containsFold(filter, values...) {
+				filtered.Queries = append(filtered.Queries, query)
+			}
+		}
+	case "Tables":
+		filtered.Indexes = make([]model.Index, 0, len(m.snapshot.Indexes))
+		indexTables := make(map[string]bool)
+		for _, index := range m.snapshot.Indexes {
+			if containsFold(filter, index.Schema, index.Table, index.Name, index.Columns, index.Schema+"."+index.Table+"."+index.Name) {
+				filtered.Indexes = append(filtered.Indexes, index)
+				indexTables[index.Schema+"\x00"+index.Table] = true
+			}
+		}
+		filtered.Tables = make([]model.Table, 0, len(m.snapshot.Tables))
+		for _, table := range m.snapshot.Tables {
+			if containsFold(filter, table.Schema, table.Name, table.Engine, table.Schema+"."+table.Name) || indexTables[table.Schema+"\x00"+table.Name] {
+				filtered.Tables = append(filtered.Tables, table)
+			}
+		}
+	case "Connections":
+		filtered.Processes = make([]model.Process, 0, len(m.snapshot.Processes))
+		for _, process := range m.snapshot.Processes {
+			if containsFold(filter, fmt.Sprint(process.ID), process.User, process.Host, process.Database, process.Command, process.State, process.Digest, process.WaitEvent, process.Statement) {
+				filtered.Processes = append(filtered.Processes, process)
+			}
+		}
+		filtered.ConnectionGroups = make([]model.ConnectionGroup, 0, len(m.snapshot.ConnectionGroups))
+		for _, group := range m.snapshot.ConnectionGroups {
+			if containsFold(filter, group.Kind, group.Key) {
+				filtered.ConnectionGroups = append(filtered.ConnectionGroups, group)
+			}
+		}
+		filtered.Locks = make([]model.LockWait, 0, len(m.snapshot.Locks))
+		for _, lock := range m.snapshot.Locks {
+			if containsFold(filter, lock.WaitingTransaction, lock.BlockingTransaction, lock.Schema, lock.Table, lock.Index, lock.LockType, lock.LockMode) {
+				filtered.Locks = append(filtered.Locks, lock)
+			}
+		}
+		filtered.Transactions = make([]model.Transaction, 0, len(m.snapshot.Transactions))
+		for _, transaction := range m.snapshot.Transactions {
+			if containsFold(filter, transaction.ID, transaction.State, fmt.Sprint(transaction.ProcessID), transaction.User, transaction.Host, transaction.Statement) {
+				filtered.Transactions = append(filtered.Transactions, transaction)
+			}
+		}
+		filtered.MetadataLocks = make([]model.MetadataLock, 0, len(m.snapshot.MetadataLocks))
+		for _, lock := range m.snapshot.MetadataLocks {
+			if containsFold(filter, fmt.Sprint(lock.ThreadID), fmt.Sprint(lock.ProcessID), lock.User, lock.Host, lock.ObjectType, lock.Schema, lock.Object, lock.LockType, lock.Duration, lock.Status) {
+				filtered.MetadataLocks = append(filtered.MetadataLocks, lock)
+			}
+		}
+	case "Findings":
+		filtered.Findings = make([]model.Finding, 0, len(m.snapshot.Findings))
+		for _, finding := range m.snapshot.Findings {
+			values := []string{finding.ID, string(finding.Severity), finding.Subsystem, finding.Title, finding.Summary, finding.Recommendation}
+			values = append(values, finding.Objects...)
+			if containsFold(filter, values...) {
+				filtered.Findings = append(filtered.Findings, finding)
+			}
+		}
+	}
+	return &filtered
+}
+
+func containsFold(filter string, values ...string) bool {
+	needle := strings.ToLower(strings.TrimSpace(filter))
+	if needle == "" {
+		return true
+	}
+	for _, value := range values {
+		if strings.Contains(strings.ToLower(value), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) filterCounts() (int, int) {
+	if m.snapshot == nil {
+		return 0, 0
+	}
+	filtered := m.filteredContext()
+	switch tabs[m.tab] {
+	case "Queries":
+		return len(filtered.Queries), len(m.snapshot.Queries)
+	case "Tables":
+		return len(filtered.Tables) + len(filtered.Indexes), len(m.snapshot.Tables) + len(m.snapshot.Indexes)
+	case "Connections":
+		return len(filtered.Processes) + len(filtered.ConnectionGroups) + len(filtered.Locks) + len(filtered.Transactions) + len(filtered.MetadataLocks),
+			len(m.snapshot.Processes) + len(m.snapshot.ConnectionGroups) + len(m.snapshot.Locks) + len(m.snapshot.Transactions) + len(m.snapshot.MetadataLocks)
+	case "Findings":
+		return len(filtered.Findings), len(m.snapshot.Findings)
+	default:
+		return 0, 0
+	}
+}
+
+func (m Model) helpBindings() contextualHelp {
+	paging := []key.Binding{m.keys.PageUp, m.keys.PageDown, m.keys.HalfPageUp, m.keys.HalfPageDown, m.keys.Top, m.keys.Bottom}
+	navigation := []key.Binding{m.keys.PreviousView, m.keys.NextView, m.keys.Jump}
+	actions := []key.Binding{m.keys.Refresh, m.keys.Export, m.keys.Help, m.keys.Quit}
+	context := []key.Binding{m.keys.Up, m.keys.Down}
+	short := []key.Binding{m.keys.PreviousView, m.keys.NextView, m.keys.Up, m.keys.Down}
+
+	if tabs[m.tab] == "Queries" && !m.queryDetail {
+		context = []key.Binding{m.keys.Up, m.keys.Down, m.keys.Open, m.keys.Filter}
+		short = []key.Binding{m.keys.Up, m.keys.Down, m.keys.Open, m.keys.Filter}
+	} else if m.queryDetail {
+		context = []key.Binding{m.keys.Back, m.keys.Up, m.keys.Down, m.keys.PageUp, m.keys.PageDown}
+		short = []key.Binding{m.keys.Back, m.keys.Up, m.keys.Down, m.keys.PageUp, m.keys.PageDown}
+	} else if m.filterable() {
+		context = append(context, m.keys.Filter)
+		short = append(short, m.keys.Filter)
+	}
+	if m.activeFilter() != "" && !m.queryDetail {
+		context = append(context, m.keys.Back)
+	}
+	short = append(short, m.keys.Refresh, m.keys.Export, m.keys.Help, m.keys.Quit)
+
+	groups := [][]key.Binding{context, navigation, paging, actions}
+	if m.width < 96 {
+		flattened := make([]key.Binding, 0, len(context)+len(navigation)+len(paging)+len(actions))
+		for _, group := range groups {
+			flattened = append(flattened, group...)
+		}
+		groups = [][]key.Binding{flattened}
+	}
+	return contextualHelp{short: short, full: groups}
+}
+
+func (m Model) keyboardHelp() string {
+	keyHelp := m.keyHelp
+	keyHelp.ShowAll = true
+	keyHelp.Width = max(20, m.viewport.Width-2)
+	title := lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("KEYBOARD HELP")
+	context := lipgloss.NewStyle().Foreground(muted).Render(tabs[m.tab] + " · arrows work everywhere; Vim and pager keys are aliases")
+	closeHint := lipgloss.NewStyle().Foreground(muted).Render("Esc or ? closes help. Help scrolls when the terminal is short.")
+	return title + "\n" + context + "\n\n" + keyHelp.View(m.helpBindings()) + "\n\n" + closeHint
 }
 
 func (m Model) View() string {
@@ -360,34 +776,31 @@ func (m Model) footer() string {
 		lines := padBetween(title, dismiss, max(1, m.width-2)) + "\n" + path
 		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(lines)
 	}
-	keys := keyHint("←/→", "views") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("e", "export") + "  " + keyHint("?", "help") + "  " + keyHint("q", "quit")
-	if tabs[m.tab] == "Queries" {
-		keys = keyHint("↑/↓", "select") + "  " + keyHint("enter", "open") + "  " + keyHint("←/→", "views") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
-		if m.queryDetail {
-			keys = keyHint("esc", "queries") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("j/k", "scroll") + "  " + keyHint("r", "refresh") + "  " + keyHint("q", "quit")
-		}
+	if m.filtering {
+		input := m.filterInput.View()
+		hints := keyHint("enter", "apply") + "  " + keyHint("esc", "cancel")
+		line := padBetween(input, hints, max(1, m.width-2))
+		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
 	}
 	status := m.status
 	if status == "" {
 		status = "Read-only · SQL literals redacted"
 	}
 	if m.help {
-		if m.width < 96 {
-			keys = keyHint("1–7", "jump") + "  " + keyHint("g/G", "ends") + "  " + keyHint("pgup/dn", "page") + "  " + keyHint("e", "export")
-		} else {
-			keys = keyHint("1–7", "jump") + "  " + keyHint("g/G", "top/bottom") + "  " + keyHint("pgup/dn", "page") + "  " + keyHint("e", "agent bundle")
-		}
-	} else if m.width < 96 {
-		if tabs[m.tab] == "Queries" {
-			keys = keyHint("↑/↓", "select") + "  " + keyHint("enter", "open") + "  " + keyHint("←/→", "views")
-			if m.queryDetail {
-				keys = keyHint("esc", "queries") + "  " + keyHint("↑/↓", "scroll")
-			}
-		} else {
-			keys = keyHint("←/→", "view") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("q", "quit")
-		}
+		keys := keyHint("esc/?", "close help") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("q", "quit")
+		line := padBetween(lipgloss.NewStyle().Foreground(muted).Render("Contextual keys · "+tabs[m.tab]), keys, max(1, m.width-2))
+		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
 	}
-	line := padBetween(lipgloss.NewStyle().Foreground(muted).Render(compact(status, max(16, m.width/2))), keys, max(1, m.width-2))
+	if m.activeFilter() != "" {
+		matched, total := m.filterCounts()
+		status = fmt.Sprintf("Filter %q · %d/%d", m.activeFilter(), matched, total)
+	}
+	keyHelp := m.keyHelp
+	keyHelp.ShowAll = false
+	statusWidth := min(max(16, m.width/3), max(16, m.width-28))
+	keyHelp.Width = max(12, m.width-statusWidth-5)
+	keys := lipgloss.NewStyle().Inline(true).MaxWidth(keyHelp.Width).Render(keyHelp.View(m.helpBindings()))
+	line := padBetween(lipgloss.NewStyle().Foreground(muted).Render(compact(status, statusWidth)), keys, max(1, m.width-2))
 	return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
 }
 
@@ -402,6 +815,7 @@ func (m *Model) resizeViewport() {
 	bodyHeight := max(8, m.height-2-m.footerHeight())
 	m.viewport.Width = max(24, m.width-4)
 	m.viewport.Height = max(4, bodyHeight-2)
+	m.filterInput.Width = max(12, m.width-28)
 }
 
 func (m Model) contentPanel(width, height int) string {
@@ -410,6 +824,11 @@ func (m Model) contentPanel(width, height int) string {
 }
 
 func (m *Model) rebuild() {
+	if m.help {
+		m.viewport.SetContent(m.keyboardHelp())
+		m.viewport.GotoTop()
+		return
+	}
 	if m.snapshot == nil {
 		if m.err != nil {
 			m.viewport.SetContent(errorView(m.err))
@@ -418,29 +837,38 @@ func (m *Model) rebuild() {
 		}
 		return
 	}
+	visible := m.filteredContext()
+	if m.activeFilter() != "" {
+		matched, total := m.filterCounts()
+		if total > 0 && matched == 0 {
+			m.viewport.SetContent(empty(fmt.Sprintf("No %s match filter %q. Press Esc to clear it.", strings.ToLower(tabs[m.tab]), m.activeFilter())))
+			m.viewport.GotoTop()
+			return
+		}
+	}
 	var content string
 	switch tabs[m.tab] {
 	case "Overview":
-		content = overview(m.snapshot, m.viewport.Width)
+		content = overview(visible, m.viewport.Width)
 	case "Findings":
-		content = findings(m.snapshot, m.viewport.Width)
+		content = findings(visible, m.viewport.Width)
 	case "Queries":
 		if m.queryDetail {
-			content = queryDetail(m.snapshot, m.viewport.Width, m.queryIndex)
+			content = queryDetail(visible, m.viewport.Width, m.queryIndex)
 		} else {
-			content = queries(m.snapshot, m.viewport.Width, m.queryIndex)
+			content = queries(visible, m.viewport.Width, m.queryIndex)
 		}
 	case "Engine":
-		content = engine(m.snapshot, m.viewport.Width)
+		content = engine(visible, m.viewport.Width)
 	case "Tables":
-		content = tablesView(m.snapshot, m.viewport.Width)
+		content = tablesView(visible, m.viewport.Width)
 	case "Connections":
-		content = connections(m.snapshot, m.viewport.Width)
+		content = connections(visible, m.viewport.Width)
 	case "Config":
-		content = config(m.snapshot, m.viewport.Width)
+		content = config(visible, m.viewport.Width)
 	}
 	m.viewport.SetContent(content)
-	m.viewport.GotoTop()
+	m.viewport.SetYOffset(m.currentOffset())
 }
 
 func (m *Model) ensureQuerySelectionVisible() {
