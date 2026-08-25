@@ -376,6 +376,57 @@ func TestTooSmallScreenFitsEveryShortHeight(t *testing.T) {
 	}
 }
 
+func TestWideUnicodeCompactionPreservesNarrowRowsAndContinuations(t *testing.T) {
+	identity := "app." + strings.Repeat("表", 14)
+	statement := strings.Repeat("查", 11)
+	for name, value := range map[string]string{
+		"end":         compact(identity, 17),
+		"middle":      compactMiddle(identity, 17),
+		"path":        compactPath("/var/lib/"+identity, 17),
+		"ANSI-styled": compact(lipgloss.NewStyle().Foreground(cyan).Render(identity), 17),
+	} {
+		if got := lipgloss.Width(value); got > 17 {
+			t.Fatalf("%s compaction rendered %d cells, want at most 17: %q", name, got, value)
+		}
+	}
+	if continuation := identityContinuation(identity, 18, 52); !strings.Contains(continuation, "↳ app.") {
+		t.Fatalf("wide table identity omitted explicit continuation: %q", continuation)
+	}
+	process := model.Process{ID: 123, User: "worker", Seconds: 3, Statement: statement}
+	if continuation := processContinuation(process, 7, 20, 52); !strings.Contains(continuation, "↳ ID 123") {
+		t.Fatalf("wide process statement omitted explicit continuation: %q", continuation)
+	}
+	views := map[string]string{
+		"tables":      tablesView(&model.Context{Tables: []model.Table{{Schema: "app", Name: strings.Repeat("表", 14), HasPrimaryKey: true}}}, 52),
+		"connections": connections(&model.Context{Processes: []model.Process{process}}, 52),
+	}
+	for name, view := range views {
+		for _, line := range strings.Split(view, "\n") {
+			if got := lipgloss.Width(line); got > 52 {
+				t.Fatalf("%s wide-Unicode row rendered %d cells:\n%s", name, got, view)
+			}
+		}
+	}
+	tableRowKeptMetrics := false
+	for _, line := range strings.Split(views["tables"], "\n") {
+		if strings.Contains(line, "…") && strings.Contains(line, "yes") {
+			tableRowKeptMetrics = true
+		}
+	}
+	if !tableRowKeptMetrics {
+		t.Fatalf("wide table identity displaced primary-row metrics:\n%s", views["tables"])
+	}
+	processRowKeptMetrics := false
+	for _, line := range strings.Split(views["connections"], "\n") {
+		if strings.Contains(line, "123") && strings.Contains(line, "…") && strings.Contains(line, "worker") && strings.Contains(line, "3s") {
+			processRowKeptMetrics = true
+		}
+	}
+	if !processRowKeptMetrics {
+		t.Fatalf("wide process statement displaced primary-row metrics:\n%s", views["connections"])
+	}
+}
+
 func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100}}
 	path := "/workspace/mysq-export-20260822-154220.547"

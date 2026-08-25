@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/maheshrijal/mysq/internal/model"
 )
@@ -1921,29 +1922,34 @@ func duration(ms float64) string {
 }
 
 func compact(value string, width int) string {
-	if width <= 1 || len([]rune(value)) <= width {
-		return value
+	if width <= 0 {
+		return ""
 	}
-	runes := []rune(value)
-	return string(runes[:width-1]) + "…"
+	return ansi.Truncate(value, width, "…")
 }
 
 func compactMiddle(value string, width int) string {
-	runes := []rune(value)
-	if width <= 1 || len(runes) <= width {
+	if width <= 0 {
+		return ""
+	}
+	totalWidth := ansi.StringWidth(value)
+	if totalWidth <= width {
 		return value
+	}
+	if width == 1 {
+		return "…"
 	}
 	left := (width - 1) / 2
 	right := width - 1 - left
-	return string(runes[:left]) + "…" + string(runes[len(runes)-right:])
+	return ansi.Cut(value, 0, left) + "…" + ansi.Cut(value, totalWidth-right, totalWidth)
 }
 
 func compactPath(value string, width int) string {
-	if len([]rune(value)) <= width {
+	if ansi.StringWidth(value) <= width {
 		return value
 	}
 	base := filepath.Base(value)
-	baseWidth := len([]rune(base))
+	baseWidth := ansi.StringWidth(base)
 	if baseWidth+2 >= width {
 		return compactMiddle(value, width)
 	}
@@ -1952,7 +1958,7 @@ func compactPath(value string, width int) string {
 }
 
 func identityContinuation(value string, cellWidth, rowWidth int) string {
-	if len([]rune(value)) <= max(1, cellWidth-1) {
+	if ansi.StringWidth(value) <= max(1, cellWidth-1) {
 		return ""
 	}
 	return lipgloss.NewStyle().Foreground(muted).Width(rowWidth).Render("↳ "+value) + "\n"
@@ -1960,7 +1966,7 @@ func identityContinuation(value string, cellWidth, rowWidth int) string {
 
 func processContinuation(process model.Process, idWidth, statementWidth, rowWidth int) string {
 	id := fmt.Sprint(process.ID)
-	if len([]rune(id)) <= max(1, idWidth-1) && len([]rune(process.Statement)) <= max(1, statementWidth-1) {
+	if ansi.StringWidth(id) <= max(1, idWidth-1) && ansi.StringWidth(process.Statement) <= max(1, statementWidth-1) {
 		return ""
 	}
 	value := fmt.Sprintf("↳ ID %s\n  %s", id, process.Statement)
