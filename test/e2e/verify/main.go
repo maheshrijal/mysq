@@ -58,17 +58,24 @@ func verifyIdleContext(path string) {
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		log.Fatal(err)
 	}
-	if ctx.SampleIntervals.GlobalStatus <= 0 {
-		log.Fatalf("idle inspection omitted global-status interval: %+v", ctx.SampleIntervals)
-	}
-	sampledQuestions := ctx.Metrics.QueriesPerSecond * float64(ctx.SampleIntervals.GlobalStatus) / 1000
-	if sampledQuestions >= 1.5 {
-		log.Fatalf("idle inspection reported %.2f questions in its status window (%.2f qps)", sampledQuestions, ctx.Metrics.QueriesPerSecond)
-	}
-	if len(ctx.StatementSamples) != 0 {
-		log.Fatalf("idle inspection reported collector statements as workload: %+v", ctx.StatementSamples)
+	if err := idleContextError(ctx); err != nil {
+		log.Fatal(err)
 	}
 	fmt.Println("verified idle context: collector self-queries excluded from qps and statement samples")
+}
+
+func idleContextError(ctx model.Context) error {
+	if ctx.SampleIntervals.GlobalStatus <= 0 {
+		return fmt.Errorf("idle inspection omitted global-status interval: %+v", ctx.SampleIntervals)
+	}
+	sampledQuestions := ctx.Metrics.QueriesPerSecond * float64(ctx.SampleIntervals.GlobalStatus) / 1000
+	if sampledQuestions >= 0.5 {
+		return fmt.Errorf("idle inspection reported %.2f questions in its status window (%.2f qps)", sampledQuestions, ctx.Metrics.QueriesPerSecond)
+	}
+	if len(ctx.StatementSamples) != 0 {
+		return fmt.Errorf("idle inspection reported collector statements as workload: %+v", ctx.StatementSamples)
+	}
+	return nil
 }
 
 func verifyFocused(directory string) {

@@ -1607,21 +1607,21 @@ func connections(ctx *model.Context, width int) string {
 		out.WriteString("\n" + row([]string{"ID", "STATEMENT", "USER", "TIME", "WAIT"}, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
 			out.WriteString(row([]string{compactMiddle(fmt.Sprint(process.ID), processWidths[0]-1), compactMiddle(process.Statement, processWidths[1]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processWidths, false) + "\n")
-			out.WriteString(identityContinuation(process.Statement, processWidths[1], width))
+			out.WriteString(processContinuation(process, processWidths[0], processWidths[1], width))
 		}
 	} else if width < 103 {
 		processWidths := []int{8, 12, 8, 18, max(22, width-46)}
 		out.WriteString("\n" + row([]string{"ID", "USER", "TIME", "WAIT", "STATEMENT"}, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
 			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processWidths, false) + "\n")
-			out.WriteString(identityContinuation(process.Statement, processWidths[len(processWidths)-1], width))
+			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
 		}
 	} else {
 		processWidths := []int{8, 13, 18, 8, 28, max(28, width-75)}
 		out.WriteString("\n" + row([]string{"ID", "USER", "HOST", "TIME", "WAIT", "STATEMENT"}, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
 			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processWidths, false) + "\n")
-			out.WriteString(identityContinuation(process.Statement, processWidths[len(processWidths)-1], width))
+			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
 		}
 	}
 	if len(ctx.Processes) == 0 {
@@ -1919,6 +1919,15 @@ func identityContinuation(value string, cellWidth, rowWidth int) string {
 		return ""
 	}
 	return lipgloss.NewStyle().Foreground(muted).Width(rowWidth).Render("↳ "+value) + "\n"
+}
+
+func processContinuation(process model.Process, idWidth, statementWidth, rowWidth int) string {
+	id := fmt.Sprint(process.ID)
+	if len([]rune(id)) <= max(1, idWidth-1) && len([]rune(process.Statement)) <= max(1, statementWidth-1) {
+		return ""
+	}
+	value := fmt.Sprintf("↳ ID %s\n  %s", id, process.Statement)
+	return lipgloss.NewStyle().Foreground(muted).Width(rowWidth).Render(value) + "\n"
 }
 
 func padBetween(left, right string, width int) string {

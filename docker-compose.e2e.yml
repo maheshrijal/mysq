@@ -18,7 +18,7 @@ services:
     volumes:
       - ./test/e2e/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      test: ["CMD-SHELL", "test -f /tmp/mysq-health-ready || (mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent && touch /tmp/mysq-health-ready)"]
       interval: 2s
       timeout: 3s
       retries: 40
