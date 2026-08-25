@@ -90,6 +90,11 @@ MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --store "$histo
 # cannot starve Bubble Tea's initial full refresh.
 stop_load
 
+# With no application client active, a full inspection must not count its own
+# digest-sampler SELECTs as workload inside the global-status window.
+MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --no-store --interval 250ms >"$work_dir/idle-context.json"
+go run ./test/e2e/verify --idle-context "$work_dir/idle-context.json"
+
 "$binary" init --user observer >"$work_dir/init.sql"
 "$binary" --help >"$work_dir/help.txt"
 "$binary" --version >"$work_dir/version.txt"

@@ -275,13 +275,13 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	errorsStarted := time.Now()
 	firstStatements, firstStatementErr := c.collectStatementCounters(ctx, conn)
 	statementsStarted := time.Now()
+	firstDigests, firstDigestErr := c.collectStatementDigestCounters(ctx, conn)
+	digestsStarted := time.Now()
 	first, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect initial global status: %w", err)
 	}
 	statusStarted := time.Now()
-	firstDigests, firstDigestErr := c.collectStatementDigestCounters(ctx, conn)
-	digestsStarted := time.Now()
 
 	interval := c.Interval
 	if interval < 100*time.Millisecond {
@@ -294,13 +294,13 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		return nil, ctx.Err()
 	case <-timer.C:
 	}
-	secondDigests, secondDigestErr := c.collectStatementDigestCounters(ctx, conn)
-	digestsElapsed := time.Since(digestsStarted)
 	second, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect final global status: %w", err)
 	}
 	statusElapsed := time.Since(statusStarted)
+	secondDigests, secondDigestErr := c.collectStatementDigestCounters(ctx, conn)
+	digestsElapsed := time.Since(digestsStarted)
 	secondWaits, secondWaitErr := c.collectWaitCounters(ctx, conn)
 	waitsElapsed := time.Since(waitsStarted)
 	secondFileIO, secondFileErr := c.collectFileIOCounters(ctx, conn)

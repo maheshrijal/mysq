@@ -26,13 +26,17 @@ type manifest struct {
 }
 
 func main() {
-	var contextPath, bundle, focusedDirectory string
+	var contextPath, idleContextPath, bundle, focusedDirectory string
 	flag.StringVar(&contextPath, "context", "", "context JSON to verify")
+	flag.StringVar(&idleContextPath, "idle-context", "", "idle context JSON to verify")
 	flag.StringVar(&bundle, "bundle", "", "bundle directory to verify")
 	flag.StringVar(&focusedDirectory, "focused-dir", "", "directory containing focused command JSON")
 	flag.Parse()
 	if contextPath != "" {
 		verifyContext(contextPath)
+	}
+	if idleContextPath != "" {
+		verifyIdleContext(idleContextPath)
 	}
 	if bundle != "" {
 		verifyBundle(bundle)
@@ -40,9 +44,24 @@ func main() {
 	if focusedDirectory != "" {
 		verifyFocused(focusedDirectory)
 	}
-	if contextPath == "" && bundle == "" && focusedDirectory == "" {
-		log.Fatal("pass --context, --bundle, or --focused-dir")
+	if contextPath == "" && idleContextPath == "" && bundle == "" && focusedDirectory == "" {
+		log.Fatal("pass --context, --idle-context, --bundle, or --focused-dir")
 	}
+}
+
+func verifyIdleContext(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var ctx model.Context
+	if err := json.Unmarshal(data, &ctx); err != nil {
+		log.Fatal(err)
+	}
+	if ctx.Metrics.QueriesPerSecond != 0 {
+		log.Fatalf("idle inspection reported %.2f phantom qps", ctx.Metrics.QueriesPerSecond)
+	}
+	fmt.Println("verified idle context: collector self-queries excluded from qps")
 }
 
 func verifyFocused(directory string) {

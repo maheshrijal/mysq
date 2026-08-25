@@ -1390,7 +1390,7 @@ func engine(ctx *model.Context, width int) string {
 			values := []string{fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s",
 				fmt.Sprintf("%.1f", wait.EventsPerSecond), duration(wait.TotalLatencyMillis), wait.Name}
 			if compactLayout {
-				values = []string{wait.Name, fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s"}
+				values = []string{compactMiddle(wait.Name, waitWidths[0]-1), fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s"}
 			}
 			out.WriteString(row(values, waitWidths, false) + "\n")
 		}
@@ -1409,7 +1409,7 @@ func engine(ctx *model.Context, width int) string {
 			values := []string{fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond),
 				duration(item.MeanReadLatencyMillis), duration(item.MeanWriteLatencyMillis), item.Name}
 			if compactLayout {
-				values = []string{item.Name, fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond)}
+				values = []string{compactPath(item.Name, ioWidths[0]-1), fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond)}
 			}
 			out.WriteString(row(values, ioWidths, false) + "\n")
 		}
@@ -1427,7 +1427,7 @@ func engine(ctx *model.Context, width int) string {
 		for _, item := range ctx.ServerErrors[:min(10, len(ctx.ServerErrors))] {
 			values := []string{fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond), humanCount(item.Raised), item.LastSeen, item.Name}
 			if compactLayout {
-				values = []string{item.Name, fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond)}
+				values = []string{compactMiddle(item.Name, errorWidths[0]-1), fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond)}
 			}
 			out.WriteString(row(values, errorWidths, false) + "\n")
 		}
@@ -1478,7 +1478,7 @@ func engine(ctx *model.Context, width int) string {
 		for _, consumer := range ctx.MemoryConsumers {
 			values := []string{humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes), humanCount(consumer.Allocations), consumer.Name}
 			if compactLayout {
-				values = []string{consumer.Name, humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes)}
+				values = []string{compactMiddle(consumer.Name, memoryWidths[0]-1), humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes)}
 			}
 			out.WriteString(row(values, memoryWidths, false) + "\n")
 		}
@@ -1520,7 +1520,7 @@ func tablesView(ctx *model.Context, width int) string {
 		}
 		values := []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), humanCount(table.Writes), pk, table.Schema + "." + table.Name}
 		if compactLayout {
-			values = []string{table.Schema + "." + table.Name, humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), pk}
+			values = []string{compactMiddle(table.Schema+"."+table.Name, widths[0]-1), humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), pk}
 		} else if wide {
 			values = []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), duration(table.ReadLatencyMillis),
 				humanCount(table.Writes), duration(table.WriteLatencyMillis), pk, table.Schema + "." + table.Name}
@@ -1547,7 +1547,8 @@ func tablesView(ctx *model.Context, width int) string {
 			identity := index.Schema + "." + index.Table + "." + index.Name + " (" + index.Columns + ")"
 			values := []string{humanCount(index.Reads), humanCount(index.Writes), humanCount(index.Cardinality), strings.TrimSpace(flags), identity}
 			if compactLayout {
-				values = []string{identity, humanCount(index.Reads), humanCount(index.Writes), strings.TrimSpace(flags)}
+				compactIdentity := index.Schema + "." + index.Table + "." + index.Name
+				values = []string{compactMiddle(compactIdentity, indexWidths[0]-1), humanCount(index.Reads), humanCount(index.Writes), strings.TrimSpace(flags)}
 			}
 			out.WriteString(row(values, indexWidths, false) + "\n")
 		}
@@ -1575,7 +1576,7 @@ func connections(ctx *model.Context, width int) string {
 			}
 			values := []string{group.Kind, group.Key, fmt.Sprint(group.Total), fmt.Sprint(group.Active), fmt.Sprint(group.Sleeping), fmt.Sprint(group.Other)}
 			if compactLayout {
-				values = values[:4]
+				values = []string{group.Kind, compactMiddle(group.Key, groupWidths[1]-1), fmt.Sprint(group.Total), fmt.Sprint(group.Active)}
 			}
 			out.WriteString(row(values, groupWidths, false) + "\n")
 			shown++
@@ -1586,7 +1587,7 @@ func connections(ctx *model.Context, width int) string {
 		processWidths := []int{max(18, width-28), 10, 8, 10}
 		out.WriteString("\n" + row([]string{"STATEMENT", "USER", "TIME", "WAIT"}, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
-			out.WriteString(row([]string{process.Statement, process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processWidths, false) + "\n")
+			out.WriteString(row([]string{compactMiddle(process.Statement, processWidths[0]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processWidths, false) + "\n")
 		}
 	} else if width < 103 {
 		processWidths := []int{8, 12, 8, 18, max(22, width-46)}
@@ -1623,7 +1624,7 @@ func connections(ctx *model.Context, width int) string {
 		for _, transaction := range ctx.Transactions {
 			values := []string{transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds), humanCount(transaction.RowsLocked), humanCount(transaction.RowsModified), transaction.Statement}
 			if compactLayout {
-				values = []string{transaction.Statement, transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds)}
+				values = []string{compactMiddle(transaction.Statement, transactionWidths[0]-1), transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds)}
 			}
 			out.WriteString(row(values, transactionWidths, false) + "\n")
 		}
@@ -1641,7 +1642,7 @@ func connections(ctx *model.Context, width int) string {
 			object := strings.TrimPrefix(lock.Schema+"."+lock.Object, ".")
 			values := []string{lock.Status, lock.User, lock.LockType, lock.Duration, lock.ObjectType, object}
 			if compactLayout {
-				values = []string{object, lock.Status, lock.User, lock.LockType}
+				values = []string{compactMiddle(object, metadataWidths[0]-1), lock.Status, lock.User, lock.LockType}
 			}
 			out.WriteString(row(values, metadataWidths, false) + "\n")
 		}

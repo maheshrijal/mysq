@@ -105,16 +105,32 @@ func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 
 func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
 	ctx := &model.Context{
-		Health:       model.Health{Score: 100},
-		Metrics:      model.Metrics{ConnectionsMax: 100},
-		WaitEvents:   []model.WaitEvent{{Name: "wait/narrow", SampleSharePercent: 42}},
-		FileIO:       []model.FileIO{{Name: "file/narrow", ReadsPerSecond: 3}},
-		ServerErrors: []model.ServerError{{Name: "err/narrow", Number: 1234, RaisedPerSecond: 1}},
-		MemoryConsumers: []model.MemoryConsumer{{
-			Name: "memory/narrow", CurrentBytes: 1024, HighBytes: 2048,
-		}},
-		Tables:  []model.Table{{Schema: "app", Name: "narrow_table", TotalBytes: 1024, HasPrimaryKey: true}},
-		Indexes: []model.Index{{Schema: "ix", Table: "t", Name: "narrow_idx", Columns: "id", Visible: true}},
+		Health:  model.Health{Score: 100},
+		Metrics: model.Metrics{ConnectionsMax: 100},
+		WaitEvents: []model.WaitEvent{
+			{Name: "wait/io/table/sql/handler/wait_alpha", SampleSharePercent: 42},
+			{Name: "wait/io/table/sql/handler/wait_beta", SampleSharePercent: 21},
+		},
+		FileIO: []model.FileIO{
+			{Name: "/var/lib/mysql/analytics/orders_2025.ibd", ReadsPerSecond: 3},
+			{Name: "/var/lib/mysql/analytics/orders_2026.ibd", ReadsPerSecond: 2},
+		},
+		ServerErrors: []model.ServerError{
+			{Name: "ER_ANALYTICS_DEADLOCK_ALPHA", Number: 1234, RaisedPerSecond: 1},
+			{Name: "ER_ANALYTICS_DEADLOCK_BETA", Number: 1235, RaisedPerSecond: 1},
+		},
+		MemoryConsumers: []model.MemoryConsumer{
+			{Name: "memory/sql/analytics/mem_alpha", CurrentBytes: 1024, HighBytes: 2048},
+			{Name: "memory/sql/analytics/mem_beta", CurrentBytes: 512, HighBytes: 1024},
+		},
+		Tables: []model.Table{
+			{Schema: "analytics", Name: "orders_archive_2025", TotalBytes: 1024, HasPrimaryKey: true},
+			{Schema: "analytics", Name: "orders_archive_2026", TotalBytes: 2048, HasPrimaryKey: true},
+		},
+		Indexes: []model.Index{
+			{Schema: "analytics", Table: "orders", Name: "idx_customer_created_at", Columns: "customer_id,created_at", Visible: true},
+			{Schema: "analytics", Table: "orders", Name: "idx_customer_status", Columns: "customer_id,status", Visible: true},
+		},
 		ConnectionGroups: []model.ConnectionGroup{{
 			Kind: "user", Key: "narrow_user", Total: 2, Active: 1,
 		}},
@@ -136,9 +152,9 @@ func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
 			tab      int
 			expected []string
 		}{
-			{tab: 3, expected: []string{"wait/narrow", "file/narrow", "err/narrow", "memory/narrow"}},
-			{tab: 5, expected: []string{"app.narrow_table", "ix.t.narrow_idx"}},
-			{tab: 1, expected: []string{"narrow_user", "SELECT narrow", "UPDATE narrow_trx", "app.narrow_object"}},
+			{tab: 3, expected: []string{"wait_alpha", "wait_beta", "orders_2025.ibd", "orders_2026.ibd", "DEADLOCK_ALPHA", "DEADLOCK_BETA", "mem_alpha", "mem_beta"}},
+			{tab: 5, expected: []string{"archive_2025", "archive_2026", "created_at", "status"}},
+			{tab: 1, expected: []string{"narrow_user", "SELECT na", "w_process", "UPDATE narrow_trx", "app.narrow_object"}},
 		} {
 			m.tab = check.tab
 			m.rebuild()
