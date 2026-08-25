@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -789,6 +790,61 @@ func TestCurrentViewFilterSelectsVisibleQueryAndEscapeClears(t *testing.T) {
 	m = updated.(Model)
 	if m.activeFilter() != "" || !strings.Contains(m.View(), "SELECT id FROM users") {
 		t.Fatalf("escape did not clear the active filter:\n%s", m.View())
+	}
+}
+
+func TestActiveFilterDoesNotHideOperationFailures(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	for _, test := range []struct {
+		name    string
+		message tea.Msg
+		want    string
+	}{
+		{name: "refresh", message: inspectMessage{err: errors.New("refresh probe failed")}, want: "Refresh failed"},
+		{name: "export", message: exportMessage{err: errors.New("write failed")}, want: "Export failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := New(context.Background(), nil, nil)
+			m.loading = false
+			m.snapshot = ctx
+			m.tab = 2
+			m.filters[2] = "orders"
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+			m = updated.(Model)
+			updated, _ = m.Update(test.message)
+			view := updated.(Model).View()
+			if !strings.Contains(view, test.want) {
+				t.Fatalf("active filter hid %s failure:\n%s", test.name, view)
+			}
+		})
+	}
+}
+
+func TestFilteredQueryShareUsesCompleteSnapshot(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Statement: "SELECT id FROM users", TotalLatencyMillis: 90},
+			{Statement: "SELECT id FROM orders", TotalLatencyMillis: 10},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	m.filters[2] = "orders"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	if view := m.View(); !strings.Contains(view, "selected share 10.0%") {
+		t.Fatalf("filtered query list changed database-time denominator:\n%s", view)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	view := updated.(Model).View()
+	if !strings.Contains(view, "10.0ms (10.0%)") {
+		t.Fatalf("filtered query detail changed database-time denominator:\n%s", view)
 	}
 }
 

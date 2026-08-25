@@ -63,6 +63,7 @@ type Model struct {
 	filterQueryBefore         int
 	filterQueryIdentityBefore string
 	status                    string
+	statusError               bool
 	exportPath                string
 	err                       error
 	refreshed                 time.Time
@@ -136,7 +137,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.err = msg.err
 		if msg.err != nil {
-			m.status = "Refresh failed: " + compact(msg.err.Error(), max(20, m.width-20))
+			m.setStatus("Refresh failed: "+compact(msg.err.Error(), max(20, m.width-20)), true)
 		} else {
 			selectedQuery := m.selectedQueryIdentity()
 			wasQueryDetail := m.queryDetail
@@ -150,7 +151,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.queryDetailOffset = 0
 			}
 			m.refreshed = time.Now()
-			m.status = fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint)
+			m.setStatus(fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint), false)
 			m.rebuild()
 			if tabs[m.tab] == "Queries" && !m.queryDetail && !m.help {
 				m.ensureQuerySelectionVisible()
@@ -160,10 +161,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.exporting = false
 		if msg.err != nil {
 			m.exportPath = ""
-			m.status = "Export failed: " + compact(msg.err.Error(), max(20, m.width-20))
+			m.setStatus("Export failed: "+compact(msg.err.Error(), max(20, m.width-20)), true)
 		} else {
 			m.exportPath = msg.path
-			m.status = "Agent bundle exported: " + msg.path
+			m.setStatus("Agent bundle exported: "+msg.path, false)
 		}
 		m.resizeViewport()
 		m.rebuild()
@@ -259,7 +260,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.queryDetail = false
 			m.tab = int(msg.Runes[0] - '1')
 			if strings.HasPrefix(m.status, "Filter ") || m.status == "Filter cleared" {
-				m.status = ""
+				m.setStatus("", false)
 			}
 			m.rebuild()
 			if tabs[m.tab] == "Queries" {
@@ -283,7 +284,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.exportPath = ""
 			m.resizeViewport()
 			m.loading = true
-			m.status = "Refreshing every diagnostic probe…"
+			m.setStatus("Refreshing every diagnostic probe…", false)
 			return m, tea.Batch(m.inspectCommand(), m.spinner.Tick)
 		}
 		return m, nil
@@ -291,7 +292,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.loading && !m.exporting && m.exportPath == "" && m.snapshot != nil {
 			m.resizeViewport()
 			m.exporting = true
-			m.status = "Writing agent bundle…"
+			m.setStatus("Writing agent bundle…", false)
 			return m, m.exportCommand()
 		}
 	}
@@ -303,7 +304,7 @@ func (m *Model) switchView(next int) {
 	m.queryDetail = false
 	m.tab = next
 	if strings.HasPrefix(m.status, "Filter ") || m.status == "Filter cleared" {
-		m.status = ""
+		m.setStatus("", false)
 	}
 	m.rebuild()
 	if tabs[m.tab] == "Queries" {
@@ -431,7 +432,7 @@ func (m *Model) startFilter() tea.Cmd {
 	m.filterInput.SetValue(m.filterBefore)
 	m.filterInput.CursorEnd()
 	m.filtering = true
-	m.status = "Filtering " + strings.ToLower(tabs[m.tab]) + "…"
+	m.setStatus("Filtering "+strings.ToLower(tabs[m.tab])+"…", false)
 	return m.filterInput.Focus()
 }
 
@@ -544,17 +545,22 @@ func (m *Model) clearFilter() {
 	if tabs[m.tab] == "Queries" {
 		m.queryIndex = 0
 	}
-	m.status = "Filter cleared"
+	m.setStatus("Filter cleared", false)
 	m.rebuild()
 }
 
 func (m *Model) updateFilterStatus() {
 	if m.activeFilter() == "" {
-		m.status = "Filter cleared"
+		m.setStatus("Filter cleared", false)
 		return
 	}
 	matched, total := m.filterCounts()
-	m.status = fmt.Sprintf("Filter %q · %d/%d matches", m.activeFilter(), matched, total)
+	m.setStatus(fmt.Sprintf("Filter %q · %d/%d matches", m.activeFilter(), matched, total), false)
+}
+
+func (m *Model) setStatus(status string, isError bool) {
+	m.status = status
+	m.statusError = isError
 }
 
 func (m Model) filteredContext() *model.Context {
@@ -883,7 +889,7 @@ func (m Model) footer() string {
 		line := padBetween(lipgloss.NewStyle().Foreground(muted).Render("Contextual keys · "+tabs[m.tab]), keys, max(1, m.width-2))
 		return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
 	}
-	if m.activeFilter() != "" {
+	if m.activeFilter() != "" && !m.statusError {
 		matched, total := m.filterCounts()
 		status = fmt.Sprintf("Filter %q · %d/%d", m.activeFilter(), matched, total)
 	}
@@ -945,10 +951,11 @@ func (m *Model) rebuild() {
 	case "Findings":
 		content = findings(visible, m.viewport.Width)
 	case "Queries":
+		totalLatency := totalQueryLatency(m.snapshot.Queries)
 		if m.queryDetail {
-			content = queryDetail(visible, m.viewport.Width, m.queryIndex)
+			content = queryDetail(visible, m.viewport.Width, m.queryIndex, totalLatency)
 		} else {
-			content = queries(visible, m.viewport.Width, m.queryIndex)
+			content = queries(visible, m.viewport.Width, m.queryIndex, totalLatency)
 		}
 	case "Engine":
 		content = engine(visible, m.viewport.Width)
@@ -1261,13 +1268,9 @@ func findings(ctx *model.Context, width int) string {
 	return out.String()
 }
 
-func queries(ctx *model.Context, width, selected int) string {
+func queries(ctx *model.Context, width, selected int, totalLatency float64) string {
 	if len(ctx.Queries) == 0 {
 		return empty("No statement digests available. Check Performance Schema consumers and privileges.")
-	}
-	var total float64
-	for _, query := range ctx.Queries {
-		total += query.TotalLatencyMillis
 	}
 	var out strings.Builder
 	wide := width >= 96
@@ -1300,7 +1303,7 @@ func queries(ctx *model.Context, width, selected int) string {
 		}
 		out.WriteString(selectableRow(values, widths, index == selected) + "\n")
 	}
-	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  user is point-in-time  ·  selected share %.1f%%  ·  literals removed", queryShare(ctx.Queries, selected, total))))
+	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  user is point-in-time  ·  selected share %.1f%%  ·  literals removed", queryShare(ctx.Queries, selected, totalLatency))))
 	return out.String()
 }
 
@@ -1311,7 +1314,15 @@ func queryShare(queries []model.Query, selected int, total float64) float64 {
 	return queries[selected].TotalLatencyMillis * 100 / total
 }
 
-func queryDetail(ctx *model.Context, width, selected int) string {
+func totalQueryLatency(queries []model.Query) float64 {
+	var total float64
+	for _, query := range queries {
+		total += query.TotalLatencyMillis
+	}
+	return total
+}
+
+func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) string {
 	if selected < 0 || selected >= len(ctx.Queries) {
 		return empty("The selected query is no longer available. Press Esc to return to Queries.")
 	}
@@ -1320,15 +1331,10 @@ func queryDetail(ctx *model.Context, width, selected int) string {
 	if len(query.ActiveUsers) > 0 {
 		users = strings.Join(query.ActiveUsers, ", ")
 	}
-	var total float64
-	for _, item := range ctx.Queries {
-		total += item.TotalLatencyMillis
-	}
-
 	important := strings.Join([]string{
 		labelValue("USER", users),
 		labelValue("DATABASE", fallback(query.Schema, "all databases")),
-		labelValue("DB TIME", fmt.Sprintf("%s (%.1f%%)", duration(query.TotalLatencyMillis), queryShare(ctx.Queries, selected, total))),
+		labelValue("DB TIME", fmt.Sprintf("%s (%.1f%%)", duration(query.TotalLatencyMillis), queryShare(ctx.Queries, selected, totalLatency))),
 		labelValue("CALLS", humanCount(query.Calls)),
 		labelValue("P95", duration(query.P95LatencyMillis)),
 	}, "  ·  ")

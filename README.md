@@ -198,7 +198,7 @@ make benchmark
 make check
 ```
 
-`make e2e` binds a fresh `mysql:8.4` container only to `127.0.0.1:33306`, uses a tmpfs data directory, generates concurrent OLTP traffic, holds a real row-lock chain, runs a long statement, and then verifies every CLI command, all output formats, CI exit behavior, local history and diff, export checksums, and a real PTY-driven TUI refresh/export/quit flow. It tears the container and temporary evidence down on exit.
+`make e2e` binds a fresh `mysql:8.4` container to an ephemeral `127.0.0.1` port by default (set `MYSQ_MYSQL_PORT` to request a specific port), uses a tmpfs data directory, generates concurrent OLTP traffic, holds a real row-lock chain, runs a long statement, and then verifies every CLI command, all output formats, CI exit behavior, local history and diff, export checksums, and a real PTY-driven TUI refresh/export/quit flow. It tears the container and temporary evidence down on exit.
 
 `make benchmark` uses a fresh, isolated Docker MySQL fixture on an ephemeral `127.0.0.1` port, runs the same concurrent workload, validates each command's JSON evidence, and reports median, p95, minimum, and maximum latency. See [docs/performance.md](docs/performance.md) for paired baseline comparisons and the latest measured result.
 
