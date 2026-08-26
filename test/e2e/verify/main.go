@@ -26,13 +26,17 @@ type manifest struct {
 }
 
 func main() {
-	var contextPath, bundle, focusedDirectory string
+	var contextPath, idleContextPath, bundle, focusedDirectory string
 	flag.StringVar(&contextPath, "context", "", "context JSON to verify")
+	flag.StringVar(&idleContextPath, "idle-context", "", "idle context JSON to verify")
 	flag.StringVar(&bundle, "bundle", "", "bundle directory to verify")
 	flag.StringVar(&focusedDirectory, "focused-dir", "", "directory containing focused command JSON")
 	flag.Parse()
 	if contextPath != "" {
 		verifyContext(contextPath)
+	}
+	if idleContextPath != "" {
+		verifyIdleContext(idleContextPath)
 	}
 	if bundle != "" {
 		verifyBundle(bundle)
@@ -40,9 +44,38 @@ func main() {
 	if focusedDirectory != "" {
 		verifyFocused(focusedDirectory)
 	}
-	if contextPath == "" && bundle == "" && focusedDirectory == "" {
-		log.Fatal("pass --context, --bundle, or --focused-dir")
+	if contextPath == "" && idleContextPath == "" && bundle == "" && focusedDirectory == "" {
+		log.Fatal("pass --context, --idle-context, --bundle, or --focused-dir")
 	}
+}
+
+func verifyIdleContext(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var ctx model.Context
+	if err := json.Unmarshal(data, &ctx); err != nil {
+		log.Fatal(err)
+	}
+	if err := idleContextError(ctx); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("verified idle context: collector self-queries excluded from qps and statement samples")
+}
+
+func idleContextError(ctx model.Context) error {
+	if ctx.SampleIntervals.GlobalStatus <= 0 {
+		return fmt.Errorf("idle inspection omitted global-status interval: %+v", ctx.SampleIntervals)
+	}
+	sampledQuestions := ctx.Metrics.QueriesPerSecond * float64(ctx.SampleIntervals.GlobalStatus) / 1000
+	if sampledQuestions >= 0.5 {
+		return fmt.Errorf("idle inspection reported %.2f questions in its status window (%.2f qps)", sampledQuestions, ctx.Metrics.QueriesPerSecond)
+	}
+	if len(ctx.StatementSamples) != 0 {
+		return fmt.Errorf("idle inspection reported collector statements as workload: %+v", ctx.StatementSamples)
+	}
+	return nil
 }
 
 func verifyFocused(directory string) {
@@ -214,6 +247,21 @@ func verifyContext(path string) {
 	}
 	if ctx.SchemaVersion != model.SchemaVersion || ctx.Server.Flavor != "MySQL" || ctx.Server.Host != "127.0.0.1" {
 		log.Fatalf("unexpected identity: %+v", ctx.Server)
+	}
+	if ctx.IntervalMillis != ctx.SampleIntervals.GlobalStatus {
+		log.Fatalf("legacy interval %dms does not match global status interval %dms", ctx.IntervalMillis, ctx.SampleIntervals.GlobalStatus)
+	}
+	for name, interval := range map[string]int64{
+		"global status":      ctx.SampleIntervals.GlobalStatus,
+		"wait events":        ctx.SampleIntervals.WaitEvents,
+		"file I/O":           ctx.SampleIntervals.FileIO,
+		"server errors":      ctx.SampleIntervals.ServerErrors,
+		"statement digests":  ctx.SampleIntervals.StatementDigests,
+		"statement counters": ctx.SampleIntervals.StatementCounters,
+	} {
+		if interval <= 0 {
+			log.Fatalf("missing %s sample interval: %+v", name, ctx.SampleIntervals)
+		}
 	}
 	if len(ctx.Queries) == 0 || len(ctx.Tables) < 3 || len(ctx.Indexes) == 0 || len(ctx.Processes) == 0 || len(ctx.ConnectionGroups) == 0 || len(ctx.Findings) == 0 {
 		log.Fatalf("insufficient coverage: queries=%d tables=%d indexes=%d processes=%d connection_groups=%d findings=%d", len(ctx.Queries), len(ctx.Tables), len(ctx.Indexes), len(ctx.Processes), len(ctx.ConnectionGroups), len(ctx.Findings))

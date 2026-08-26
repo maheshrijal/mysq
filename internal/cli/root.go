@@ -29,6 +29,7 @@ type App struct {
 	Out              io.Writer
 	Err              io.Writer
 	color            bool
+	inspectFn        func(context.Context, string, time.Duration) (*model.Context, error)
 	inspectSectionFn func(context.Context, string, time.Duration, string) (*model.Context, error)
 }
 
@@ -133,6 +134,12 @@ func (a *App) inspectCommand() *cobra.Command {
 		Short: "Run the findings-first health inspection",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateInspectFormat(flags.format); err != nil {
+				return err
+			}
+			if err := validateFailOn(flags.failOn); err != nil {
+				return ExitError{Code: 64, Err: err}
+			}
 			argument := ""
 			if len(args) == 1 {
 				argument = args[0]
@@ -338,6 +345,9 @@ SHOW GRANTS FOR '%s'@'%%';
 }
 
 func (a *App) inspect(ctx context.Context, argument string, interval time.Duration) (*model.Context, error) {
+	if a.inspectFn != nil {
+		return a.inspectFn(ctx, argument, interval)
+	}
 	target, err := collect.ResolveConnection(argument)
 	if err != nil {
 		return nil, err
@@ -350,6 +360,24 @@ func (a *App) inspect(ctx context.Context, argument string, interval time.Durati
 	}
 	analyze.Apply(result)
 	return result, nil
+}
+
+func validateInspectFormat(format string) error {
+	switch strings.ToLower(format) {
+	case "text", "json", "markdown", "md":
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q (want text, json, or markdown)", format)
+	}
+}
+
+func validateFailOn(threshold string) error {
+	switch strings.ToLower(threshold) {
+	case "none", "critical", "warning", "warn", "note", "info":
+		return nil
+	default:
+		return fmt.Errorf("unsupported health gate %q (want critical, warning, note, or none)", threshold)
+	}
 }
 
 func (a *App) inspectSection(ctx context.Context, argument string, interval time.Duration, section string) (*model.Context, error) {

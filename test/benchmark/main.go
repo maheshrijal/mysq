@@ -94,7 +94,7 @@ func main() {
 
 func run(binary, dsn string, current benchmarkCase, warmup, runs int) (result, error) {
 	for range warmup {
-		if _, err := invokeTimed(binary, dsn, current); err != nil {
+		if _, err := invokeTimed(binary, dsn, current, true); err != nil {
 			return result{}, err
 		}
 	}
@@ -102,7 +102,7 @@ func run(binary, dsn string, current benchmarkCase, warmup, runs int) (result, e
 	samples := make([]time.Duration, 0, runs)
 	hasSampleEvidence := false
 	for range runs {
-		measured, err := invokeTimed(binary, dsn, current)
+		measured, err := invokeTimed(binary, dsn, current, true)
 		if err != nil {
 			return result{}, err
 		}
@@ -147,18 +147,18 @@ func runPaired(baseline, candidate, dsn string, current benchmarkCase, warmup, r
 
 func invokePair(baseline, candidate, dsn string, current benchmarkCase, index int) (invocation, invocation, error) {
 	if index%2 == 0 {
-		baselineResult, err := invokeTimed(baseline, dsn, current)
+		baselineResult, err := invokeTimed(baseline, dsn, current, false)
 		if err != nil {
 			return invocation{}, invocation{}, err
 		}
-		candidateResult, err := invokeTimed(candidate, dsn, current)
+		candidateResult, err := invokeTimed(candidate, dsn, current, true)
 		return baselineResult, candidateResult, err
 	}
-	candidateResult, err := invokeTimed(candidate, dsn, current)
+	candidateResult, err := invokeTimed(candidate, dsn, current, true)
 	if err != nil {
 		return invocation{}, invocation{}, err
 	}
-	baselineResult, err := invokeTimed(baseline, dsn, current)
+	baselineResult, err := invokeTimed(baseline, dsn, current, false)
 	return baselineResult, candidateResult, err
 }
 
@@ -179,14 +179,14 @@ func summarize(name string, samples []time.Duration) result {
 	}
 }
 
-func invokeTimed(binary, dsn string, current benchmarkCase) (invocation, error) {
+func invokeTimed(binary, dsn string, current benchmarkCase, requireCurrentSchema bool) (invocation, error) {
 	var output bytes.Buffer
 	started := time.Now()
 	if err := invoke(binary, dsn, current, &output); err != nil {
 		return invocation{}, err
 	}
 	elapsed := time.Since(started)
-	if err := validateOutput(current.name, output.Bytes(), elapsed); err != nil {
+	if err := validateOutput(current.name, output.Bytes(), elapsed, requireCurrentSchema); err != nil {
 		return invocation{}, fmt.Errorf("%s produced invalid diagnostics: %w", current.name, err)
 	}
 	return invocation{elapsed: elapsed, sampleEvidence: derivedSampleEvidence(current.name, output.Bytes())}, nil
@@ -216,7 +216,7 @@ func invoke(binary, dsn string, current benchmarkCase, stdout io.Writer) error {
 	return nil
 }
 
-func validateOutput(name string, data []byte, elapsed time.Duration) error {
+func validateOutput(name string, data []byte, elapsed time.Duration, requireCurrentSchema bool) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return errors.New("empty output")
 	}
@@ -226,7 +226,7 @@ func validateOutput(name string, data []byte, elapsed time.Duration) error {
 		if err := decodeStrictJSON(data, &context); err != nil {
 			return fmt.Errorf("parse full inspection JSON: %w", err)
 		}
-		return validateFullInspection(context, elapsed)
+		return validateFullInspection(context, elapsed, requireCurrentSchema)
 	case "queries":
 		var queries []model.Query
 		if err := decodeStrictJSON(data, &queries); err != nil {
@@ -304,14 +304,28 @@ func decodeStrictJSON(data []byte, value any) error {
 	return nil
 }
 
-func validateFullInspection(context model.Context, elapsed time.Duration) error {
+func validateFullInspection(context model.Context, elapsed time.Duration, requireCurrentSchema bool) error {
 	if err := validateSampleDuration("inspect-full", elapsed); err != nil {
 		return err
 	}
 	if context.IntervalMillis < benchmarkSampleInterval.Milliseconds() {
 		return fmt.Errorf("full inspection interval is %dms, want at least %dms", context.IntervalMillis, benchmarkSampleInterval.Milliseconds())
 	}
-	if context.SchemaVersion != model.SchemaVersion || context.Server.Flavor != "MySQL" || context.Server.Version == "" {
+	if requireCurrentSchema || context.SchemaVersion == model.SchemaVersion {
+		intervals := context.SampleIntervals
+		if context.IntervalMillis != intervals.GlobalStatus {
+			return fmt.Errorf("legacy interval is %dms, want global status interval %dms", context.IntervalMillis, intervals.GlobalStatus)
+		}
+		for name, interval := range map[string]int64{
+			"global status": intervals.GlobalStatus, "wait events": intervals.WaitEvents, "file I/O": intervals.FileIO,
+			"server errors": intervals.ServerErrors, "statement digests": intervals.StatementDigests, "statement counters": intervals.StatementCounters,
+		} {
+			if interval < benchmarkSampleInterval.Milliseconds() {
+				return fmt.Errorf("%s interval is %dms, want at least %dms", name, interval, benchmarkSampleInterval.Milliseconds())
+			}
+		}
+	}
+	if (requireCurrentSchema && context.SchemaVersion != model.SchemaVersion) || (!requireCurrentSchema && !supportedBaselineSchema(context.SchemaVersion)) || context.Server.Flavor != "MySQL" || context.Server.Version == "" {
 		return errors.New("missing full inspection server identity")
 	}
 	if err := validateQueries(context.Queries); err != nil {
@@ -360,6 +374,15 @@ func validateFullInspection(context model.Context, elapsed time.Duration) error 
 		}
 	}
 	return nil
+}
+
+func supportedBaselineSchema(version string) bool {
+	switch version {
+	case "1.3.0", model.SchemaVersion:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateSampleDuration(name string, elapsed time.Duration) error {

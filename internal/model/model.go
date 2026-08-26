@@ -2,13 +2,14 @@ package model
 
 import "time"
 
-const SchemaVersion = "1.3.0"
+const SchemaVersion = "1.4.0"
 
 type Context struct {
 	SchemaVersion    string            `json:"schema_version"`
 	ToolVersion      string            `json:"tool_version"`
 	CollectedAt      time.Time         `json:"collected_at"`
-	IntervalMillis   int64             `json:"interval_ms"`
+	IntervalMillis   int64             `json:"interval_ms" jsonschema_description:"Backward-compatible primary sample interval: global_status for full and engine inspections, or the requested family for a focused sampled command."`
+	SampleIntervals  SampleIntervals   `json:"sample_intervals_ms" jsonschema_description:"Observed endpoint-to-endpoint duration for each sampled counter family, in milliseconds."`
 	Fingerprint      string            `json:"fingerprint"`
 	Server           Server            `json:"server"`
 	Health           Health            `json:"health"`
@@ -35,6 +36,15 @@ type Context struct {
 	InnoDBStatus     string            `json:"innodb_status,omitempty"`
 	Capabilities     []Capability      `json:"capabilities"`
 	Warnings         []string          `json:"collection_warnings,omitempty"`
+}
+
+type SampleIntervals struct {
+	GlobalStatus      int64 `json:"global_status"`
+	WaitEvents        int64 `json:"wait_events"`
+	FileIO            int64 `json:"file_io"`
+	ServerErrors      int64 `json:"server_errors"`
+	StatementDigests  int64 `json:"statement_digests"`
+	StatementCounters int64 `json:"statement_counters"`
 }
 
 type Server struct {

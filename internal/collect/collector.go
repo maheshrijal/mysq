@@ -264,23 +264,29 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	})
 	result.Metrics.HistoryListLength = c.historyListLength(ctx, conn, result)
 
-	// The rate window starts only after catalog and Performance Schema probes,
-	// so the diagnostic does not report its own work as application throughput.
+	// Counter endpoints are collected sequentially, so each family keeps its own
+	// elapsed window. Sharing the status timer would divide earlier/later counter
+	// deltas by a window that did not match their actual endpoints.
 	firstWaits, firstWaitErr := c.collectWaitCounters(ctx, conn)
+	waitsStarted := time.Now()
 	firstFileIO, firstFileErr := c.collectFileIOCounters(ctx, conn)
+	fileIOStarted := time.Now()
 	firstErrors, firstErrorErr := c.collectErrorCounters(ctx, conn)
+	errorsStarted := time.Now()
+	firstDigests, firstDigestErr := c.collectStatementDigestCounters(ctx, conn)
+	digestsStarted := time.Now()
 	firstStatements, firstStatementErr := c.collectStatementCounters(ctx, conn)
+	statementsStarted := time.Now()
 	first, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect initial global status: %w", err)
 	}
-	firstDigests, firstDigestErr := c.collectStatementDigestCounters(ctx, conn)
+	statusStarted := time.Now()
 
 	interval := c.Interval
 	if interval < 100*time.Millisecond {
 		interval = 100 * time.Millisecond
 	}
-	started := time.Now()
 	timer := time.NewTimer(interval)
 	select {
 	case <-ctx.Done():
@@ -288,46 +294,64 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		return nil, ctx.Err()
 	case <-timer.C:
 	}
-	secondDigests, secondDigestErr := c.collectStatementDigestCounters(ctx, conn)
 	second, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect final global status: %w", err)
 	}
-	elapsed := time.Since(started)
-	secondWaits, secondWaitErr := c.collectWaitCounters(ctx, conn)
-	secondFileIO, secondFileErr := c.collectFileIOCounters(ctx, conn)
-	secondErrors, secondErrorErr := c.collectErrorCounters(ctx, conn)
+	statusElapsed := time.Since(statusStarted)
 	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
+	statementsElapsed := time.Since(statementsStarted)
+	secondDigests, secondDigestErr := c.collectStatementDigestCounters(ctx, conn)
+	digestsElapsed := time.Since(digestsStarted)
+	secondWaits, secondWaitErr := c.collectWaitCounters(ctx, conn)
+	waitsElapsed := time.Since(waitsStarted)
+	secondFileIO, secondFileErr := c.collectFileIOCounters(ctx, conn)
+	fileIOElapsed := time.Since(fileIOStarted)
+	secondErrors, secondErrorErr := c.collectErrorCounters(ctx, conn)
+	errorsElapsed := time.Since(errorsStarted)
+	if err := sampledContextError(ctx); err != nil {
+		return nil, err
+	}
 	if c.sampleProbe(result, "wait events", firstWaitErr, secondWaitErr) {
-		result.WaitEvents = deriveWaitEvents(firstWaits, secondWaits, elapsed)
+		result.WaitEvents = deriveWaitEvents(firstWaits, secondWaits, waitsElapsed)
 	}
 	if c.sampleProbe(result, "file I/O", firstFileErr, secondFileErr) {
-		result.FileIO = deriveFileIO(firstFileIO, secondFileIO, elapsed)
+		result.FileIO = deriveFileIO(firstFileIO, secondFileIO, fileIOElapsed)
 	}
-	if c.sampleProbe(result, "server errors", firstErrorErr, secondErrorErr) {
-		result.ServerErrors = deriveServerErrors(firstErrors, secondErrors, elapsed)
+	serverErrorSampleErr := sampledServerError(firstErrorErr, secondErrorErr,
+		firstDigestErr, firstStatementErr, secondStatementErr, secondDigestErr, secondWaitErr, secondFileErr)
+	if c.sampleProbe(result, "server errors", serverErrorSampleErr) {
+		result.ServerErrors = deriveServerErrors(firstErrors, secondErrors, errorsElapsed)
 	}
 	if c.sampleProbe(result, "statement database time", firstDigestErr, secondDigestErr) {
-		result.StatementSamples = deriveStatementSamples(firstDigests, secondDigests, elapsed, c.QueryLimit)
+		result.StatementSamples = deriveStatementSamples(firstDigests, secondDigests, digestsElapsed, c.QueryLimit)
 	}
 	statementSampleAvailable := c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr)
-	result.IntervalMillis = elapsed.Milliseconds()
+	recordFullSampleIntervals(result, statusElapsed, waitsElapsed, fileIOElapsed, errorsElapsed, digestsElapsed, statementsElapsed)
 	result.GlobalStatus = second
 	result.Server.UptimeSeconds = unsigned(second["Uptime"])
 	historyListLength := result.Metrics.HistoryListLength
-	result.Metrics = deriveMetrics(first, second, result.Variables, elapsed)
+	result.Metrics = deriveMetrics(first, second, result.Variables, statusElapsed)
 	if statementSampleAvailable {
-		seconds := elapsed.Seconds()
-		if seconds <= 0 {
-			seconds = 1
-		}
-		result.Metrics.StatementErrorsPerSec = float64(counterDelta(firstStatements.Errors, secondStatements.Errors)) / seconds
-		result.Metrics.StatementWarningsPerSec = float64(counterDelta(firstStatements.Warnings, secondStatements.Warnings)) / seconds
+		applyStatementRates(&result.Metrics, firstStatements, secondStatements, statementsElapsed)
 	}
 	result.Metrics.HistoryListLength = historyListLength
 	applyInstrumentationStatus(&result.Instrumentation, second)
 	result.Fingerprint = fingerprint(result.Server)
+	normalizeRequiredCollections(result)
 	return result, nil
+}
+
+func recordFullSampleIntervals(result *model.Context, status, waits, fileIO, serverErrors, statementDigests, statementCounters time.Duration) {
+	result.IntervalMillis = status.Milliseconds()
+	result.SampleIntervals = model.SampleIntervals{
+		GlobalStatus:      status.Milliseconds(),
+		WaitEvents:        waits.Milliseconds(),
+		FileIO:            fileIO.Milliseconds(),
+		ServerErrors:      serverErrors.Milliseconds(),
+		StatementDigests:  statementDigests.Milliseconds(),
+		StatementCounters: statementCounters.Milliseconds(),
+	}
 }
 
 func (c *Collector) openConnection(ctx context.Context, target Target) (*sql.DB, *sql.Conn, error) {
@@ -364,17 +388,71 @@ func (c *Collector) openConnection(ctx context.Context, target Target) (*sql.DB,
 }
 
 func newContext(version string, target Target) *model.Context {
-	return &model.Context{
+	result := &model.Context{
 		SchemaVersion: model.SchemaVersion,
 		ToolVersion:   version,
 		CollectedAt:   time.Now().UTC(),
-		Variables:     map[string]string{},
-		GlobalStatus:  map[string]string{},
 		Server: model.Server{
 			Host:     target.Host,
 			Port:     target.Port,
 			Database: target.Database,
 		},
+	}
+	normalizeRequiredCollections(result)
+	return result
+}
+
+func normalizeRequiredCollections(result *model.Context) {
+	if result.Findings == nil {
+		result.Findings = []model.Finding{}
+	}
+	if result.Queries == nil {
+		result.Queries = []model.Query{}
+	}
+	if result.Tables == nil {
+		result.Tables = []model.Table{}
+	}
+	if result.Indexes == nil {
+		result.Indexes = []model.Index{}
+	}
+	if result.Processes == nil {
+		result.Processes = []model.Process{}
+	}
+	if result.ConnectionGroups == nil {
+		result.ConnectionGroups = []model.ConnectionGroup{}
+	}
+	if result.Locks == nil {
+		result.Locks = []model.LockWait{}
+	}
+	if result.Transactions == nil {
+		result.Transactions = []model.Transaction{}
+	}
+	if result.MetadataLocks == nil {
+		result.MetadataLocks = []model.MetadataLock{}
+	}
+	if result.WaitEvents == nil {
+		result.WaitEvents = []model.WaitEvent{}
+	}
+	if result.FileIO == nil {
+		result.FileIO = []model.FileIO{}
+	}
+	if result.ServerErrors == nil {
+		result.ServerErrors = []model.ServerError{}
+	}
+	if result.MemoryConsumers == nil {
+		result.MemoryConsumers = []model.MemoryConsumer{}
+	}
+	if result.StatementSamples == nil {
+		result.StatementSamples = []model.StatementSample{}
+	}
+	if result.Capabilities == nil {
+		result.Capabilities = []model.Capability{}
+	}
+	if result.Variables == nil {
+		result.Variables = map[string]string{}
+	}
+	if result.GlobalStatus == nil {
+		result.GlobalStatus = map[string]string{}
 	}
 }
 
@@ -476,6 +554,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 		result.WaitEvents = deriveWaitEvents(first, second, elapsed)
 		result.IntervalMillis = elapsed.Milliseconds()
+		result.SampleIntervals.WaitEvents = elapsed.Milliseconds()
 	case "io":
 		first, firstErr := c.collectFileIOCounters(ctx, conn)
 		started, err := c.waitForFocusedSample(ctx, result, "file I/O", firstErr)
@@ -489,6 +568,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 		result.FileIO = deriveFileIO(first, second, elapsed)
 		result.IntervalMillis = elapsed.Milliseconds()
+		result.SampleIntervals.FileIO = elapsed.Milliseconds()
 	case "errors":
 		first, firstErr := c.collectErrorCounters(ctx, conn)
 		started, err := c.waitForFocusedSample(ctx, result, "server errors", firstErr)
@@ -502,6 +582,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		}
 		result.ServerErrors = deriveServerErrors(first, second, elapsed)
 		result.IntervalMillis = elapsed.Milliseconds()
+		result.SampleIntervals.ServerErrors = elapsed.Milliseconds()
 	case "memory":
 		if err := c.focusedProbe(result, "memory consumers", func() error {
 			var probeErr error
@@ -549,6 +630,7 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 	default:
 		return nil, fmt.Errorf("unknown diagnostic section %q", section)
 	}
+	normalizeRequiredCollections(result)
 	return result, nil
 }
 
@@ -610,12 +692,39 @@ func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, re
 	statusElapsed := time.Since(started)
 	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
 	statementElapsed := time.Since(statementStarted)
+	if err := sampledContextError(ctx); err != nil {
+		return err
+	}
 	result.IntervalMillis = statusElapsed.Milliseconds()
+	result.SampleIntervals.GlobalStatus = statusElapsed.Milliseconds()
+	result.SampleIntervals.StatementCounters = statementElapsed.Milliseconds()
 	result.GlobalStatus = second
 	statementAvailable := c.sampleProbe(result, "statement counters", firstStatementErr, secondStatementErr)
 	result.Metrics = deriveEngineMetrics(first, second, result.Variables, firstStatements, secondStatements,
 		statusElapsed, statementElapsed, statementAvailable)
 	result.Metrics.HistoryListLength = historyListLength
+	return nil
+}
+
+func sampledContextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("collect sampled counters: %w", err)
+	}
+	return nil
+}
+
+func sampledServerError(first, second error, enclosed ...error) error {
+	if first != nil {
+		return first
+	}
+	if second != nil {
+		return second
+	}
+	for _, err := range enclosed {
+		if err != nil {
+			return fmt.Errorf("sample window contaminated by collector probe failure: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -1052,13 +1161,14 @@ func attributeActiveUsers(queries []model.Query, processes []model.Process) {
 		if process.Digest == "" || process.User == "" || strings.EqualFold(process.Command, "Sleep") {
 			continue
 		}
-		if users[process.Digest] == nil {
-			users[process.Digest] = make(map[string]bool)
+		identity := statementDigestIdentity(process.Database, process.Digest)
+		if users[identity] == nil {
+			users[identity] = make(map[string]bool)
 		}
-		users[process.Digest][process.User] = true
+		users[identity][process.User] = true
 	}
 	for index := range queries {
-		for user := range users[queries[index].Digest] {
+		for user := range users[statementDigestIdentity(queries[index].Schema, queries[index].Digest)] {
 			queries[index].ActiveUsers = append(queries[index].ActiveUsers, user)
 		}
 		sort.Strings(queries[index].ActiveUsers)
@@ -1240,7 +1350,7 @@ func (c *Collector) collectStatementDigestCounters(ctx context.Context, conn *sq
 			return nil, err
 		}
 		item.Statement = sanitize.SQL(item.Statement)
-		result[item.Digest] = item
+		result[statementDigestIdentity(item.Schema, item.Digest)] = item
 	}
 	return result, rows.Err()
 }
@@ -1252,18 +1362,18 @@ func deriveStatementSamples(first, second map[string]statementDigestCounter, ela
 	}
 	result := make([]model.StatementSample, 0)
 	totalMillis := 0.0
-	for digest, current := range second {
+	for identity, current := range second {
 		if internalStatementSample(current.Statement) {
 			continue
 		}
-		previous := first[digest]
+		previous := first[identity]
 		calls := counterDelta(previous.Count, current.Count)
 		databaseTime := floatDelta(previous.TotalMillis, current.TotalMillis)
 		if calls == 0 && databaseTime == 0 {
 			continue
 		}
 		result = append(result, model.StatementSample{
-			Digest: digest, Schema: current.Schema, Statement: current.Statement, Calls: calls,
+			Digest: current.Digest, Schema: current.Schema, Statement: current.Statement, Calls: calls,
 			CallsPerSecond: float64(calls) / seconds, DatabaseTimeMillis: databaseTime,
 			DatabaseTimeMillisPerSecond: databaseTime / seconds,
 		})
@@ -1278,7 +1388,10 @@ func deriveStatementSamples(first, second map[string]statementDigestCounter, ela
 		if result[i].DatabaseTimeMillis != result[j].DatabaseTimeMillis {
 			return result[i].DatabaseTimeMillis > result[j].DatabaseTimeMillis
 		}
-		return result[i].Digest < result[j].Digest
+		if result[i].Digest != result[j].Digest {
+			return result[i].Digest < result[j].Digest
+		}
+		return result[i].Schema < result[j].Schema
 	})
 	if limit > 0 && len(result) > limit {
 		result = result[:limit]
@@ -1286,8 +1399,19 @@ func deriveStatementSamples(first, second map[string]statementDigestCounter, ela
 	return result
 }
 
+func statementDigestIdentity(schema, digest string) string {
+	return schema + "\x00" + digest
+}
+
 func internalStatementSample(statement string) bool {
 	canonical := strings.NewReplacer("`", "", " ", "").Replace(strings.ToUpper(statement))
+	if canonical == "SHOWGLOBALSTATUS" {
+		return true
+	}
+	if strings.Contains(canonical, "PERFORMANCE_SCHEMA.EVENTS_STATEMENTS_SUMMARY_GLOBAL_BY_EVENT_NAME") &&
+		strings.Contains(canonical, "SUM_ERRORS") && strings.Contains(canonical, "SUM_WARNINGS") {
+		return true
+	}
 	return strings.Contains(canonical, "PERFORMANCE_SCHEMA.EVENTS_STATEMENTS_SUMMARY_BY_DIGEST") &&
 		strings.Contains(canonical, "SUM_TIMER_WAIT") && strings.Contains(canonical, "COUNT_STAR")
 }

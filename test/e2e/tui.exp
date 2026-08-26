@@ -14,7 +14,9 @@ set spawn_tty [exp_open -leaveopen -i $spawn_id]
 exec stty rows 38 columns 130 <@ $spawn_tty
 close $spawn_tty
 expect {
-  -re {Refreshed [0-9:]+ .* snapshot [0-9a-f]+} {}
+  # The scored health header is the stable loaded-state contract. Footer
+  # status text is intentionally responsive and may be compacted.
+  -re {● (HEALTHY|ATTENTION|CRITICAL)[[:space:]]+[0-9]+} {}
   timeout { exit 10 }
   eof { exit 11 }
 }
@@ -25,9 +27,25 @@ send "\033\[C"
 expect -re {● 2 CONNECTIONS}
 send "\033\[C"
 expect -re {● 3 QUERIES}
+# Contextual help is a real scrollable view and Esc returns to the current
+# query list without changing tabs.
+send "?"
+expect -re {KEYBOARD HELP}
+send "\033"
+expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
+# Filter the current view to an impossible value, apply it, then clear it with
+# Esc. The post-Enter footer count is absent while the editor still has focus,
+# so a broken apply transition cannot satisfy this assertion from stale bytes.
+send "/"
+send "mysq-no-match"
+send "\r"
+expect -re {Filter "mysq-no-match".*0/[0-9]+}
+send "\033"
+expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
 # Queries use vertical arrows for row selection and Enter/Esc for detail.
 send "\033\[B"
 send "\r"
+expect -re {QUERY 2 OF [0-9]+}
 expect -re {NORMALIZED SQL}
 send "\033"
 expect -re {DB TIME.*CALLS.*P95.*USER.*QUERY}
@@ -46,7 +64,9 @@ expect -re {MYSQL FILE I/O|MYSQL ERRORS AND WARNINGS}
 send "\033\[A"
 expect -re {● 4 ENGINE}
 send "\t"
+expect -re {● 5 FINDINGS}
 send "\t"
+expect -re {● 6 TABLES}
 send "e"
 expect {
   -re {Agent bundle exported:} {}
@@ -54,6 +74,11 @@ expect {
   eof { exit 13 }
 }
 send "r"
+expect {
+  -re {collecting} {}
+  timeout { exit 14 }
+  eof { exit 15 }
+}
 expect {
   -re {Refreshed [0-9:]+ .* snapshot [0-9a-f]+} {}
   timeout { exit 14 }

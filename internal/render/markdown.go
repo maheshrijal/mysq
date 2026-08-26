@@ -94,7 +94,7 @@ func Markdown(w io.Writer, ctx *model.Context) error {
 	fmt.Fprintf(&out, "Instrumentation: %d/%d digest slots used (%.1f%%), %d lost events, disabled consumers: `%s`.\n\n",
 		ctx.Instrumentation.DigestRows, ctx.Instrumentation.DigestCapacity, ctx.Instrumentation.DigestUtilizationPercent,
 		ctx.Instrumentation.TotalLost, strings.Join(ctx.Instrumentation.DisabledConsumers, ", "))
-	out.WriteString("All statement text is normalized and literal values are redacted. Counter-derived conclusions are scoped to the server uptime and sample interval shown in `context.json`.\n")
+	out.WriteString("All statement text is normalized and literal values are redacted. Counter-derived conclusions are scoped to the server uptime and per-family windows in `context.json.sample_intervals_ms`.\n")
 	_, err := io.WriteString(w, out.String())
 	return err
 }

@@ -163,7 +163,7 @@ func buildArtifacts(ctx *model.Context) ([]artifact, error) {
 	}
 	items = append(items, artifact{name: "summary.md", mediaType: "text/markdown", description: "Human and agent-readable findings-first report", data: markdown.Bytes()})
 	items = append(items, artifact{name: "README.md", mediaType: "text/markdown", description: "Bundle contract and safe-use notes", data: []byte(bundleReadme(ctx))})
-	items = append(items, artifact{name: "schema/context-1.3.0.json", mediaType: "application/schema+json", description: "JSON Schema for context.json", data: contract.ContextLatest()})
+	items = append(items, artifact{name: "schema/context-1.4.0.json", mediaType: "application/schema+json", description: "JSON Schema for context.json", data: contract.ContextLatest()})
 	items = append(items, artifact{name: "raw/innodb-status.txt", mediaType: "text/plain", description: "Redacted SHOW ENGINE INNODB STATUS output", data: []byte(ctx.InnoDBStatus)})
 	items = append(items, artifact{name: "variables.cnf", mediaType: "text/plain", description: "Sorted server variables in option-file syntax", data: variablesFile(ctx.Variables)})
 
@@ -315,7 +315,7 @@ This bundle is an immutable, point-in-time MySQL diagnostic snapshot (`+"`%s`"+`
 
 The JSON contract is versioned as `+"`%s`"+`. Statement text and SQL found in process/InnoDB output were normalized before the snapshot was created; connection credentials are never stored. `+"`manifest.json`"+` contains a SHA-256 digest for every artifact.
 
-Counter conclusions are scoped to this server's uptime and the sample interval. Zero index reads are review evidence, never proof that an index is safe to drop. Table row counts are InnoDB estimates. Missing probes are explicit in `+"`raw/capabilities.json`"+` and `+"`context.json.collection_warnings`"+`.
+Counter conclusions are scoped to this server's uptime and the per-family windows in `+"`context.json.sample_intervals_ms`"+`. Zero index reads are review evidence, never proof that an index is safe to drop. Table row counts are InnoDB estimates. Missing probes are explicit in `+"`raw/capabilities.json`"+` and `+"`context.json.collection_warnings`"+`.
 `, ctx.Fingerprint, ctx.SchemaVersion)
 }
 

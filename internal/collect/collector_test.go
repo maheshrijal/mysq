@@ -2,6 +2,7 @@ package collect
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -73,6 +74,24 @@ func TestDeriveMetricsRemovesSamplingQuery(t *testing.T) {
 	}
 }
 
+func TestSampledContextCancellationIsFatal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sampledContextError(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("sampled context error = %v, want context.Canceled", err)
+	}
+}
+
+func TestServerErrorSampleRejectsEnclosedProbeFailure(t *testing.T) {
+	probeErr := errors.New("unsupported optional probe")
+	if err := sampledServerError(nil, nil, nil, probeErr); !errors.Is(err, probeErr) || !strings.Contains(err.Error(), "contaminated") {
+		t.Fatalf("server-error sample contamination = %v", err)
+	}
+	if err := sampledServerError(nil, nil, nil); err != nil {
+		t.Fatalf("clean server-error sample rejected: %v", err)
+	}
+}
+
 func TestAttributeActiveUsersToDigestWithoutGuessing(t *testing.T) {
 	queries := []model.Query{{Digest: "A"}, {Digest: "B"}}
 	processes := []model.Process{
@@ -87,6 +106,55 @@ func TestAttributeActiveUsersToDigestWithoutGuessing(t *testing.T) {
 	}
 	if len(queries[1].ActiveUsers) != 0 {
 		t.Fatalf("sleeping user was attributed to digest: %+v", queries[1].ActiveUsers)
+	}
+}
+
+func TestAttributeActiveUsersScopesDigestBySchema(t *testing.T) {
+	queries := []model.Query{
+		{Schema: "app_a", Digest: "shared"},
+		{Schema: "app_b", Digest: "shared"},
+	}
+	processes := []model.Process{
+		{Database: "app_a", Digest: "shared", User: "worker_a", Command: "Query"},
+		{Database: "app_b", Digest: "shared", User: "worker_b", Command: "Query"},
+	}
+	attributeActiveUsers(queries, processes)
+	if got := strings.Join(queries[0].ActiveUsers, ","); got != "worker_a" {
+		t.Fatalf("app_a active users = %q, want worker_a", got)
+	}
+	if got := strings.Join(queries[1].ActiveUsers, ","); got != "worker_b" {
+		t.Fatalf("app_b active users = %q, want worker_b", got)
+	}
+}
+
+func TestRequiredCollectionsMarshalAsArraysAfterDegradedProbe(t *testing.T) {
+	result := newContext("test", Target{})
+	result.Queries = nil
+	result.WaitEvents = nil
+	result.StatementSamples = nil
+	result.Capabilities = nil
+	normalizeRequiredCollections(result)
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{
+		"findings", "queries", "tables", "indexes", "processes", "connection_groups", "locks",
+		"transactions", "metadata_locks", "wait_events", "file_io", "server_errors",
+		"memory_consumers", "statement_samples", "capabilities",
+	} {
+		if got := string(object[field]); got != "[]" {
+			t.Fatalf("required collection %q marshaled as %s, want []", field, got)
+		}
+	}
+	for _, field := range []string{"variables", "global_status"} {
+		if got := string(object[field]); got != "{}" {
+			t.Fatalf("required map %q marshaled as %s, want {}", field, got)
+		}
 	}
 }
 
@@ -163,9 +231,11 @@ func TestDeriveStatementSamplesRanksCurrentDatabaseTime(t *testing.T) {
 		"fast": {Digest: "fast", Schema: "app", Statement: "SELECT * FROM users WHERE id = ?", Count: 20, TotalMillis: 200},
 	}
 	second := map[string]statementDigestCounter{
-		"slow": {Digest: "slow", Schema: "app", Statement: "SELECT * FROM orders WHERE id = ?", Count: 12, TotalMillis: 500},
-		"fast": {Digest: "fast", Schema: "app", Statement: "SELECT * FROM users WHERE id = ?", Count: 30, TotalMillis: 300},
-		"self": {Digest: "self", Statement: "SELECT `COUNT_STAR` , `SUM_TIMER_WAIT` FROM `performance_schema` . `events_statements_summary_by_digest`", Count: 1, TotalMillis: 1000},
+		"slow":               {Digest: "slow", Schema: "app", Statement: "SELECT * FROM orders WHERE id = ?", Count: 12, TotalMillis: 500},
+		"fast":               {Digest: "fast", Schema: "app", Statement: "SELECT * FROM users WHERE id = ?", Count: 30, TotalMillis: 300},
+		"self":               {Digest: "self", Statement: "SELECT `COUNT_STAR` , `SUM_TIMER_WAIT` FROM `performance_schema` . `events_statements_summary_by_digest`", Count: 1, TotalMillis: 1000},
+		"status":             {Digest: "status", Statement: "SHOW GLOBAL STATUS", Count: 2, TotalMillis: 100},
+		"statement-counters": {Digest: "statement-counters", Statement: "SELECT SUM(COUNT_STAR), SUM(SUM_ERRORS), SUM(SUM_WARNINGS) FROM performance_schema.events_statements_summary_global_by_event_name WHERE EVENT_NAME LIKE ?", Count: 2, TotalMillis: 100},
 	}
 	samples := deriveStatementSamples(first, second, 2*time.Second, 10)
 	if len(samples) != 2 || samples[0].Digest != "slow" || samples[0].Calls != 2 || samples[0].CallsPerSecond != 1 ||
@@ -183,6 +253,58 @@ func TestDeriveStatementSamplesHandlesCounterReset(t *testing.T) {
 	samples := deriveStatementSamples(first, second, time.Second, 10)
 	if len(samples) != 0 {
 		t.Fatalf("counter reset was not handled: %+v", samples)
+	}
+}
+
+func TestDeriveStatementSamplesScopesDigestBySchema(t *testing.T) {
+	first := map[string]statementDigestCounter{
+		statementDigestIdentity("app_a", "shared"): {Digest: "shared", Schema: "app_a", Statement: "SELECT id FROM orders", Count: 10, TotalMillis: 100},
+		statementDigestIdentity("app_b", "shared"): {Digest: "shared", Schema: "app_b", Statement: "SELECT id FROM orders", Count: 20, TotalMillis: 200},
+	}
+	second := map[string]statementDigestCounter{
+		statementDigestIdentity("app_a", "shared"): {Digest: "shared", Schema: "app_a", Statement: "SELECT id FROM orders", Count: 12, TotalMillis: 300},
+		statementDigestIdentity("app_b", "shared"): {Digest: "shared", Schema: "app_b", Statement: "SELECT id FROM orders", Count: 25, TotalMillis: 260},
+	}
+	samples := deriveStatementSamples(first, second, time.Second, 10)
+	if len(samples) != 2 {
+		t.Fatalf("schema-scoped samples = %+v, want two rows", samples)
+	}
+	if samples[0].Schema != "app_a" || samples[0].Digest != "shared" || samples[0].Calls != 2 || samples[0].DatabaseTimeMillis != 200 {
+		t.Fatalf("app_a sample = %+v", samples[0])
+	}
+	if samples[1].Schema != "app_b" || samples[1].Digest != "shared" || samples[1].Calls != 5 || samples[1].DatabaseTimeMillis != 60 {
+		t.Fatalf("app_b sample = %+v", samples[1])
+	}
+}
+
+func TestFullSampleIntervalsExposeEveryRateWindow(t *testing.T) {
+	result := &model.Context{}
+	recordFullSampleIntervals(result,
+		1100*time.Millisecond,
+		2100*time.Millisecond,
+		2200*time.Millisecond,
+		2300*time.Millisecond,
+		2400*time.Millisecond,
+		2500*time.Millisecond,
+	)
+	want := model.SampleIntervals{
+		GlobalStatus: 1100, WaitEvents: 2100, FileIO: 2200, ServerErrors: 2300,
+		StatementDigests: 2400, StatementCounters: 2500,
+	}
+	if result.IntervalMillis != want.GlobalStatus || result.SampleIntervals != want {
+		t.Fatalf("sample intervals = legacy %d, families %+v; want legacy %d, families %+v",
+			result.IntervalMillis, result.SampleIntervals, want.GlobalStatus, want)
+	}
+
+	first := map[string]waitCounter{"wait/io": {Name: "wait/io", Count: 10, TotalMillis: 100}}
+	second := map[string]waitCounter{"wait/io": {Name: "wait/io", Count: 31, TotalMillis: 310}}
+	waits := deriveWaitEvents(first, second, time.Duration(want.WaitEvents)*time.Millisecond)
+	if len(waits) != 1 {
+		t.Fatalf("derived waits = %+v", waits)
+	}
+	reconstructed := float64(waits[0].SampleCount) / waits[0].EventsPerSecond * 1000
+	if math.Abs(reconstructed-float64(want.WaitEvents)) > 0.001 {
+		t.Fatalf("published wait interval = %dms, reconstructed %.3fms", want.WaitEvents, reconstructed)
 	}
 }
 

@@ -9,7 +9,7 @@ No collector, web server, cloud account, or database-side objects are required.
 ```text
 ◆ MYSQ  MySQL intelligence, from the terminal
 ────────────────────────────────────────────────────────────────────────────────
-connected · 127.0.0.1:3306/app · MySQL 8.4.6 · primary · 1.0s sample
+connected · 127.0.0.1:3306/app · MySQL 8.4.6 · primary · 1.0s status sample
 
 Database health  ━━━━━━━━━━━━━━━━━┄┄┄┄┄┄┄   72/100
 qps 812.4  ·  tps 188.7  ·  running 9  ·  connections 18/151  ·  cache 99.86%
@@ -60,7 +60,8 @@ mysq export --zip
 - Seven navigable views: Overview, Connections, Queries, Engine, Findings, Tables, and Config.
 - A restrained adaptive palette that respects light and dark terminal backgrounds; color communicates health instead of decorating every surface.
 - A compact browser-style tab strip with live counts and full-width diagnostic content, collapsing to neighboring tabs in narrow split panes.
-- Left/Right, Tab/Shift-Tab, and number keys switch views. Up/Down scrolls long views such as Engine; `j`/`k`, Page Up/Down, and `g`/`G` remain available. In Queries, Up/Down selects a statement, Enter opens its full normalized SQL and execution evidence, and Esc returns to the selected row.
+- Left/Right, Tab/Shift-Tab, and number keys switch views without losing each view's scroll position. Arrow keys are the universal navigation layer; `h`/`j`/`k`/`l`, Page Up/Down, Ctrl-U/D, Home/End, and `g`/`G` provide familiar Vim and pager aliases. In Queries, movement and paging follow the selected statement, Enter opens its full normalized SQL and execution evidence, and Esc returns to the selected row.
+- `?` opens complete contextual keyboard help. `/` filters Queries, Tables, Connections, or Findings without changing the captured snapshot; Enter applies, Esc cancels editing, and Esc on a filtered view clears it.
 - `r` reruns every diagnostic probe and saves a new local snapshot.
 - `e` writes the complete native agent bundle directly from the terminal and keeps its destination visible until dismissed with `Esc`.
 - Cards, gauges, tables, findings, and key hints reflow at terminal breakpoints; very small terminals get an explicit resize state instead of a broken layout.
@@ -81,7 +82,7 @@ An export is written atomically and refuses to overwrite an existing path. It co
 |---|---|
 | `summary.md` | Findings-first narrative for a human or agent |
 | `context.json` | Complete versioned diagnostic contract |
-| `schema/context-1.3.0.json` | JSON Schema for validation and tool generation |
+| `schema/context-1.4.0.json` | JSON Schema for validation and tool generation |
 | `findings.json` / `metrics.json` | Small deterministic reasoning inputs |
 | `queries.csv` | Normalized statement digests, tail latency, errors, and cost |
 | `statement-samples.csv` | Statements ranked by database time during the collection interval |
@@ -197,7 +198,7 @@ make benchmark
 make check
 ```
 
-`make e2e` binds a fresh `mysql:8.4` container only to `127.0.0.1:33306`, uses a tmpfs data directory, generates concurrent OLTP traffic, holds a real row-lock chain, runs a long statement, and then verifies every CLI command, all output formats, CI exit behavior, local history and diff, export checksums, and a real PTY-driven TUI refresh/export/quit flow. It tears the container and temporary evidence down on exit.
+`make e2e` binds a fresh `mysql:8.4` container to an ephemeral `127.0.0.1` port by default (set `MYSQ_MYSQL_PORT` to request a specific port), uses a tmpfs data directory, generates concurrent OLTP traffic, holds a real row-lock chain, runs a long statement, and then verifies every CLI command, all output formats, CI exit behavior, local history and diff, export checksums, and a real PTY-driven TUI refresh/export/quit flow. It tears the container and temporary evidence down on exit.
 
 `make benchmark` uses a fresh, isolated Docker MySQL fixture on an ephemeral `127.0.0.1` port, runs the same concurrent workload, validates each command's JSON evidence, and reports median, p95, minimum, and maximum latency. See [docs/performance.md](docs/performance.md) for paired baseline comparisons and the latest measured result.
 

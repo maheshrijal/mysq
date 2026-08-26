@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/maheshrijal/mysq/internal/model"
+)
 
 func TestVerifyFocusedDataRejectsNullExceptForReplication(t *testing.T) {
 	for _, section := range []string{"queries", "tables", "indexes", "processes", "transactions", "locks", "metadata-locks", "waits", "io", "errors", "memory", "engine", "coverage", "variables"} {
@@ -61,5 +65,17 @@ func TestVerifyFocusedDataRequiresErrorSampleEvidence(t *testing.T) {
 	}
 	if err := verifyFocusedData("errors", []byte(`[{"number":1062,"name":"ER_DUP_ENTRY","sql_state":"23000"},{"sample_raised":1}]`)); err == nil {
 		t.Fatal("split server error identity and sample evidence unexpectedly passed")
+	}
+}
+
+func TestIdleContextRejectsOneQuestion(t *testing.T) {
+	ctx := model.Context{SampleIntervals: model.SampleIntervals{GlobalStatus: 250}}
+	if err := idleContextError(ctx); err != nil {
+		t.Fatalf("zero-question idle context failed: %v", err)
+	}
+
+	ctx.Metrics.QueriesPerSecond = 4
+	if err := idleContextError(ctx); err == nil {
+		t.Fatal("one sampled question passed the idle-context verifier")
 	}
 }

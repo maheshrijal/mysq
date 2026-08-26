@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -64,6 +66,14 @@ func TestOverviewPrioritizesCurrentMySQLInvestigationSignals(t *testing.T) {
 	}
 }
 
+func TestEngineExplainsPerFamilySampleWindows(t *testing.T) {
+	ctx := &model.Context{Metrics: model.Metrics{ConnectionsMax: 100}}
+	view := engine(ctx, 100)
+	if !strings.Contains(view, "per-family sample windows") || strings.Contains(view, "the collection interval") {
+		t.Fatalf("engine retained ambiguous sampling guidance:\n%s", view)
+	}
+}
+
 func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 	ctx := &model.Context{
 		Fingerprint: "abc", Server: model.Server{Host: "db", Port: 3306, Database: "app", Flavor: "MySQL", Version: "8.4.0"},
@@ -94,6 +104,123 @@ func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 	}
 }
 
+func TestCompactDiagnosticViewsKeepRowIdentitiesVisible(t *testing.T) {
+	ctx := &model.Context{
+		Health:  model.Health{Score: 100},
+		Metrics: model.Metrics{ConnectionsMax: 100},
+		WaitEvents: []model.WaitEvent{
+			{Name: "wait/io/table/sql/handler/wait_alpha", SampleSharePercent: 42},
+			{Name: "wait/io/table/sql/handler/wait_beta", SampleSharePercent: 21},
+		},
+		FileIO: []model.FileIO{
+			{Name: "/var/lib/mysql/analytics/orders_2025.ibd", ReadsPerSecond: 3},
+			{Name: "/var/lib/mysql/analytics/orders_2026.ibd", ReadsPerSecond: 2},
+		},
+		ServerErrors: []model.ServerError{
+			{Name: "ER_ANALYTICS_DEADLOCK_ALPHA", Number: 1234, RaisedPerSecond: 1},
+			{Name: "ER_ANALYTICS_DEADLOCK_BETA", Number: 1235, RaisedPerSecond: 1},
+		},
+		MemoryConsumers: []model.MemoryConsumer{
+			{Name: "memory/sql/analytics/mem_alpha", CurrentBytes: 1024, HighBytes: 2048},
+			{Name: "memory/sql/analytics/mem_beta", CurrentBytes: 512, HighBytes: 1024},
+		},
+		Tables: []model.Table{
+			{Schema: "analytics", Name: "orders_archive_2025", TotalBytes: 1024, HasPrimaryKey: true},
+			{Schema: "analytics", Name: "orders_archive_2026", TotalBytes: 2048, HasPrimaryKey: true},
+			{Schema: "analytics", Name: "customer_orders_daily_archive", TotalBytes: 1024, HasPrimaryKey: true},
+			{Schema: "analytics", Name: "customer_refunds_daily_archive", TotalBytes: 1024, HasPrimaryKey: true},
+		},
+		Indexes: []model.Index{
+			{Schema: "analytics", Table: "orders", Name: "idx_customer_created_at", Columns: "customer_id,created_at", Visible: true},
+			{Schema: "analytics", Table: "orders", Name: "idx_customer_status", Columns: "customer_id,status", Visible: true},
+			{Schema: "analytics", Table: "orders", Name: "idx_customer_domestic_archive", Columns: "customer_id", Visible: true},
+			{Schema: "analytics", Table: "orders", Name: "idx_customer_overseas_archive", Columns: "customer_id", Visible: true},
+		},
+		ConnectionGroups: []model.ConnectionGroup{{
+			Kind: "user", Key: "narrow_user", Total: 2, Active: 1,
+		}},
+		Processes: []model.Process{
+			{ID: 12345678901, User: "app", Seconds: 2, Statement: "SELECT * FROM orders WHERE tenant_id = ?"},
+			{ID: 12345678902, User: "app", Seconds: 2, Statement: "SELECT * FROM orders WHERE tenant_id = ?"},
+			{ID: 12345678903, User: "app", Seconds: 2, Statement: "SELECT * FROM refunds WHERE tenant_id = ?"},
+		},
+		Transactions: []model.Transaction{{ID: "trx-1", User: "app", AgeSeconds: 3, Statement: "UPDATE narrow_trx"}},
+		MetadataLocks: []model.MetadataLock{{
+			Status: "PENDING", User: "app", LockType: "EXCLUSIVE", Schema: "app", Object: "narrow_object",
+		}, {
+			Status: "PENDING", User: "app", LockType: "EXCLUSIVE", Schema: "analytics", Object: "customer_orders_daily_archive",
+		}, {
+			Status: "PENDING", User: "app", LockType: "EXCLUSIVE", Schema: "analytics", Object: "customer_refunds_daily_archive",
+		}},
+	}
+
+	for _, size := range []tea.WindowSizeMsg{{Width: 52, Height: 18}, {Width: 60, Height: 24}, {Width: 84, Height: 24}, {Width: 86, Height: 24}, {Width: 94, Height: 24}} {
+		m := New(context.Background(), nil, nil)
+		m.loading = false
+		m.snapshot = ctx
+		updated, _ := m.Update(size)
+		m = updated.(Model)
+
+		for _, check := range []struct {
+			tab      int
+			expected []string
+		}{
+			{tab: 3, expected: []string{"wait_alpha", "wait_beta", "/var/lib/mysql/analytics/orders_2025.ibd", "/var/lib/mysql/analytics/orders_2026.ibd", "DEADLOCK_ALPHA", "DEADLOCK_BETA", "mem_alpha", "mem_beta"}},
+			{tab: 5, expected: []string{"analytics.orders_archive_2025", "analytics.orders_archive_2026", "analytics.customer_orders_daily_archive", "analytics.customer_refunds_daily_archive", "idx_customer_created_at", "idx_customer_status", "idx_customer_domestic_archive", "idx_customer_overseas_archive"}},
+			{tab: 1, expected: []string{"narrow_user", "12345678901", "12345678902", "12345678903", "SELECT * FROM orders WHERE tenant_id = ?", "SELECT * FROM refunds WHERE tenant_id = ?", "UPDATE narrow_trx", "app.narrow_object", "analytics.customer_orders_daily_archive", "analytics.customer_refunds_daily_archive"}},
+		} {
+			m.tab = check.tab
+			m.rebuild()
+			rendered := allViewportFrames(m)
+			for _, expected := range check.expected {
+				if !strings.Contains(rendered, expected) {
+					t.Fatalf("%dx%d %s view clipped identity %q:\n%s", size.Width, size.Height, tabs[check.tab], expected, rendered)
+				}
+			}
+			if check.tab == 1 && size.Width == 52 {
+				for _, id := range []string{"12345678901", "12345678902"} {
+					associated := false
+					lines := strings.Split(rendered, "\n")
+					for index := 0; index+1 < len(lines); index++ {
+						if strings.Contains(lines[index], "ID "+id) && strings.Contains(lines[index+1], "SELECT") {
+							associated = true
+							break
+						}
+					}
+					if !associated {
+						t.Fatalf("52x18 Connections view did not associate process %s with its statement:\n%s", id, rendered)
+					}
+				}
+			}
+		}
+	}
+
+	for width := 48; width <= 150; width++ {
+		for name, rendered := range map[string]string{
+			"engine":      engine(ctx, width),
+			"tables":      tablesView(ctx, width),
+			"connections": connections(ctx, width),
+		} {
+			for _, line := range strings.Split(rendered, "\n") {
+				if got := lipgloss.Width(line); got > width {
+					t.Fatalf("%s renderer produced width %d at viewport width %d:\n%s", name, got, width, line)
+				}
+			}
+		}
+	}
+}
+
+func allViewportFrames(m Model) string {
+	var rendered strings.Builder
+	lastOffset := max(0, m.viewport.TotalLineCount()-m.viewport.Height)
+	for offset := 0; offset <= lastOffset; offset++ {
+		m.viewport.SetYOffset(offset)
+		rendered.WriteString(m.viewport.View())
+		rendered.WriteByte('\n')
+	}
+	return rendered.String()
+}
+
 func TestResponsiveChromeNeverExceedsTerminal(t *testing.T) {
 	ctx := &model.Context{
 		Fingerprint: "abc", Server: model.Server{Host: "database.internal", Port: 3306, Database: "application", Flavor: "MySQL", Version: "8.4.0"},
@@ -108,11 +235,45 @@ func TestResponsiveChromeNeverExceedsTerminal(t *testing.T) {
 		view := updated.(Model).View()
 		lines := strings.Split(view, "\n")
 		if len(lines) > size.Height {
-			t.Fatalf("%dx%d rendered %d lines", size.Width, size.Height, len(lines))
+			t.Fatalf("%dx%d rendered %d lines:\n%s", size.Width, size.Height, len(lines), view)
 		}
 		for _, line := range lines {
 			if got := lipgloss.Width(line); got > size.Width {
 				t.Fatalf("%dx%d rendered line width %d:\n%s", size.Width, size.Height, got, line)
+			}
+		}
+	}
+}
+
+func TestTabChromeFitsEveryResponsiveWidth(t *testing.T) {
+	populated := &model.Context{
+		Health:           model.Health{Score: 100},
+		Metrics:          model.Metrics{ConnectionsMax: 100},
+		Queries:          make([]model.Query, 123),
+		Processes:        make([]model.Process, 45),
+		Findings:         make([]model.Finding, 6),
+		Tables:           make([]model.Table, 78),
+		Indexes:          make([]model.Index, 90),
+		ConnectionGroups: make([]model.ConnectionGroup, 12),
+	}
+	for _, snapshot := range []*model.Context{nil, populated} {
+		for tab := range tabs {
+			for width := 52; width <= 150; width++ {
+				m := New(context.Background(), nil, nil)
+				m.snapshot = snapshot
+				m.loading = snapshot == nil
+				m.tab = tab
+				updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 18})
+				view := updated.(Model).View()
+				lines := strings.Split(view, "\n")
+				if len(lines) > 18 {
+					t.Fatalf("tab %d at %dx18 rendered %d lines:\n%s", tab, width, len(lines), view)
+				}
+				for _, line := range lines {
+					if got := lipgloss.Width(line); got > width {
+						t.Fatalf("tab %d at %dx18 rendered line width %d:\n%s", tab, width, got, view)
+					}
+				}
 			}
 		}
 	}
@@ -175,6 +336,131 @@ func TestHorizontalArrowsNavigateViewsAndVerticalKeysScrollContent(t *testing.T)
 	}
 }
 
+func TestTooSmallScreenAcceptsOnlyQuit(t *testing.T) {
+	ctx := &model.Context{
+		Health:  model.Health{Score: 100},
+		Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), nil, func(*model.Context) (string, error) { return "bundle", nil })
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	if !m.filtering {
+		t.Fatal("test setup did not enter filtering")
+	}
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+	m = updated.(Model)
+	updated, quit := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = updated.(Model)
+	if quit == nil {
+		t.Fatal("q did not quit from the too-small screen")
+	}
+	quitMessage := quit()
+	if _, ok := quitMessage.(tea.QuitMsg); !ok {
+		t.Fatalf("q returned %T, want tea.QuitMsg", quitMessage)
+	}
+	if got := m.filterInput.Value(); got != "" {
+		t.Fatalf("q was typed into hidden filter: %q", got)
+	}
+
+	m.filtering = false
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'/'}},
+		{Type: tea.KeyRunes, Runes: []rune{'?'}},
+		{Type: tea.KeyRunes, Runes: []rune{'e'}},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
+		{Type: tea.KeyRunes, Runes: []rune{'1'}},
+		{Type: tea.KeyTab},
+		{Type: tea.KeyEnter},
+	}
+	for _, pressed := range keys {
+		beforeTab := m.tab
+		updated, command := m.Update(pressed)
+		m = updated.(Model)
+		if command != nil || m.filtering || m.help || m.exporting || m.loading || m.queryDetail || m.tab != beforeTab {
+			t.Fatalf("%q activated hidden state at 40x12: cmd=%v filtering=%v help=%v exporting=%v loading=%v detail=%v tab=%d", pressed.String(), command != nil, m.filtering, m.help, m.exporting, m.loading, m.queryDetail, m.tab)
+		}
+	}
+}
+
+func TestTooSmallScreenFitsEveryShortHeight(t *testing.T) {
+	for width := 1; width < 52; width++ {
+		for height := 1; height < 18; height++ {
+			m := New(context.Background(), nil, nil)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+			view := updated.(Model).View()
+			lines := strings.Split(view, "\n")
+			if len(lines) > height {
+				t.Fatalf("%dx%d too-small view rendered %d lines:\n%s", width, height, len(lines), view)
+			}
+			for _, line := range lines {
+				if got := lipgloss.Width(line); got > width {
+					t.Fatalf("%dx%d too-small view rendered line width %d:\n%s", width, height, got, view)
+				}
+			}
+			if !strings.Contains(view, "q") {
+				t.Fatalf("%dx%d too-small view omitted quit hint:\n%s", width, height, view)
+			}
+		}
+	}
+}
+
+func TestWideUnicodeCompactionPreservesNarrowRowsAndContinuations(t *testing.T) {
+	identity := "app." + strings.Repeat("表", 14)
+	statement := strings.Repeat("查", 11)
+	for name, value := range map[string]string{
+		"end":         compact(identity, 17),
+		"middle":      compactMiddle(identity, 17),
+		"path":        compactPath("/var/lib/"+identity, 17),
+		"ANSI-styled": compact(lipgloss.NewStyle().Foreground(cyan).Render(identity), 17),
+	} {
+		if got := lipgloss.Width(value); got > 17 {
+			t.Fatalf("%s compaction rendered %d cells, want at most 17: %q", name, got, value)
+		}
+	}
+	if continuation := identityContinuation(identity, 18, 52); !strings.Contains(continuation, "↳ app.") {
+		t.Fatalf("wide table identity omitted explicit continuation: %q", continuation)
+	}
+	process := model.Process{ID: 123, User: "worker", Seconds: 3, Statement: statement}
+	if continuation := processContinuation(process, 7, 20, 52); !strings.Contains(continuation, "↳ ID 123") {
+		t.Fatalf("wide process statement omitted explicit continuation: %q", continuation)
+	}
+	views := map[string]string{
+		"tables":      tablesView(&model.Context{Tables: []model.Table{{Schema: "app", Name: strings.Repeat("表", 14), HasPrimaryKey: true}}}, 52),
+		"connections": connections(&model.Context{Processes: []model.Process{process}}, 52),
+	}
+	for name, view := range views {
+		for _, line := range strings.Split(view, "\n") {
+			if got := lipgloss.Width(line); got > 52 {
+				t.Fatalf("%s wide-Unicode row rendered %d cells:\n%s", name, got, view)
+			}
+		}
+	}
+	tableRowKeptMetrics := false
+	for _, line := range strings.Split(views["tables"], "\n") {
+		if strings.Contains(line, "…") && strings.Contains(line, "yes") {
+			tableRowKeptMetrics = true
+		}
+	}
+	if !tableRowKeptMetrics {
+		t.Fatalf("wide table identity displaced primary-row metrics:\n%s", views["tables"])
+	}
+	processRowKeptMetrics := false
+	for _, line := range strings.Split(views["connections"], "\n") {
+		if strings.Contains(line, "123") && strings.Contains(line, "…") && strings.Contains(line, "worker") && strings.Contains(line, "3s") {
+			processRowKeptMetrics = true
+		}
+	}
+	if !processRowKeptMetrics {
+		t.Fatalf("wide process statement displaced primary-row metrics:\n%s", views["connections"])
+	}
+}
+
 func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100}}
 	path := "/workspace/mysq-export-20260822-154220.547"
@@ -201,6 +487,781 @@ func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	view = updated.(Model).View()
 	if !strings.Contains(view, "…") || !strings.Contains(view, "mysq-export-20260822-154220.547") {
 		t.Fatalf("narrow export confirmation lost bundle name:\n%s", view)
+	}
+}
+
+func TestExportConfirmationKeepsSelectedQueryVisible(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		ctx.Queries = append(ctx.Queries, model.Query{Statement: fmt.Sprintf("SELECT %d FROM orders", i)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m = updated.(Model)
+
+	for i := 0; i < m.viewport.Height-1; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+	selectedLine := m.queryIndex + 2
+	if selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("test setup left selected line %d outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+
+	updated, _ = m.Update(exportMessage{path: "/workspace/bundle"})
+	m = updated.(Model)
+	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("export confirmation left selected line %d outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+	selectedStatement := fmt.Sprintf("SELECT %d FROM orders", m.queryIndex)
+	if !strings.Contains(m.viewport.View(), selectedStatement) {
+		t.Fatalf("export confirmation clipped selected statement %q:\n%s", selectedStatement, m.viewport.View())
+	}
+}
+
+func TestExportKeyIsIgnoredWhileExportIsRunning(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	m := New(context.Background(), nil, func(*model.Context) (string, error) { return "bundle", nil })
+	m.loading = false
+	m.snapshot = ctx
+
+	updated, first := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if !m.exporting || first == nil {
+		t.Fatal("first export did not enter the exporting state")
+	}
+	updated, second := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if !m.exporting || second != nil {
+		t.Fatal("repeated export launched another command")
+	}
+	updated, _ = m.Update(exportMessage{path: "bundle"})
+	m = updated.(Model)
+	if m.exporting {
+		t.Fatal("completed export did not clear the exporting state")
+	}
+	updated, repeated := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if repeated != nil || m.exportPath != "bundle" {
+		t.Fatal("export confirmation allowed a repeated export")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	updated, afterDismiss := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if !m.exporting || afterDismiss == nil {
+		t.Fatal("dismissing confirmation did not allow a new export")
+	}
+}
+
+func TestExportStateBlocksCompetingOverlays(t *testing.T) {
+	ctx := &model.Context{
+		Health:  model.Health{Score: 100},
+		Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), nil, func(*model.Context) (string, error) { return "bundle", nil })
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	for _, pressed := range []rune{'/', '?'} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{pressed}})
+		m = updated.(Model)
+		if m.filtering || m.help {
+			t.Fatalf("%q opened an overlay while export was running: filtering=%v help=%v", pressed, m.filtering, m.help)
+		}
+	}
+
+	updated, _ = m.Update(exportMessage{path: "/workspace/bundle"})
+	m = updated.(Model)
+	for _, pressed := range []rune{'/', '?'} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{pressed}})
+		m = updated.(Model)
+		if m.filtering || m.help {
+			t.Fatalf("%q opened an overlay behind export confirmation: filtering=%v help=%v", pressed, m.filtering, m.help)
+		}
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.exportPath != "" {
+		t.Fatalf("escape did not dismiss export confirmation: %q", m.exportPath)
+	}
+}
+
+func TestNarrowTerminalShowsHelpKeys(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(Model)
+	view := m.View()
+	for _, expected := range []string{"KEYBOARD HELP", "1–7", "jump to view", "pgup/b", "home/g", "export bundle", "esc/?", "close help"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("narrow help omitted %q:\n%s", expected, view)
+		}
+	}
+	assertViewWidth(t, view, 60)
+}
+
+func TestHelpScrollsAndEscapeRestoresViewPosition(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		ctx.WaitEvents = append(ctx.WaitEvents, model.WaitEvent{Name: "wait/event/" + strings.Repeat("x", i%5+1)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 3
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(Model)
+	wantOffset := m.viewport.YOffset
+	if wantOffset == 0 {
+		t.Fatal("engine page down did not scroll")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(Model)
+	if !m.help || !strings.Contains(m.View(), "KEYBOARD HELP") {
+		t.Fatalf("question mark did not open contextual help:\n%s", m.View())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	m = updated.(Model)
+	if !strings.Contains(m.View(), "q/ctrl-c") {
+		t.Fatalf("help could not scroll to global actions:\n%s", m.View())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.help || m.viewport.YOffset != wantOffset {
+		t.Fatalf("escape restored help=%v offset=%d, want false/%d", m.help, m.viewport.YOffset, wantOffset)
+	}
+}
+
+func TestHelpResizeAndRefreshPreserveQueryListVisibility(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		ctx.Queries = append(ctx.Queries, model.Query{Digest: fmt.Sprintf("digest-%d", i), Schema: "app", Statement: fmt.Sprintf("SELECT %d FROM orders", i)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(Model)
+	wantOffset := m.viewOffsets[m.tab]
+	if wantOffset == 0 {
+		t.Fatal("deep query selection did not scroll")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 96, Height: 20})
+	m = updated.(Model)
+	updated, _ = m.Update(inspectMessage{context: ctx})
+	m = updated.(Model)
+	if !m.help || m.viewOffsets[m.tab] != wantOffset {
+		t.Fatalf("help resize/refresh changed underlying offset to %d, want %d", m.viewOffsets[m.tab], wantOffset)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	selectedLine := m.queryIndex + 2
+	if m.help || selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("closing help left selected line %d outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+}
+
+func TestKeyboardHelpIncludesEveryGlobalActionAtResponsiveWidths(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	for tab := range tabs {
+		for width := 52; width <= 150; width++ {
+			m := New(context.Background(), nil, nil)
+			m.loading = false
+			m.snapshot = ctx
+			m.tab = tab
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+			m = updated.(Model)
+			help := m.keyboardHelp()
+			compactHelp := strings.Join(strings.Fields(help), " ")
+			for _, expected := range []string{"r refresh", "e export bundle", "? keyboard help", "q/ctrl-c quit"} {
+				if !strings.Contains(compactHelp, expected) {
+					t.Fatalf("%s help at width %d omitted %q:\n%s", tabs[tab], width, expected, help)
+				}
+			}
+		}
+	}
+}
+
+func TestTabSwitchAndResizePreservePerViewScroll(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 70}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 24; i++ {
+		ctx.Findings = append(ctx.Findings, model.Finding{ID: fmt.Sprintf("finding-%02d", i), Severity: model.SeverityWarning, Title: "Finding", Summary: "Evidence", Recommendation: "Review"})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 4
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(Model)
+	wantOffset := m.viewport.YOffset
+	if wantOffset == 0 {
+		t.Fatal("findings page down did not scroll")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if m.tab != 4 || m.viewport.YOffset != wantOffset {
+		t.Fatalf("tab return restored tab=%d offset=%d, want 4/%d", m.tab, m.viewport.YOffset, wantOffset)
+	}
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 92, Height: 24})
+	m = updated.(Model)
+	if m.viewport.YOffset != wantOffset {
+		t.Fatalf("resize reset offset to %d, want %d", m.viewport.YOffset, wantOffset)
+	}
+}
+
+func TestQueryPagerKeysMoveSelectionAndKeepItVisible(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		ctx.Queries = append(ctx.Queries, model.Query{Statement: fmt.Sprintf("SELECT %d FROM orders", i), TotalLatencyMillis: float64(30 - i)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 22})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(Model)
+	if m.queryIndex == 0 {
+		t.Fatalf("page down left query selection=%d offset=%d", m.queryIndex, m.viewport.YOffset)
+	}
+	selectedLine := m.queryIndex + 2
+	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("selected line %d is outside viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(Model)
+	if m.viewport.YOffset == 0 {
+		t.Fatalf("second page down did not advance viewport for query %d", m.queryIndex)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(Model)
+	if m.queryIndex != len(ctx.Queries)-1 {
+		t.Fatalf("end selected query %d, want %d", m.queryIndex, len(ctx.Queries)-1)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	m = updated.(Model)
+	if m.queryIndex != 0 {
+		t.Fatalf("home selected query %d, want 0", m.queryIndex)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if m.queryIndex != 1 {
+		t.Fatalf("j selected query %d, want 1", m.queryIndex)
+	}
+}
+
+func TestWalkingUpKeepsSelectedQueryVisible(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		ctx.Queries = append(ctx.Queries, model.Query{Statement: fmt.Sprintf("SELECT %d FROM orders", i)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(Model)
+	for i := 0; i < 20; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m = updated.(Model)
+		selectedLine := m.queryIndex + 2
+		if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+			t.Fatalf("query %d line %d is outside viewport [%d,%d)", m.queryIndex, selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+		}
+	}
+}
+
+func TestResizeKeepsSelectedQueryVisible(t *testing.T) {
+	ctx := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		ctx.Queries = append(ctx.Queries, model.Query{Statement: fmt.Sprintf("SELECT %d FROM orders", i)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+	for i := 0; i < 20; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m = updated.(Model)
+	selectedLine := m.queryIndex + 2
+	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("selected line %d is outside resized viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+	if m.viewOffsets[m.tab] != m.viewport.YOffset {
+		t.Fatalf("resized viewport offset %d was not persisted: %d", m.viewport.YOffset, m.viewOffsets[m.tab])
+	}
+	updated, _ = m.Update(inspectMessage{context: ctx})
+	m = updated.(Model)
+	if selectedLine < m.viewport.YOffset || selectedLine >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatalf("selected line %d is outside refreshed viewport [%d,%d)", selectedLine, m.viewport.YOffset, m.viewport.YOffset+m.viewport.Height)
+	}
+}
+
+func TestCurrentViewFilterSelectsVisibleQueryAndEscapeClears(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Statement: "SELECT id FROM users", TotalLatencyMillis: 10},
+			{Statement: "SELECT id FROM orders", TotalLatencyMillis: 9},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	if !m.filtering {
+		t.Fatal("slash did not focus the current-view filter")
+	}
+	for _, r := range "orders" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	view := m.View()
+	if m.filtering || !strings.Contains(view, "SELECT id FROM orders") || strings.Contains(view, "SELECT id FROM users") {
+		t.Fatalf("applied filter did not narrow queries:\n%s", view)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !m.queryDetail || !strings.Contains(m.View(), "SELECT id FROM orders") {
+		t.Fatalf("enter opened a query outside the filtered result:\n%s", m.View())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.activeFilter() != "" || !strings.Contains(m.View(), "SELECT id FROM users") {
+		t.Fatalf("escape did not clear the active filter:\n%s", m.View())
+	}
+}
+
+func TestActiveFilterDoesNotHideOperationFailures(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	for _, test := range []struct {
+		name    string
+		message tea.Msg
+		want    string
+	}{
+		{name: "refresh", message: inspectMessage{err: errors.New("refresh probe failed")}, want: "Refresh failed"},
+		{name: "export", message: exportMessage{err: errors.New("write failed")}, want: "Export failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := New(context.Background(), nil, nil)
+			m.loading = false
+			m.snapshot = ctx
+			m.tab = 2
+			m.filters[2] = "orders"
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+			m = updated.(Model)
+			updated, _ = m.Update(test.message)
+			view := updated.(Model).View()
+			if !strings.Contains(view, test.want) {
+				t.Fatalf("active filter hid %s failure:\n%s", test.name, view)
+			}
+			updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = updated.(Model)
+			if m.activeFilter() != "" {
+				t.Fatalf("Esc did not clear filter after %s failure", test.name)
+			}
+			if view := m.View(); !strings.Contains(view, test.want) {
+				t.Fatalf("clearing filter erased completed %s failure:\n%s", test.name, view)
+			}
+		})
+	}
+}
+
+func TestRefreshBlocksFilterEditingAndKeepsFailureVisible(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), func(context.Context) (*model.Context, error) { return ctx, nil }, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	updated, command := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = updated.(Model)
+	if !m.loading || command == nil {
+		t.Fatal("refresh did not enter loading state")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	if m.filtering {
+		t.Fatal("filter editor opened during refresh")
+	}
+	updated, _ = m.Update(inspectMessage{err: errors.New("refresh probe failed")})
+	if view := updated.(Model).View(); !strings.Contains(view, "Refresh failed") {
+		t.Fatalf("refresh failure disappeared after blocked filter attempt:\n%s", view)
+	}
+}
+
+func TestActiveFilterDoesNotHideExportProgress(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), nil, func(*model.Context) (string, error) { return "bundle", nil })
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	m.filters[2] = "orders"
+	updated, command := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	updated, command = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if !m.exporting || command == nil {
+		t.Fatal("export did not start")
+	}
+	if view := m.View(); !strings.Contains(view, "Writing agent bundle") {
+		t.Fatalf("active filter hid export progress:\n%s", view)
+	}
+}
+
+func TestClearingFilterPreservesInFlightOperationStatus(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	for _, test := range []struct {
+		name string
+		key  rune
+		want string
+	}{
+		{name: "refresh", key: 'r', want: "Refreshing every diagnostic prob"},
+		{name: "export", key: 'e', want: "Writing agent bundle"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := New(context.Background(), func(context.Context) (*model.Context, error) { return ctx, nil }, func(*model.Context) (string, error) { return "bundle", nil })
+			m.loading = false
+			m.snapshot = ctx
+			m.tab = 2
+			m.filters[2] = "orders"
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+			m = updated.(Model)
+			updated, command := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{test.key}})
+			m = updated.(Model)
+			if command == nil {
+				t.Fatalf("%s did not start", test.name)
+			}
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = updated.(Model)
+			if m.activeFilter() != "" {
+				t.Fatalf("Esc did not clear filter during %s", test.name)
+			}
+			if view := m.View(); !strings.Contains(view, test.want) {
+				t.Fatalf("clearing filter hid in-flight %s status:\n%s", test.name, view)
+			}
+		})
+	}
+}
+
+func TestSuccessfulOperationsRestoreActiveFilterStatus(t *testing.T) {
+	ctx := &model.Context{
+		Fingerprint: "abc123", Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM orders"}},
+	}
+	for _, test := range []struct {
+		name    string
+		message tea.Msg
+		dismiss bool
+	}{
+		{name: "refresh", message: inspectMessage{context: ctx}},
+		{name: "export", message: exportMessage{path: "/workspace/bundle"}, dismiss: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := New(context.Background(), nil, nil)
+			m.loading = false
+			m.snapshot = ctx
+			m.tab = 2
+			m.filters[2] = "orders"
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+			m = updated.(Model)
+			updated, _ = m.Update(test.message)
+			m = updated.(Model)
+			if test.dismiss {
+				updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				m = updated.(Model)
+			}
+			if view := m.View(); !strings.Contains(view, `Filter "orders"`) {
+				t.Fatalf("successful %s hid retained active filter:\n%s", test.name, view)
+			}
+		})
+	}
+}
+
+func TestTablesFilterRendersIndexWithoutCollectedTable(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Tables:  []model.Table{{Schema: "app", Name: "top_100_table"}},
+		Indexes: []model.Index{{Schema: "archive", Table: "table_101", Name: "idx_customer", Columns: "customer_id"}},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 5
+	m.filters[5] = "idx_customer"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	if matched, total := m.filterCounts(); matched != 1 || total != 2 {
+		t.Fatalf("table filter count = %d/%d, want 1/2", matched, total)
+	}
+	view := m.View()
+	if !strings.Contains(view, "archive.table_101.idx_customer") || strings.Contains(view, "No application tables") {
+		t.Fatalf("index-only table filter result was hidden:\n%s", view)
+	}
+}
+
+func TestConnectionsFilterCountsOnlyRenderableGroups(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		ConnectionGroups: []model.ConnectionGroup{
+			{Kind: "host", Key: "10.0.0.2", Total: 1},
+			{Kind: "user", Key: "worker", Total: 1},
+			{Kind: "user_host", Key: "worker@10.0.0.2", Total: 1},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 1
+	m.filters[1] = "worker@10.0.0.2"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	if matched, total := m.filterCounts(); matched != 0 || total != 2 {
+		t.Fatalf("connection filter count = %d/%d, want 0/2 renderable groups", matched, total)
+	}
+	view := m.View()
+	if !strings.Contains(view, "No connections match filter") || strings.Contains(view, "CONNECTION BREAKDOWN") {
+		t.Fatalf("hidden user_host group leaked into filtered view:\n%s", view)
+	}
+}
+
+func TestFilteredQueryShareUsesCompleteSnapshot(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Statement: "SELECT id FROM users", TotalLatencyMillis: 90},
+			{Statement: "SELECT id FROM orders", TotalLatencyMillis: 10},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	m.filters[2] = "orders"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	if view := m.View(); !strings.Contains(view, "selected share 10.0%") {
+		t.Fatalf("filtered query list changed database-time denominator:\n%s", view)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	view := updated.(Model).View()
+	if !strings.Contains(view, "10.0ms (10.0%)") {
+		t.Fatalf("filtered query detail changed database-time denominator:\n%s", view)
+	}
+}
+
+func TestFilterCancelAfterRefreshClampsRestoredQuerySelection(t *testing.T) {
+	old := &model.Context{Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100}}
+	for i := 0; i < 30; i++ {
+		old.Queries = append(old.Queries, model.Query{Statement: fmt.Sprintf("SELECT %d FROM orders", i)})
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = old
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(Model)
+	for i := 0; i < 20; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	updated, _ = m.Update(inspectMessage{context: &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT only FROM orders"}},
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.queryIndex != 0 || !strings.Contains(m.View(), "SELECT only FROM orders") {
+		t.Fatalf("filter cancel restored stale selection %d for refreshed query list:\n%s", m.queryIndex, m.View())
+	}
+}
+
+func TestFilterCancelAfterRefreshRestoresQueryIdentity(t *testing.T) {
+	old := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "first", Schema: "app", Statement: "SELECT first FROM orders"},
+			{Digest: "second", Schema: "app", Statement: "SELECT second FROM orders"},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = old
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	updated, _ = m.Update(inspectMessage{context: &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "second", Schema: "app", Statement: "SELECT second FROM orders"},
+			{Digest: "first", Schema: "app", Statement: "SELECT first FROM orders"},
+		},
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.queryIndex != 0 || !strings.Contains(m.View(), "SELECT second FROM orders") {
+		t.Fatalf("filter cancel lost query identity at index %d:\n%s", m.queryIndex, m.View())
+	}
+}
+
+func TestRefreshPreservesQueryIdentityAndResetsDetailOffset(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "shared", Schema: "first_db", Statement: "SELECT first FROM orders"},
+			{Digest: "shared", Schema: "second_db", Statement: "SELECT second FROM orders"},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 18})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	m.queryDetailOffset = 5
+
+	updated, _ = m.Update(inspectMessage{context: &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "shared", Schema: "second_db", Statement: "SELECT second FROM orders"},
+			{Digest: "shared", Schema: "first_db", Statement: "SELECT first FROM orders"},
+		},
+	}})
+	m = updated.(Model)
+	if !m.queryDetail || m.queryIndex != 0 || m.queryDetailOffset != 0 || !strings.Contains(m.View(), "SELECT second FROM orders") {
+		t.Fatalf("refresh lost query identity or retained stale detail offset: detail=%v index=%d offset=%d\n%s",
+			m.queryDetail, m.queryIndex, m.queryDetailOffset, m.View())
+	}
+}
+
+func TestRefreshOffQueriesPreservesFilteredQueryIdentity(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "other", Schema: "app", Statement: "SELECT other"},
+			{Digest: "first", Schema: "app", Statement: "SELECT match first"},
+			{Digest: "second", Schema: "app", Statement: "SELECT match second"},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	m.filters[2] = "match"
+	m.queryIndex = 1
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(Model)
+	updated, _ = m.Update(inspectMessage{context: &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{Digest: "second", Schema: "app", Statement: "SELECT match second"},
+			{Digest: "first", Schema: "app", Statement: "SELECT match first"},
+			{Digest: "other", Schema: "app", Statement: "SELECT other"},
+		},
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(Model)
+	if m.tab != 2 || m.queryIndex != 0 {
+		t.Fatalf("off-tab refresh restored tab=%d query=%d, want Queries/0", m.tab, m.queryIndex)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !strings.Contains(m.View(), "SELECT match second") {
+		t.Fatalf("off-tab refresh lost filtered query identity:\n%s", m.View())
+	}
+}
+
+func TestFilterConsumesPrintableGlobalKeysAsText(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Statement: "SELECT id FROM queue", TotalLatencyMillis: 1}},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = updated.(Model)
+	if !m.filtering || m.activeFilter() != "q" {
+		t.Fatalf("filter treated q as a global action: filtering=%v value=%q", m.filtering, m.activeFilter())
 	}
 }
 
@@ -277,6 +1338,63 @@ func TestQuerySelectionOpensDetailAndEscapeReturnsToList(t *testing.T) {
 	}
 	if strings.Contains(view, "TMP-D") || strings.Contains(view, "EXAM/SENT") {
 		t.Fatalf("query list retained low-value headers:\n%s", view)
+	}
+}
+
+func TestQueryDetailAllowsDocumentedViewNavigation(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{{Digest: "query", Schema: "app", Statement: "SELECT id FROM orders"}},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.tab != 3 || m.queryDetail {
+		t.Fatalf("tab from query detail selected tab=%d detail=%v, want Engine/false", m.tab, m.queryDetail)
+	}
+}
+
+func TestOpeningDifferentQueryStartsDetailAtTop(t *testing.T) {
+	ctx := &model.Context{
+		Health: model.Health{Score: 100}, Metrics: model.Metrics{ConnectionsMax: 100},
+		Queries: []model.Query{
+			{
+				Digest: strings.Repeat("a", 64), Schema: "application",
+				Statement:          "SELECT " + strings.Repeat("very_long_column, ", 16) + "id FROM first_table WHERE account_id = ?",
+				TotalLatencyMillis: 2, ActiveUsers: []string{"checkout-worker", "analytics-worker"},
+				FirstSeen: "2026-08-25T10:00:00Z", LastSeen: "2026-08-25T11:00:00Z",
+			},
+			{Statement: "SELECT second FROM orders", TotalLatencyMillis: 1},
+		},
+	}
+	m := New(context.Background(), nil, nil)
+	m.loading = false
+	m.snapshot = ctx
+	m.tab = 2
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 18})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(Model)
+	if m.viewport.YOffset == 0 {
+		t.Fatal("long first query detail did not scroll")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.viewport.YOffset != 0 || !strings.Contains(m.viewport.View(), "QUERY 2 OF 2") {
+		t.Fatalf("second query detail opened at offset %d:\n%s", m.viewport.YOffset, m.viewport.View())
 	}
 }
 

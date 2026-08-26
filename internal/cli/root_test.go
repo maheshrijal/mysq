@@ -38,6 +38,48 @@ func TestFailCode(t *testing.T) {
 	}
 }
 
+func TestInspectRejectsInvalidOptionsBeforeCollection(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		code int
+	}{
+		{name: "format", args: []string{"--format", "yaml"}, code: 1},
+		{name: "health gate", args: []string{"--fail-on", "banana"}, code: 64},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			collected := false
+			app := &App{
+				Out: &out,
+				Err: &out,
+				inspectFn: func(context.Context, string, time.Duration) (*model.Context, error) {
+					collected = true
+					return testHealth(100, 0, 0), nil
+				},
+			}
+			command := app.inspectCommand()
+			command.SetArgs(test.args)
+			err := command.Execute()
+			if err == nil {
+				t.Fatal("invalid option unexpectedly passed")
+			}
+			if collected {
+				t.Fatal("invalid option reached collection")
+			}
+			if out.Len() != 0 {
+				t.Fatalf("invalid option emitted output: %q", out.String())
+			}
+			if test.code == 64 {
+				var exit ExitError
+				if !errors.As(err, &exit) || exit.Code != test.code {
+					t.Fatalf("invalid health gate error = %v, want exit %d", err, test.code)
+				}
+			}
+		})
+	}
+}
+
 func testHealth(critical, warnings, notes int) *model.Context {
 	return &model.Context{Health: model.Health{Critical: critical, Warnings: warnings, Notes: notes}}
 }

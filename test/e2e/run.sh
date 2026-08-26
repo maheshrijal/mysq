@@ -5,10 +5,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work_dir="$(mktemp -d)"
 binary="$work_dir/mysq"
 load_binary="$work_dir/load"
-port="${MYSQ_MYSQL_PORT:-33306}"
-monitor_dsn="mysq_monitor:mysq-monitor-test@tcp(127.0.0.1:${port})/app?parseTime=true"
-load_dsn="loadgen:mysq-load-test@tcp(127.0.0.1:${port})/app?parseTime=true"
-compose=(docker compose -f "$repo_root/docker-compose.e2e.yml")
+requested_port="${MYSQ_MYSQL_PORT:-0}"
+project="${MYSQ_E2E_PROJECT:-mysq-e2e-$$-$RANDOM}"
+compose=(docker compose --project-name "$project" -f "$repo_root/docker-compose.e2e.yml")
 load_pid=""
 
 stop_load() {
@@ -21,7 +20,7 @@ stop_load() {
 
 cleanup() {
   stop_load
-  "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  MYSQ_MYSQL_PORT="$requested_port" "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
@@ -29,7 +28,20 @@ trap cleanup EXIT
 cd "$repo_root"
 go build -trimpath -ldflags "-X main.version=e2e" -o "$binary" ./cmd/mysq
 go build -trimpath -o "$load_binary" ./test/e2e/load
-"${compose[@]}" up -d --wait
+MYSQ_MYSQL_PORT="$requested_port" "${compose[@]}" up -d --wait --force-recreate
+mysql_container="$(MYSQ_MYSQL_PORT="$requested_port" "${compose[@]}" ps -q mysql)"
+if [[ -z "$mysql_container" ]]; then
+  echo "could not resolve e2e MySQL container" >&2
+  exit 1
+fi
+published_address="$(MYSQ_MYSQL_PORT="$requested_port" "${compose[@]}" port mysql 3306)"
+port="${published_address##*:}"
+if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+  echo "could not resolve e2e MySQL port from: $published_address" >&2
+  exit 1
+fi
+monitor_dsn="mysq_monitor:mysq-monitor-test@tcp(127.0.0.1:${port})/app?parseTime=true"
+load_dsn="loadgen:mysq-load-test@tcp(127.0.0.1:${port})/app?parseTime=true"
 
 "$load_binary" --dsn "$load_dsn" --duration 45s >"$work_dir/load.log" 2>&1 &
 load_pid=$!
@@ -89,6 +101,17 @@ MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --store "$histo
 # history. Stop it before the navigation-only PTY phase so hosted-runner load
 # cannot starve Bubble Tea's initial full refresh.
 stop_load
+
+# With no application client active, a full inspection must not count its own
+# digest-sampler SELECTs as workload inside the global-status window. Briefly
+# pause the recurring liveness query and let any in-flight check finish first.
+docker exec "$mysql_container" touch /tmp/mysq-health-paused
+# The healthcheck timeout is 3s; four seconds guarantees an already-running
+# mysqladmin invocation has finished before the zero-question window opens.
+sleep 4
+MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --no-store --interval 250ms >"$work_dir/idle-context.json"
+go run ./test/e2e/verify --idle-context "$work_dir/idle-context.json"
+docker exec "$mysql_container" rm -f /tmp/mysq-health-paused
 
 "$binary" init --user observer >"$work_dir/init.sql"
 "$binary" --help >"$work_dir/help.txt"
