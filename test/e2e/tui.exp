@@ -21,6 +21,17 @@ expect {
   eof { exit 11 }
 }
 set timeout $interaction_timeout
+# Trends sample independently from the full diagnostic snapshot. At this
+# viewport size they are sparklines below the summary, reachable by End.
+send "G"
+expect -re {LIVE TRENDS}
+expect -re {peak [0-9]}
+send "p"
+expect -re {PAUSED.*p resume}
+send "p"
+expect -re {LIVE.*every 2s.*p pause}
+send "g"
+expect -re {PRIORITY SIGNAL}
 # Findings-first overview opens the same evidence exported for agents.
 send "B"
 expect -re {BLOCKING CHAINS}

@@ -112,7 +112,15 @@ func (a *App) tuiCommand() *cobra.Command {
 				result, err := bundle.Write(ctx, output, bundle.Options{})
 				return result.Directory, err
 			}
-			return terminalui.Run(cmd.Context(), inspect, export, control.Queries{Target: target})
+			db, err := collect.OpenTrendSampler(target)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			sample := func(ctx context.Context) (collect.TrendCounters, error) {
+				return collect.SampleTrends(ctx, db)
+			}
+			return terminalui.Run(cmd.Context(), inspect, export, control.Queries{Target: target}, sample)
 		},
 	}
 	command.Flags().DurationVar(&interval, "interval", time.Second, "counter sampling interval")

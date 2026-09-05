@@ -43,6 +43,7 @@ type Model struct {
 	export                      Exporter
 	queryControl                QueryController
 	live                        liveQueries
+	trends                      trendHistory
 	snapshot                    *model.Context
 	viewport                    viewport.Model
 	spinner                     spinner.Model
@@ -94,8 +95,11 @@ var (
 	number     = lipgloss.Color("5")
 )
 
-func Run(ctx context.Context, inspect Inspector, export Exporter, control ...QueryController) error {
-	model := New(ctx, inspect, export, control...)
+func Run(ctx context.Context, inspect Inspector, export Exporter, control QueryController, sample TrendSampler) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	model := New(ctx, inspect, export, control)
+	model.trends.sample = sample
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	_, err := program.Run()
 	return err
@@ -132,11 +136,17 @@ func New(ctx context.Context, inspect Inspector, export Exporter, control ...Que
 	}
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(m.spinner.Tick, m.inspectCommand()) }
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, m.inspectCommand(), m.trendTickCommand())
+}
 
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	var commands []tea.Cmd
 	switch msg := message.(type) {
+	case trendTick:
+		return m.onTrendTick(time.Time(msg))
+	case trendMessage:
+		return m.onTrendSample(msg)
 	case sessionsMessage:
 		return m.receiveSessions(msg)
 	case killMessage:
@@ -256,6 +266,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case key.Matches(msg, m.keys.PauseTrends):
+		if m.trends.sample != nil {
+			m.trends.paused = !m.trends.paused
+			m.trends.generation++
+			m.trends.previous = nil
+			m.rebuild()
+		}
+		return m, nil
 	case key.Matches(msg, m.keys.KillQuery):
 		if tabs[m.tab] == "Queries" && !m.inInvestigation() && !m.loading && !m.exporting && m.exportPath == "" {
 			return m, m.loadSessions(true)
@@ -780,6 +798,9 @@ func (m Model) helpBindings() contextualHelp {
 	paging := []key.Binding{m.keys.PageUp, m.keys.PageDown, m.keys.HalfPageUp, m.keys.HalfPageDown, m.keys.Top, m.keys.Bottom}
 	navigation := []key.Binding{m.keys.PreviousView, m.keys.NextView, m.keys.Jump}
 	actions := []key.Binding{m.keys.Blockers, m.keys.Refresh, m.keys.Export, m.keys.Help, m.keys.Quit}
+	if m.trends.sample != nil {
+		actions = append([]key.Binding{m.keys.PauseTrends}, actions...)
+	}
 	context := []key.Binding{m.keys.Up, m.keys.Down}
 	short := []key.Binding{m.keys.PreviousView, m.keys.NextView, m.keys.Up, m.keys.Down}
 
@@ -794,6 +815,9 @@ func (m Model) helpBindings() contextualHelp {
 		short = []key.Binding{m.keys.Back, m.keys.Up, m.keys.Down, m.keys.PageUp, m.keys.PageDown}
 	} else if tabs[m.tab] == "Overview" || tabs[m.tab] == "Connections" {
 		context = append([]key.Binding{m.keys.Open, m.keys.Blockers}, context...)
+		if tabs[m.tab] == "Overview" && m.trends.sample != nil {
+			context = append(context, m.keys.PauseTrends)
+		}
 		if tabs[m.tab] == "Connections" {
 			context = append(context, m.keys.Filter)
 		}
@@ -1085,6 +1109,9 @@ func (m *Model) rebuild() {
 	switch tabs[m.tab] {
 	case "Overview":
 		content = overview(visible, m.viewport.Width, m.err != nil)
+		if m.trends.sample != nil {
+			content += "\n\n" + m.trendView(m.viewport.Width, m.viewport.Height-lipgloss.Height(content)-2)
+		}
 	case "Findings":
 		m.findingIndex = min(max(0, m.findingIndex), max(0, len(visible.Findings)-1))
 		content = findingList(visible, m.viewport.Width, m.findingIndex)

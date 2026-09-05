@@ -31,6 +31,14 @@ The full snapshot collector degrades individual optional probes, but server iden
 
 Ghostty is the primary terminal target. TUI styling uses default foreground/background and ANSI palette slots 1–6 for semantic accents, with slot 8 reserved for borders. Reverse video highlights selections using the terminal's current foreground/background. No TUI color depends on Lip Gloss's cached background detection or fixed RGB values. Ghostty can therefore update the displayed theme without a MySQL refresh, input interception, or background color polling. Other ANSI terminals remain supported; accent hues follow their configured palette. Regression tests verify identical emitted frames with opposite cached appearance values and reject fixed RGB escape sequences.
 
+## Live trends
+
+The TUI injects a separate `TrendSampler` backed by one reusable connection. Every two seconds it reads seven global status counters and the server UUID in one SELECT from `performance_schema.global_status`, with a five-second timeout and at most one sample in flight. This does not call the full inspector, scan application tables, or save snapshots. Quitting cancels the sampling context and closes the pool.
+
+Rates use measured elapsed time between consecutive successful samples. The sampler subtracts its own SELECT from Questions and its own thread from Threads_running. Other client activity, including diagnostic inspections, remains server-wide. I/O measures physical InnoDB bytes, not logical row reads or network traffic. UUID changes, decreasing counters/uptime, failed reads, and extended sampling gaps invalidate a delta. Pause freezes the display and discards the baseline; generation IDs reject late results after pause/resume.
+
+Up to five minutes of timestamped observations remain in bounded memory. Graphs use the same observed time window, growing from ten seconds to five minutes, and zero-based per-chart scales; read/write series share an I/O scale. Braille line charts occupy spare Overview height, falling back to peak-preserving time-bucket sparklines on compact terminals. Missing intervals stay blank. Telemetry does not change `model.Context`, health findings, selection, query confirmations, history, or exports; `r` still refreshes diagnostic evidence explicitly.
+
 ## Database cost and safety
 
 An inspection uses one connection and samples `SHOW GLOBAL STATUS`, statement digest and global counters, wait summaries, file-I/O summaries, and error summaries around the configured interval. The emitted collections are bounded to 20 cumulative statement digests, 20 interval statement samples, 30 waits, 30 file instruments, 30 errors, 30 memory consumers, 100 tables, 100 processes, 100 transactions, and 100 metadata locks. It never queries application rows. `MAX_EXECUTION_TIME` is 10 seconds and the session is pinned read-only. Active user, process, transaction, and lock data is explicitly point-in-time and can change while the report is being consumed.

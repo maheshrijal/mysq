@@ -6,6 +6,7 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Added
 
+- Live Overview trends for QPS, running threads, row-lock waits, and physical InnoDB read/write throughput, with a shared timeline, responsive line charts/sparklines, five-minute in-memory history, and `p` pause/resume. A separate two-second sampler preserves diagnostic snapshots and query selection; missing/reset samples appear as gaps.
 - Queries-only `K` cancellation with live session selection, exact typed `kill` confirmation, execution identity revalidation, and explicit accepted/failed outcomes. Query details show current executing users, hosts, connections, and statement timing independently of historical digest totals.
 - Findings-first 80×24 overview, selectable findings with evidence drill-down, and `B` blocking-chain investigations in the TUI.
 - `mysq blockers` and scoped JSON for root owners, captured edges, distinct waiters, metadata-lock candidates, and coverage caveats.
