@@ -7,6 +7,17 @@ fail() {
     exit 1
 }
 
+# Read Cobra's version output without letting a binary consume curl | sh input.
+binary_version() {
+    version_output=$("$1" --version </dev/null 2>/dev/null) || return 1
+    reported_version=$(printf '%s\n' "$version_output" | awk '$1 == "mysq" && $2 == "version" && NF == 3 { print $3; exit }')
+    case "$reported_version" in
+        ''|*[!a-zA-Z0-9.+_-]*) return 1 ;;
+        [0-9]*) printf 'v%s' "$reported_version" ;;
+        *) printf '%s' "$reported_version" ;;
+    esac
+}
+
 quote_sh() {
     printf "'"
     printf '%s' "$1" | sed "s/'/'\\\\''/g"
@@ -139,13 +150,20 @@ main() {
     install_action=Installed
     if [ -e "$install_dir/mysq" ] || [ -L "$install_dir/mysq" ]; then
         install_action=Updated
+        previous_version=$(binary_version "$install_dir/mysq") || previous_version=unknown
     fi
     staged_binary=$(mktemp "$install_dir/.mysq.XXXXXX")
     cp "$temp_dir/mysq" "$staged_binary"
     chmod 755 "$staged_binary"
+    installed_version=$(binary_version "$staged_binary") ||
+        fail 'cannot read version from downloaded mysq; existing installation was not changed'
     mv -f "$staged_binary" "$install_dir/mysq"
     staged_binary=
-    printf '%s %s/mysq (%s release)\n' "$install_action" "$install_dir" "$version"
+    if [ "$install_action" = Updated ]; then
+        printf 'Updated mysq %s → %s (%s/mysq)\n' "$previous_version" "$installed_version" "$install_dir"
+    else
+        printf 'Installed mysq %s (%s/mysq)\n' "$installed_version" "$install_dir"
+    fi
     configure_path
 }
 

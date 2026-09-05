@@ -16,7 +16,7 @@ macOS and Linux, on Intel/AMD or Apple Silicon/ARM:
 curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | sh
 ```
 
-Open a new terminal after installation, or run the PATH command it prints. Run the same command to upgrade an existing installation to the latest release.
+Open a new terminal after installation, or run the PATH command it prints. Run the same command to upgrade to the latest release; it reports the old and new versions.
 
 <details>
 <summary>Windows, Go, and installer options</summary>

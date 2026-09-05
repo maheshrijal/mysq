@@ -25,6 +25,8 @@ func TestReleaseInstaller(t *testing.T) {
 		{name: "linux_arm64", system: "Linux", machine: "aarch64", platform: "linux", arch: "arm64"},
 		{name: "darwin_amd64", system: "Darwin", machine: "x86_64", platform: "darwin", arch: "amd64"},
 		{name: "darwin_arm64_pinned", system: "Darwin", machine: "arm64", platform: "darwin", arch: "arm64", version: "v1.2.3"},
+		{name: "unknown_previous_version", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64"},
+		{name: "invalid_binary_version", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64", failure: "cannot read version from downloaded mysq"},
 		{name: "no_modify_path", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64"},
 		{name: "corrupt", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64", failure: "checksum mismatch"},
 		{name: "missing_checksum", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64", failure: "missing or invalid checksum"},
@@ -57,11 +59,18 @@ func TestReleaseInstaller(t *testing.T) {
 			} else if tc.name == "linux_arm64" {
 				write(filepath.Join(home, ".bash_login"), originalProfile, 0600)
 			}
+			previous := "#!/bin/sh\nprintf 'mysq version 1.2.2\\n'\n"
+			if tc.name == "unknown_previous_version" {
+				previous = "#!/bin/sh\nexit 1\n"
+			}
 			if tc.name != "fresh_install" {
-				write(filepath.Join(installDir, "mysq"), "previous installation", 0755)
+				write(filepath.Join(installDir, "mysq"), previous, 0755)
 			}
 			archive := fmt.Sprintf("mysq_%s_%s.tar.gz", tc.platform, tc.arch)
-			const binary = "#!/bin/sh\nprintf 'fixture mysq v1.2.3\\n'\n"
+			binary := "#!/bin/sh\nprintf 'mysq version 1.2.3\\n'\n"
+			if tc.name == "invalid_binary_version" {
+				binary = "#!/bin/sh\nprintf 'unexpected output\\n'\n"
+			}
 			checksum := releaseFixture(t, dir, archive, binary)
 			if tc.name == "corrupt" {
 				checksum = strings.Repeat("0", 64) + "  " + archive + "\n"
@@ -100,7 +109,7 @@ cp "$TEST_FIXTURE/${url##*/}" "$output"
 				t.Fatal(readErr)
 			}
 			if tc.failure != "" {
-				if err == nil || !strings.Contains(string(output), tc.failure) || string(installed) != "previous installation" {
+				if err == nil || !strings.Contains(string(output), tc.failure) || string(installed) != previous {
 					t.Fatalf("unsafe failure: %v\n%s", err, output)
 				}
 				assertProfileUnchanged(t, home, originalProfile)
@@ -109,15 +118,18 @@ cp "$TEST_FIXTURE/${url##*/}" "$output"
 			if err != nil || string(installed) != binary {
 				t.Fatalf("installation failed: %v\n%s", err, output)
 			}
-			action := "Updated"
+			wantResult := "Updated mysq v1.2.2 → v1.2.3 (" + installDir + "/mysq)"
 			if tc.name == "fresh_install" {
-				action = "Installed"
+				wantResult = "Installed mysq v1.2.3 (" + installDir + "/mysq)"
 			}
-			if !strings.Contains(string(output), action+" "+installDir+"/mysq") {
-				t.Fatalf("missing install/upgrade result: %s", output)
+			if tc.name == "unknown_previous_version" {
+				wantResult = "Updated mysq unknown → v1.2.3 (" + installDir + "/mysq)"
+			}
+			if !strings.Contains(string(output), wantResult) {
+				t.Fatalf("missing version transition: %s", output)
 			}
 			run, err := exec.Command(filepath.Join(installDir, "mysq")).CombinedOutput()
-			if err != nil || string(run) != "fixture mysq v1.2.3\n" {
+			if err != nil || string(run) != "mysq version 1.2.3\n" {
 				t.Fatalf("installed binary is not executable: %v %s", err, run)
 			}
 			requests, err := os.ReadFile(filepath.Join(dir, "requests"))
@@ -167,13 +179,21 @@ cp "$TEST_FIXTURE/${url##*/}" "$output"
 			// Advance the mocked latest release. A pinned tag must keep its payload.
 			upgraded := binary
 			if tc.version == "" {
-				upgraded = strings.ReplaceAll(binary, "v1.2.3", "v1.2.4")
+				upgraded = strings.ReplaceAll(binary, "1.2.3", "1.2.4")
 				write(filepath.Join(dir, "checksums.txt"), releaseFixture(t, dir, archive, upgraded), 0600)
 			}
 			reinstall := exec.Command("sh", "../../install.sh")
 			reinstall.Env = cmd.Env
-			if output, err := reinstall.CombinedOutput(); err != nil {
+			output, err = reinstall.CombinedOutput()
+			if err != nil {
 				t.Fatalf("reinstall failed: %v %s", err, output)
+			}
+			wantTransition := "Updated mysq v1.2.3 → v1.2.4"
+			if tc.version != "" {
+				wantTransition = "Updated mysq v1.2.3 → v1.2.3"
+			}
+			if !strings.Contains(string(output), wantTransition) {
+				t.Fatalf("wrong upgrade versions: %s", output)
 			}
 			installed, err = os.ReadFile(filepath.Join(installDir, "mysq"))
 			if err != nil || string(installed) != upgraded {
