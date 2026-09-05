@@ -28,6 +28,7 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Changed
 
+- The release installer configures PATH for sh, Bash, Zsh, and Fish, respects custom shell config directories, avoids duplicate entries, and offers `MYSQ_NO_MODIFY_PATH=1` to leave shell configuration unchanged.
 - Rewrite the README around installation, credential setup, first connection, dashboard controls, reports, and troubleshooting.
 - Bind query cancellation to the original pinned control session, refusing stale selections after connection loss or MySQL restart even when execution IDs are reused.
 - Apply semantic colors to the main Connections, Queries, Engine, and Tables grids, including SQL syntax and explicit lock/primary-key/visibility signals. Fix literal ANSI fragments and flickering in the typed query-cancellation confirmation.

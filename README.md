@@ -12,11 +12,11 @@ On macOS or Linux, install the latest release:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-mysq --help
 ```
 
-The installer detects **amd64** (Intel/AMD) or **arm64** (including Apple Silicon), downloads the matching GoReleaser archive, verifies its SHA-256 checksum, and installs into `~/.local/bin`. No Go installation or sudo is needed. Add the `export PATH` line to `~/.zshrc` or `~/.bashrc` to keep `mysq` available in new terminals. Run the installer again to update.
+The installer detects **amd64** (Intel/AMD) or **arm64** (including Apple Silicon), downloads the matching GoReleaser archive, verifies its SHA-256 checksum, and installs into `~/.local/bin`. No Go installation or sudo is needed. It adds the directory to PATH for **sh, Bash, Zsh, and Fish**, preserving existing configuration and avoiding duplicate entries on repeat installs.
+
+Open a new terminal and run `mysq --help`, or copy the shell-specific command printed by the installer to use mysq immediately. A piped installer cannot change PATH in the terminal that launched it. Run the installer again to update.
 
 To choose a directory or a specific published tag:
 
@@ -26,6 +26,14 @@ curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | 
 ```
 
 Use an existing tag from [Releases](https://github.com/maheshrijal/mysq/releases). The installer needs a published release; until the first release is available, use the Go installation below.
+
+To manage PATH yourself (for example, in CI or a dotfiles manager):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | env MYSQ_NO_MODIFY_PATH=1 sh
+```
+
+Shell setup uses `~/.profile`, `~/.bashrc`, the existing Bash login profile if present, `${ZDOTDIR:-$HOME}/.zshrc`, and `${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/mysq.fish`. Fish requires `fish_add_path` (Fish 3.2+). Other shells need their own PATH configuration.
 
 <details>
 <summary>Install with Go</summary>
@@ -257,7 +265,7 @@ That grant permits reading application rows, although mysq does not query them. 
 
 | Problem | What to check |
 |---|---|
-| `mysq: command not found` | Add the installation directory to `PATH`, then open a new terminal. |
+| `mysq: command not found` | Open a new terminal or run the PATH command printed by the installer. Check for any reported shell-configuration write failures. |
 | Access denied | Check the exported username/password and whether the MySQL account permits connections from your host. |
 | Timeout or connection refused | Check the endpoint, port, VPN/tunnel, and firewall. For Docker's published port, try `127.0.0.1`. |
 | Connecting to the wrong server | An argument overrides saved connection variables. Check `MYSQ_DATABASE_URL` and the legacy/fallback variables listed above. |
