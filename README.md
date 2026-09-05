@@ -192,6 +192,11 @@ MySQL 8.0 and 8.4 are supported. Percona Server is recognized; MariaDB is not ye
 
 For local development, run `make build`, `make check`, and `make e2e`. See [architecture](docs/architecture.md), [performance testing](docs/performance.md), and [security](SECURITY.md) for implementation details.
 
+## Inspired by
+
+- [MySQL Awesome Stats Collector](https://github.com/k4kratik/mysql-awesome-stats-collector)
+- [pgbot](https://github.com/pgrundev/pgbot)
+
 ## License
 
 [Apache-2.0](LICENSE).
