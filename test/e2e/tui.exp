@@ -13,12 +13,14 @@ spawn -noecho $binary tui --interval 250ms
 set spawn_tty [exp_open -leaveopen -i $spawn_id]
 exec stty rows 38 columns 130 <@ $spawn_tty
 close $spawn_tty
-expect {
-  -re {CONNECT TO MYSQL} {}
-  timeout { exit 8 }
-  eof { exit 9 }
+if {[llength $argv] <= 3} {
+  expect {
+    -re {CONNECT TO MYSQL} {}
+    timeout { exit 8 }
+    eof { exit 9 }
+  }
+  send -- "$endpoint\r"
 }
-send -- "$endpoint\r"
 expect {
   # The scored health header is the stable loaded-state contract. Footer
   # status text is intentionally responsive and may be compacted.
@@ -27,6 +29,42 @@ expect {
   eof { exit 11 }
 }
 set timeout $interaction_timeout
+# Optional action pass targets only the session created by run.sh. The ordinary
+# navigation pass below uses the monitoring account and never terminates work.
+if {[llength $argv] > 3} {
+  set connection_id [lindex $argv 3]
+  proc require_connection_frame {pattern} {
+    expect {
+      -re $pattern {}
+      timeout { exit 20 }
+      eof { exit 21 }
+    }
+  }
+  send "2"
+  require_connection_frame {● 2 CONNECTIONS}
+  send "/"
+  require_connection_frame {enter apply.*esc cancel}
+  send "$connection_id\r"
+  require_connection_frame {Filter .*1/[0-9]+}
+  send "\r"
+  require_connection_frame "Connection $connection_id · thread"
+  send "K"
+  require_connection_frame "Kill connection $connection_id\\?"
+  require_connection_frame {Type kill:}
+  send "yes\r"
+  require_connection_frame {Type exactly kill}
+  send "\033"
+  require_connection_frame "Connection $connection_id · thread"
+  send "K"
+  require_connection_frame {Type kill:}
+  send "kill\r"
+  require_connection_frame "KILL CONNECTION $connection_id accepted"
+  send "\r"
+  send "q"
+  expect eof
+  catch wait result
+  exit [lindex $result 3]
+}
 # Trends sample independently from the full diagnostic snapshot. At this
 # viewport size they are sparklines below the summary, reachable by End.
 send "G"

@@ -21,17 +21,19 @@ type QueryController interface {
 }
 
 type liveQueries struct {
-	request  uint64
-	identity string
-	items    []control.Execution
-	index    int
-	at       time.Time
-	loading  bool
-	err      error
-	stage    string // choose, confirm, sending, result; empty outside the modal
-	target   control.Execution
-	input    textinput.Model
-	result   string
+	connection       bool
+	connectionTarget control.Connection
+	request          uint64
+	identity         string
+	items            []control.Execution
+	index            int
+	at               time.Time
+	loading          bool
+	err              error
+	stage            string // lookup (connection), choose (query), confirm, sending, result; empty outside the modal
+	target           control.Execution
+	input            textinput.Model
+	result           string
 }
 
 type sessionsMessage struct {
@@ -55,6 +57,7 @@ func (m *Model) loadSessions(choose bool) tea.Cmd {
 	}
 	query := queries[m.queryIndex]
 	m.live.request++
+	m.live.connection = false
 	m.live.identity = m.selectedQueryIdentity()
 	m.live.items, m.live.err = nil, nil
 	m.live.index, m.live.loading = 0, true
@@ -109,17 +112,7 @@ func (m Model) handleQueryAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.live.target = m.live.items[m.live.index] // freeze this execution
-			m.live.stage = "confirm"
-			m.live.input = textinput.New()
-			m.live.input.Prompt = "Type kill: "
-			m.live.input.Width = 6
-			m.live.input.CharLimit = 32
-			m.live.input.PromptStyle = lipgloss.NewStyle().Foreground(red).Bold(true)
-			m.live.input.TextStyle = lipgloss.NewStyle().Foreground(text).Bold(true)
-			m.live.input.Cursor.Style = lipgloss.NewStyle().Foreground(red)
-			cmd := m.live.input.Focus()
-			m.rebuild()
-			return m, cmd
+			return m, m.beginKillConfirmation()
 		}
 	case "confirm":
 		if msg.String() == "enter" {
@@ -130,6 +123,11 @@ func (m Model) handleQueryAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.live.stage, m.live.result = "sending", ""
 			m.live.input.Blur()
+			if m.live.connection {
+				target, controller, ctx := m.live.connectionTarget, m.queryControl.(ConnectionController), m.ctx
+				m.rebuild()
+				return m, func() tea.Msg { return killMessage{err: controller.KillConnection(ctx, target, "kill")} }
+			}
 			target, controller, ctx := m.live.target, m.queryControl, m.ctx
 			m.rebuild()
 			return m, func() tea.Msg { return killMessage{err: controller.Kill(ctx, target, "kill")} }
@@ -153,6 +151,8 @@ func (m Model) receiveKill(msg killMessage) (tea.Model, tea.Cmd) {
 	m.live.err = msg.err
 	if msg.err != nil {
 		m.live.result = "Cancellation not confirmed: " + sanitize.Text(msg.err.Error())
+	} else if m.live.connection {
+		m.live.result = fmt.Sprintf("KILL CONNECTION %d accepted. MySQL closes the session and rolls back its open transaction; cleanup may take time.", m.live.connectionTarget.ID)
 	} else {
 		m.live.result = fmt.Sprintf("KILL QUERY %d accepted. MySQL interrupts asynchronously; the connection stays open and transaction locks may remain.", m.live.target.ID)
 	}
@@ -268,6 +268,9 @@ func (m Model) liveExecutionView() string {
 }
 
 func (m Model) queryActionView() string {
+	if m.live.connection {
+		return m.connectionActionView()
+	}
 	width := max(42, min(104, m.viewport.Width-2))
 	wrap := lipgloss.NewStyle().Width(width).Render
 	small := m.viewport.Height < 17
@@ -338,4 +341,18 @@ func fallbackStep(small bool, step string) string {
 		return step + "/2"
 	}
 	return "STEP " + step + " / 2"
+}
+
+func (m *Model) beginKillConfirmation() tea.Cmd {
+	m.live.stage = "confirm"
+	m.live.input = textinput.New()
+	m.live.input.Prompt = "Type kill: "
+	m.live.input.Width = 6
+	m.live.input.CharLimit = 32
+	m.live.input.PromptStyle = lipgloss.NewStyle().Foreground(red).Bold(true)
+	m.live.input.TextStyle = lipgloss.NewStyle().Foreground(text).Bold(true)
+	m.live.input.Cursor.Style = lipgloss.NewStyle().Foreground(red)
+	cmd := m.live.input.Focus()
+	m.rebuild()
+	return cmd
 }

@@ -54,6 +54,10 @@ type Model struct {
 	height                      int
 	tab                         int
 	viewOffsets                 [totalViews]int
+	connectionIndex             int
+	connectionDetail            bool
+	connectionDetailOffset      int
+	filterConnectionBefore      model.Process
 	queryIndex                  int
 	queryDetail                 bool
 	queryDetailOffset           int
@@ -147,6 +151,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onTrendTick(time.Time(msg))
 	case trendMessage:
 		return m.onTrendSample(msg)
+	case connectionMessage:
+		return m.receiveConnection(msg)
 	case sessionsMessage:
 		return m.receiveSessions(msg)
 	case killMessage:
@@ -169,10 +175,17 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Refresh failed: "+compact(msg.err.Error(), max(20, m.width-20)), true)
 			m.rebuild()
 		} else {
+			selectedConnection, _ := m.selectedConnection()
+			selectedServer := m.snapshot
 			selectedQuery := m.selectedQueryIdentity()
 			selectedFinding := m.selectedFindingID()
 			wasQueryDetail := m.queryDetail
 			m.snapshot = msg.context
+			m.restoreConnectionSelection(selectedConnection)
+			if selectedServer != nil && selectedServer.Server.UUID != msg.context.Server.UUID {
+				m.connectionDetail = false
+				m.connectionIndex = 0
+			}
 			m.restoreFindingSelection(selectedFinding)
 			if m.findingDetailID != "" && m.findingByID(m.findingDetailID) == nil {
 				m.findingDetailID = ""
@@ -275,6 +288,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.KillQuery):
+		if tabs[m.tab] == "Connections" && !m.inInvestigation() && !m.loading && !m.exporting && m.exportPath == "" {
+			return m, m.loadConnection()
+		}
 		if tabs[m.tab] == "Queries" && !m.inInvestigation() && !m.loading && !m.exporting && m.exportPath == "" {
 			return m, m.loadSessions(true)
 		}
@@ -292,6 +308,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.blockerDetail = false
 			m.rebuild()
 			m.ensureFindingSelectionVisible()
+		case m.connectionDetail:
+			m.connectionDetail = false
+			m.rebuild()
 		case m.queryDetail:
 			m.saveCurrentOffset()
 			m.queryDetail = false
@@ -309,7 +328,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Filter):
-		if !m.loading && !m.exporting && m.exportPath == "" && m.filterable() && !m.queryDetail && !m.inInvestigation() && m.snapshot != nil {
+		if !m.loading && !m.exporting && m.exportPath == "" && m.filterable() && !m.queryDetail && !m.connectionDetail && !m.inInvestigation() && m.snapshot != nil {
 			return m, m.startFilter()
 		}
 		return m, nil
@@ -323,6 +342,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(msg.Runes) == 1 {
 			m.saveCurrentOffset()
 			m.queryDetail = false
+			m.connectionDetail = false
 			m.findingDetailID = ""
 			m.blockerDetail = false
 			m.tab = int(msg.Runes[0] - '1')
@@ -348,15 +368,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.inInvestigation() {
 			return m, nil
 		}
-		if tabs[m.tab] == "Overview" || tabs[m.tab] == "Findings" || tabs[m.tab] == "Connections" {
+		if tabs[m.tab] == "Connections" {
+			if _, ok := m.selectedConnection(); ok && !m.connectionDetail {
+				m.saveCurrentOffset()
+				m.connectionDetail, m.connectionDetailOffset = true, 0
+				m.rebuild()
+			}
+			return m, nil
+		}
+		if tabs[m.tab] == "Overview" || tabs[m.tab] == "Findings" {
 			if m.snapshot == nil {
 				return m, nil
 			}
 			m.saveCurrentOffset()
 			m.investigationOffset = 0
-			if tabs[m.tab] == "Connections" {
-				m.blockerDetail = true
-			} else if tabs[m.tab] == "Overview" && len(m.snapshot.Findings) > 0 {
+			if tabs[m.tab] == "Overview" && len(m.snapshot.Findings) > 0 {
 				m.findingDetailID = m.snapshot.Findings[0].ID
 			} else {
 				m.findingDetailID = m.selectedFindingID()
@@ -372,6 +398,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.rebuild()
 			return m, m.loadSessions(false)
 		}
+		return m, nil
+	case m.scrollConnections(msg):
 		return m, nil
 	case m.scrollFindingList(msg):
 		return m, nil
@@ -404,6 +432,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) switchView(next int) {
 	m.saveCurrentOffset()
 	m.queryDetail = false
+	m.connectionDetail = false
 	m.findingDetailID = ""
 	m.blockerDetail = false
 	m.tab = next
@@ -503,6 +532,10 @@ func (m *Model) saveCurrentOffset() {
 		m.investigationOffset = m.viewport.YOffset
 		return
 	}
+	if m.connectionDetail {
+		m.connectionDetailOffset = m.viewport.YOffset
+		return
+	}
 	if m.queryDetail {
 		m.queryDetailOffset = m.viewport.YOffset
 		return
@@ -511,6 +544,9 @@ func (m *Model) saveCurrentOffset() {
 }
 
 func (m Model) currentOffset() int {
+	if m.connectionDetail && !m.inInvestigation() {
+		return m.connectionDetailOffset
+	}
 	if m.inInvestigation() {
 		return m.investigationOffset
 	}
@@ -538,6 +574,7 @@ func (m *Model) startFilter() tea.Cmd {
 	m.saveCurrentOffset()
 	m.filterBefore = m.activeFilter()
 	m.filterOffsetBefore = m.currentOffset()
+	m.filterConnectionBefore, _ = m.selectedConnection()
 	m.filterQueryBefore = m.queryIndex
 	m.filterQueryIdentityBefore = m.selectedQueryIdentity()
 	m.filterFindingIdentityBefore = m.selectedFindingID()
@@ -560,6 +597,7 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "esc":
 		m.filters[m.tab] = m.filterBefore
+		m.restoreConnectionSelection(m.filterConnectionBefore)
 		m.restoreFindingSelection(m.filterFindingIdentityBefore)
 		m.viewOffsets[m.tab] = m.filterOffsetBefore
 		if !m.restoreQuerySelection(m.filterQueryIdentityBefore) {
@@ -645,6 +683,9 @@ func (m *Model) applyFilterInputChange(before string) {
 	}
 	m.filters[m.tab] = m.filterInput.Value()
 	m.findingIndex = 0
+	if tabs[m.tab] == "Connections" {
+		m.connectionIndex = 0
+	}
 	m.viewOffsets[m.tab] = 0
 	if tabs[m.tab] == "Queries" {
 		m.queryIndex = 0
@@ -655,6 +696,9 @@ func (m *Model) applyFilterInputChange(before string) {
 func (m *Model) clearFilter() {
 	m.filters[m.tab] = ""
 	m.findingIndex = 0
+	if tabs[m.tab] == "Connections" {
+		m.connectionIndex = 0
+	}
 	m.filterInput.Reset()
 	m.viewOffsets[m.tab] = 0
 	if tabs[m.tab] == "Queries" {
@@ -705,12 +749,7 @@ func (m Model) filteredContext() *model.Context {
 			}
 		}
 	case "Connections":
-		filtered.Processes = make([]model.Process, 0, len(m.snapshot.Processes))
-		for _, process := range m.snapshot.Processes {
-			if containsFold(filter, fmt.Sprint(process.ID), process.User, process.Host, process.Database, process.Command, process.State, process.Digest, process.WaitEvent, process.Statement) {
-				filtered.Processes = append(filtered.Processes, process)
-			}
-		}
+		filtered.Processes = m.filteredConnections()
 		groups := renderableConnectionGroups(m.snapshot.ConnectionGroups)
 		filtered.ConnectionGroups = make([]model.ConnectionGroup, 0, len(groups))
 		for _, group := range groups {
@@ -807,19 +846,16 @@ func (m Model) helpBindings() contextualHelp {
 	if m.inInvestigation() {
 		context = []key.Binding{m.keys.Back, m.keys.Up, m.keys.Down}
 		short = context
-	} else if (tabs[m.tab] == "Queries" && !m.queryDetail) || tabs[m.tab] == "Findings" {
+	} else if (tabs[m.tab] == "Queries" && !m.queryDetail) || (tabs[m.tab] == "Connections" && !m.connectionDetail) || tabs[m.tab] == "Findings" {
 		context = []key.Binding{m.keys.Up, m.keys.Down, m.keys.Open, m.keys.Filter}
 		short = []key.Binding{m.keys.Up, m.keys.Down, m.keys.Open, m.keys.Filter}
-	} else if m.queryDetail {
+	} else if m.queryDetail || m.connectionDetail {
 		context = []key.Binding{m.keys.Back, m.keys.Up, m.keys.Down, m.keys.PageUp, m.keys.PageDown}
 		short = []key.Binding{m.keys.Back, m.keys.Up, m.keys.Down, m.keys.PageUp, m.keys.PageDown}
-	} else if tabs[m.tab] == "Overview" || tabs[m.tab] == "Connections" {
+	} else if tabs[m.tab] == "Overview" {
 		context = append([]key.Binding{m.keys.Open, m.keys.Blockers}, context...)
 		if tabs[m.tab] == "Overview" && m.trends.sample != nil {
 			context = append(context, m.keys.PauseTrends)
-		}
-		if tabs[m.tab] == "Connections" {
-			context = append(context, m.keys.Filter)
 		}
 		short = context
 	} else if m.filterable() {
@@ -828,6 +864,13 @@ func (m Model) helpBindings() contextualHelp {
 	}
 	if m.activeFilter() != "" && !m.queryDetail {
 		context = append(context, m.keys.Back)
+	}
+	if tabs[m.tab] == "Connections" && !m.inInvestigation() {
+		if _, ok := m.queryControl.(ConnectionController); ok {
+			kill := key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "kill connection…"))
+			context = append(context, kill)
+			short = append([]key.Binding{kill}, short...)
+		}
 	}
 	if tabs[m.tab] == "Queries" && !m.inInvestigation() {
 		context = append(context, m.keys.KillQuery)
@@ -1106,6 +1149,7 @@ func (m *Model) rebuild() {
 		}
 	}
 	var content string
+	var connectionLines []int
 	switch tabs[m.tab] {
 	case "Overview":
 		content = overview(visible, m.viewport.Width, m.err != nil)
@@ -1127,13 +1171,21 @@ func (m *Model) rebuild() {
 	case "Tables":
 		content = tablesView(visible, m.viewport.Width)
 	case "Connections":
-		content = connections(visible, m.viewport.Width)
+		m.connectionIndex = min(max(0, m.connectionIndex), max(0, len(visible.Processes)-1))
+		if m.connectionDetail {
+			content = m.connectionDetailView()
+		} else {
+			content, connectionLines = connectionReport(visible, m.viewport.Width, m.connectionIndex)
+		}
 	case "Config":
 		content = config(visible, m.viewport.Width)
 	}
 	m.viewport.SetContent(content)
 	m.viewport.SetYOffset(m.currentOffset())
 	m.ensureFindingSelectionVisible()
+	if len(connectionLines) > 0 {
+		m.ensureConnectionSelectionVisible(connectionLines)
+	}
 }
 
 func (m *Model) ensureQuerySelectionVisible() {
@@ -1769,6 +1821,12 @@ func tablesView(ctx *model.Context, width int) string {
 }
 
 func connections(ctx *model.Context, width int) string {
+	content, _ := connectionReport(ctx, width, -1)
+	return content
+}
+
+func connectionReport(ctx *model.Context, width, selected int) (string, []int) {
+	var processLines []int
 	var out strings.Builder
 	compactLayout := width < 82
 	groups := renderableConnectionGroups(ctx.ConnectionGroups)
@@ -1795,24 +1853,27 @@ func connections(ctx *model.Context, width int) string {
 		processWidths := []int{7, max(16, width-32), 9, 7, 9}
 		processHeadings := []string{"ID", "STATEMENT", "USER", "TIME", "WAIT"}
 		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
-		for _, process := range ctx.Processes {
-			out.WriteString(semanticRow([]string{compactMiddle(fmt.Sprint(process.ID), processWidths[0]-1), compactMiddle(process.Statement, processWidths[1]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processHeadings, processWidths, false) + "\n")
+		for index, process := range ctx.Processes {
+			processLines = append(processLines, strings.Count(out.String(), "\n"))
+			out.WriteString(semanticRow([]string{compactMiddle(fmt.Sprint(process.ID), processWidths[0]-1), compactMiddle(process.Statement, processWidths[1]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processHeadings, processWidths, index == selected) + "\n")
 			out.WriteString(processContinuation(process, processWidths[0], processWidths[1], width))
 		}
 	} else if width < 103 {
 		processWidths := []int{8, 12, 8, 18, max(22, width-46)}
 		processHeadings := []string{"ID", "USER", "TIME", "WAIT", "STATEMENT"}
 		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
-		for _, process := range ctx.Processes {
-			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, false) + "\n")
+		for index, process := range ctx.Processes {
+			processLines = append(processLines, strings.Count(out.String(), "\n"))
+			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, index == selected) + "\n")
 			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
 		}
 	} else {
 		processWidths := []int{8, 13, 18, 8, 28, max(28, width-75)}
 		processHeadings := []string{"ID", "USER", "HOST", "TIME", "WAIT", "STATEMENT"}
 		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
-		for _, process := range ctx.Processes {
-			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, false) + "\n")
+		for index, process := range ctx.Processes {
+			processLines = append(processLines, strings.Count(out.String(), "\n"))
+			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, index == selected) + "\n")
 			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
 		}
 	}
@@ -1867,7 +1928,7 @@ func connections(ctx *model.Context, width int) string {
 			out.WriteString(identityContinuation(object, identityWidth, width))
 		}
 	}
-	return out.String()
+	return out.String(), processLines
 }
 
 func renderableConnectionGroups(groups []model.ConnectionGroup) []model.ConnectionGroup {
