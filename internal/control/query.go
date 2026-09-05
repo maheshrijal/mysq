@@ -25,8 +25,8 @@ type Execution struct {
 	anchor       *sql.Conn
 }
 
-// Queries owns one pinned session for the lifetime of the TUI. A selection is
-// bound to that exact session; Kill must never reconnect after it is lost.
+// Queries owns one pinned control session for the lifetime of the TUI. Query
+// and connection selections are bound to it; neither kill operation reconnects.
 type Queries struct {
 	Target    collect.Target
 	mu        sync.Mutex

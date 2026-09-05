@@ -9,6 +9,7 @@ requested_port="${MYSQ_MYSQL_PORT:-0}"
 project="${MYSQ_E2E_PROJECT:-mysq-e2e-$$-$RANDOM}"
 compose=(docker compose --project-name "$project" -f "$repo_root/docker-compose.e2e.yml")
 load_pid=""
+connection_pid=""
 
 stop_load() {
   if [[ -n "$load_pid" ]]; then
@@ -21,6 +22,7 @@ stop_load() {
 cleanup() {
   stop_load
   MYSQ_MYSQL_PORT="$requested_port" "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  if [[ -n "$connection_pid" ]]; then wait "$connection_pid" || true; fi
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
@@ -103,7 +105,7 @@ MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --store "$histo
 stop_load
 
 MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" go test ./internal/collect -run 'TestFixture(SleepingMetadataOwner|TrendSampler|ActiveUsersBeyondSessionLimit)$' -count=1
-MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" MYSQ_E2E_CONTROL_DSN="mysq_operator:mysq-operator-test@tcp(127.0.0.1:${port})/app?parseTime=true" go test ./internal/control -run TestFixtureKillQuery -count=1
+MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" MYSQ_E2E_CONTROL_DSN="mysq_operator:mysq-operator-test@tcp(127.0.0.1:${port})/app?parseTime=true" go test ./internal/control -race -run 'TestFixtureKill(Query|Connection)$' -count=1
 
 # With no application client active, a full inspection must not count its own
 # digest-sampler SELECTs as workload inside the global-status window. Briefly
@@ -115,6 +117,37 @@ sleep 4
 MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --no-store --interval 250ms >"$work_dir/idle-context.json"
 go run ./test/e2e/verify --idle-context "$work_dir/idle-context.json"
 docker exec "$mysql_container" rm -f /tmp/mysq-health-paused
+
+# Drive the real typed-confirmation flow against one fixture-owned client.
+# --unbuffered exposes its ID before the long statement, and --skip-reconnect
+# proves that KILL CONNECTION closes that exact session.
+docker exec -e MYSQL_PWD=mysq-load-test "$mysql_container" mysql --user=loadgen --database=app --batch --skip-column-names --unbuffered --skip-reconnect --execute='SELECT CONNECTION_ID(); SELECT 1 WHERE SLEEP(90)=0' >"$work_dir/connection.log" 2>"$work_dir/connection.err" &
+connection_pid=$!
+connection_id=""
+for _ in {1..100}; do
+  connection_id="$(sed -n '1p' "$work_dir/connection.log")"
+  if [[ "$connection_id" =~ ^[0-9]+$ ]]; then break; fi
+  sleep 0.1
+done
+if [[ ! "$connection_id" =~ ^[0-9]+$ ]]; then
+  cat "$work_dir/connection.err" >&2
+  echo "fixture connection did not publish its ID" >&2
+  exit 1
+fi
+set +e
+MYSQ_DATABASE_URL="mysq_operator:mysq-operator-test@tcp(127.0.0.1:${port})/app?parseTime=true" expect "$repo_root/test/e2e/tui.exp" "$binary" "127.0.0.1:${port}/app" "$work_dir/connection-pty.log" "$connection_id" >"$work_dir/connection-harness.log" 2>&1
+connection_status=$?
+set -e
+if [[ "$connection_status" -ne 0 ]]; then
+  cat "$work_dir/connection-harness.log" "$work_dir/connection-pty.log" >&2
+  exit "$connection_status"
+fi
+if wait "$connection_pid"; then
+  echo "fixture connection unexpectedly completed instead of being terminated" >&2
+  exit 1
+fi
+connection_pid=""
+echo "verified TUI connection selection, details, rejected confirmation, Esc, and confirmed termination"
 
 "$binary" init --user observer >"$work_dir/init.sql"
 "$binary" --help >"$work_dir/help.txt"

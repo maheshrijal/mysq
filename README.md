@@ -95,11 +95,12 @@ mysq tui
 | Key | Action |
 |---|---|
 | `1`–`7`, Left/Right, Tab | Switch views |
-| Up/Down | Scroll or select a query/finding |
+| Up/Down | Scroll or select a connection/query/finding |
 | Enter | Investigate the selected item |
 | Esc | Go back or cancel |
 | `/` | Filter queries, connections, findings, or tables |
 | `B` | Investigate blocking chains |
+| `K` | Review query cancellation or connection termination |
 | `r` | Refresh the full diagnostic snapshot |
 | `p` | Pause/resume live graphs |
 | `G` / `g` | Scroll to the bottom/top |
@@ -117,6 +118,12 @@ Ghostty is the primary terminal target. Colors follow your terminal theme, and l
 In **Queries**, press `K`, select one current execution, and press Enter to review its user, host, and connection. Type exactly **`kill`**, then press Enter to confirm.
 
 This requires an account authorized to cancel that query. Cancelling keeps the connection open, and transaction locks may remain. If the control connection is lost, select the execution again. MySQL cannot atomically check a statement and cancel it, so a new statement can race the final dispatch. See [Security](SECURITY.md) for the full behavior.
+
+### Kill a connection
+
+In **Connections**, use Up/Down or `j`/`k` to select a session. Paging keys and `g`/`G` move the selection; Enter opens its details. Press `K` from the list or details, review the current user, host, database, and connection ID, then type exactly **`kill`** and press Enter. Esc cancels before dispatch. `B` still opens blocking chains. At the first/last session, continuing to scroll reaches the surrounding connection breakdown and lock evidence.
+
+This sends `KILL CONNECTION`, including for sleeping sessions. It closes the session, interrupts its work, and rolls back its open transaction; cleanup may take time. The connection is rechecked before confirmation and dispatch, and the snapshot refreshes after the result. Changes to the session's current statement do not change the selected connection. MySQL enforces the account's termination privileges; see [Security](SECURITY.md).
 
 ## Investigate from the command line
 
