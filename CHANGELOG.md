@@ -6,6 +6,7 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Added
 
+- Connect with `host[:port]/database` using exported `DBOPS_MYSQL_USER` and `DBOPS_MYSQL_PWD`. The TUI asks for an endpoint when none is configured; port defaults to 3306. Existing URLs/DSNs retain credential and endpoint precedence.
 - Live Overview trends for QPS, running threads, row-lock waits, and physical InnoDB read/write throughput, with a shared timeline, responsive line charts/sparklines, five-minute in-memory history, and `p` pause/resume. A separate two-second sampler preserves diagnostic snapshots and query selection; missing/reset samples appear as gaps.
 - Queries-only `K` cancellation with live session selection, exact typed `kill` confirmation, execution identity revalidation, and explicit accepted/failed outcomes. Query details show current executing users, hosts, connections, and statement timing independently of historical digest totals.
 - Findings-first 80×24 overview, selectable findings with evidence drill-down, and `B` blocking-chain investigations in the TUI.
@@ -26,6 +27,7 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Changed
 
+- Rewrite the README around installation, credential setup, first connection, dashboard controls, reports, and troubleshooting.
 - Bind query cancellation to the original pinned control session, refusing stale selections after connection loss or MySQL restart even when execution IDs are reused.
 - Apply semantic colors to the main Connections, Queries, Engine, and Tables grids, including SQL syntax and explicit lock/primary-key/visibility signals. Fix literal ANSI fragments and flickering in the typed query-cancellation confirmation.
 - Use Ghostty's native foreground/background and ANSI palette instead of cached light/dark RGB colors. Theme changes retain readable body text and selection. Give SQL identifiers and numeric evidence distinct colors, reduce bold labels, align query metrics, and remove repeated live-session metadata.

@@ -41,6 +41,8 @@ Up to five minutes of timestamped observations remain in bounded memory. Graphs 
 
 ## Database cost and safety
 
+Connection resolution accepts `host[:port]/database`, MySQL URLs, and native driver DSNs. An argument wins over `MYSQ_DATABASE_URL`, legacy `MYSQLDOT_DATABASE_URL`, and `DATABASE_URL`. When the selected connection omits a username, `DBOPS_MYSQL_USER` and `DBOPS_MYSQL_PWD` supply the credential pair; an explicit username keeps its own password, including an empty one. Credentials alone do not select an endpoint. `mysq tui` opens a local endpoint prompt if no argument or connection variable exists; validation precedes database access and nothing from the prompt is persisted. Other database commands return setup guidance instead of prompting.
+
 An inspection uses one connection and samples `SHOW GLOBAL STATUS`, statement digest and global counters, wait summaries, file-I/O summaries, and error summaries around the configured interval. The emitted collections are bounded to 20 cumulative statement digests, 20 interval statement samples, 30 waits, 30 file instruments, 30 errors, 30 memory consumers, 100 tables, 100 processes, 100 transactions, and 100 metadata locks. It never queries application rows. `MAX_EXECUTION_TIME` is 10 seconds and the session is pinned read-only. Active user, process, transaction, and lock data is explicitly point-in-time and can change while the report is being consumed.
 
 Some Performance Schema summary tables grow with schema size. Their queries do not scan application data, but operators should still validate run time on unusually large fleets before aggressive scheduling. mysq is an on-demand diagnostic, not a monitoring daemon.

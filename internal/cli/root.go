@@ -50,16 +50,18 @@ func newRoot(version string, out, errOut io.Writer) *cobra.Command {
 	app := &App{Version: version, Out: out, Err: errOut}
 	root := &cobra.Command{
 		Use:           "mysq",
-		Short:         "MySQL diagnostics for humans and agents",
+		Short:         "Find MySQL bottlenecks from your terminal",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
-		Long: `mysq is a findings-first MySQL diagnostic.
+		Long: `Find slow queries, blocked transactions, and MySQL performance problems.
 
-It samples MySQL's own status and Performance Schema, produces a polished terminal
-report, remembers local snapshots, and exports a redacted evidence bundle for
-agents. Diagnostics are read-only. The TUI Queries tab can send KILL QUERY for one
-live execution after explicit typed confirmation.`,
+Export DBOPS_MYSQL_USER and DBOPS_MYSQL_PWD, then connect with host[:port]/database.
+Port defaults to 3306. Run mysq tui without an endpoint for a connection prompt,
+or export MYSQ_DATABASE_URL to reuse an endpoint across commands.
+
+Diagnostics are read-only. Query cancellation in the TUI requires typing kill.
+Use inspect for a report, tui for the dashboard, or export to share the evidence.`,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 			noColor, _ := cmd.Flags().GetBool("no-color")
 			app.color = !noColor && os.Getenv("NO_COLOR") == "" && term.IsTerminal(os.Stdout.Fd())
@@ -78,7 +80,7 @@ live execution after explicit typed confirmation.`,
 func (a *App) tuiCommand() *cobra.Command {
 	var interval time.Duration
 	command := &cobra.Command{
-		Use:   "tui [mysql-dsn]",
+		Use:   "tui [connection]",
 		Short: "Open the live interactive terminal dashboard",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -86,9 +88,19 @@ func (a *App) tuiCommand() *cobra.Command {
 			if len(args) == 1 {
 				argument = args[0]
 			}
-			target, err := collect.ResolveConnection(argument)
-			if err != nil {
-				return err
+			var target collect.Target
+			var err error
+			if collect.ConnectionInput(argument) == "" {
+				var accepted bool
+				target, accepted, err = terminalui.PromptConnection(cmd.Context())
+				if err != nil || !accepted {
+					return err
+				}
+			} else {
+				target, err = collect.ResolveConnection(argument)
+				if err != nil {
+					return err
+				}
 			}
 			inspect := func(ctx context.Context) (*model.Context, error) {
 				collector := collect.New(a.Version)
@@ -142,7 +154,7 @@ type inspectFlags struct {
 func (a *App) inspectCommand() *cobra.Command {
 	flags := inspectFlags{}
 	command := &cobra.Command{
-		Use:   "inspect [mysql-dsn]",
+		Use:   "inspect [connection]",
 		Short: "Run the findings-first health inspection",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -199,7 +211,7 @@ func (a *App) exportCommand() *cobra.Command {
 	var interval time.Duration
 	var zipOutput bool
 	command := &cobra.Command{
-		Use:   "export [mysql-dsn]",
+		Use:   "export [connection]",
 		Short: "Collect and write a native agent evidence bundle",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -232,7 +244,7 @@ func (a *App) focusedCommand(section string) *cobra.Command {
 	var jsonOutput bool
 	var interval time.Duration
 	command := &cobra.Command{
-		Use:   section + " [mysql-dsn]",
+		Use:   section + " [connection]",
 		Short: focusedDescription(section),
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

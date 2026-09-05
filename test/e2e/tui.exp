@@ -4,15 +4,21 @@ set interaction_timeout 25
 set timeout 60
 log_user 0
 set binary [lindex $argv 0]
-set dsn [lindex $argv 1]
+set endpoint [lindex $argv 1]
 set pty_log [lindex $argv 2]
 log_file -a -noappend $pty_log
-spawn -noecho $binary tui $dsn --interval 250ms
+spawn -noecho $binary tui --interval 250ms
 # Give Bubble Tea a deterministic initial viewport even when this harness is
 # launched by a headless CI runner with no inherited terminal dimensions.
 set spawn_tty [exp_open -leaveopen -i $spawn_id]
 exec stty rows 38 columns 130 <@ $spawn_tty
 close $spawn_tty
+expect {
+  -re {CONNECT TO MYSQL} {}
+  timeout { exit 8 }
+  eof { exit 9 }
+}
+send -- "$endpoint\r"
 expect {
   # The scored health header is the stable loaded-state contract. Footer
   # status text is intentionally responsive and may be compacted.
