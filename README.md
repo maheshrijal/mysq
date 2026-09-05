@@ -109,6 +109,10 @@ mysq tui
 
 Overview graphs update every two seconds and retain up to five minutes: queries/sec, running threads, row-lock waits, and InnoDB read/write throughput. Large terminals show four charts; smaller layouts use sparklines below the summary. Use `G` to reach them. Graphs update independently; press `r` to refresh findings and tables.
 
+Connections shows one compact row per session, with a `›` marker on the selection. Enter opens full SQL and connection details. New mysq connections identify themselves as `program_name=mysq` and are excluded from the process list and active-query-user attribution when MySQL exposes connection attributes. Older untagged clients remain visible until restarted.
+
+Live SQL in the TUI retains literals and comments; terminal escape/control sequences are removed. Historical digests remain normalized because MySQL does not retain their original literals, and live SQL can be truncated by the server. History, CLI reports, and exports remain redacted.
+
 Active users are sampled independently of the Connections tab’s 100-session limit. A `—` means no user was observed for that query; historical query totals do not retain user attribution. Press Enter to check current executions. Ctrl+C closes mysq’s database connections.
 
 Ghostty is the primary terminal target. Colors follow your terminal theme, and layouts adapt to the window size. Use at least 52 columns × 18 rows; 100 columns or more gives tables and graphs more room.

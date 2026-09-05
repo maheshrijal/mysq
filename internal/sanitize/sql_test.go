@@ -58,3 +58,11 @@ func TestTextOmitsPhysicalRecordDataAndTerminalControls(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestTerminalSQLPreservesLiteralsAndRemovesControls(t *testing.T) {
+	input := "SELECT 'hello', 42, /* keep comment */ 'world'\nFROM t\tWHERE id=7\x1b[31m\x07"
+	want := "SELECT 'hello', 42, /* keep comment */ 'world'\nFROM t\tWHERE id=7"
+	if got := TerminalSQL(input); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

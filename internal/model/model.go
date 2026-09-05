@@ -202,6 +202,8 @@ type Index struct {
 }
 
 type Process struct {
+	// LiveStatement is terminal-only evidence. History and exports omit literals.
+	LiveStatement          string  `json:"-"`
 	ID                     uint64  `json:"id"`
 	ThreadID               uint64  `json:"thread_id"`
 	User                   string  `json:"user"`
@@ -236,18 +238,20 @@ type LockWait struct {
 }
 
 type Transaction struct {
-	ID           string `json:"id"`
-	State        string `json:"state"`
-	StartedAt    string `json:"started_at,omitempty"`
-	AgeSeconds   uint64 `json:"age_seconds"`
-	ProcessID    uint64 `json:"process_id"`
-	User         string `json:"user,omitempty"`
-	Host         string `json:"host,omitempty"`
-	RowsLocked   uint64 `json:"rows_locked"`
-	RowsModified uint64 `json:"rows_modified"`
-	TablesInUse  uint64 `json:"tables_in_use"`
-	TablesLocked uint64 `json:"tables_locked"`
-	Statement    string `json:"statement,omitempty"`
+	// LiveStatement is terminal-only evidence. History and exports omit literals.
+	LiveStatement string `json:"-"`
+	ID            string `json:"id"`
+	State         string `json:"state"`
+	StartedAt     string `json:"started_at,omitempty"`
+	AgeSeconds    uint64 `json:"age_seconds"`
+	ProcessID     uint64 `json:"process_id"`
+	User          string `json:"user,omitempty"`
+	Host          string `json:"host,omitempty"`
+	RowsLocked    uint64 `json:"rows_locked"`
+	RowsModified  uint64 `json:"rows_modified"`
+	TablesInUse   uint64 `json:"tables_in_use"`
+	TablesLocked  uint64 `json:"tables_locked"`
+	Statement     string `json:"statement,omitempty"`
 }
 
 type MetadataLock struct {

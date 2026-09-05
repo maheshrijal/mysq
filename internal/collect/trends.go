@@ -25,7 +25,7 @@ type TrendPoint struct {
 // OpenTrendSampler keeps one idle connection and performs one read per sample.
 // sql.Open is lazy: unavailable telemetry must not prevent diagnostics opening.
 func OpenTrendSampler(target Target) (*sql.DB, error) {
-	db, err := sql.Open("mysql", target.DSN)
+	db, err := OpenDatabase(target)
 	if err != nil {
 		return nil, err
 	}

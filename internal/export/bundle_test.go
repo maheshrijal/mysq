@@ -3,8 +3,12 @@ package export
 import (
 	"archive/zip"
 	"encoding/json"
+	"github.com/maheshrijal/mysq/internal/history"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,5 +62,76 @@ func TestWriteRefusesToOverwrite(t *testing.T) {
 	_, err := Write(&model.Context{CollectedAt: time.Now()}, output, Options{})
 	if err == nil {
 		t.Fatal("expected overwrite error")
+	}
+}
+
+func TestTUILiteralsNeverEnterExportsOrHistory(t *testing.T) {
+	const literal = "tui-only-literal-83912"
+	ctx := &model.Context{SchemaVersion: model.SchemaVersion, ToolVersion: "test", CollectedAt: time.Now(), Fingerprint: "tui-live-sql",
+		Processes:    []model.Process{{ID: 1, Statement: "SELECT ?", LiveStatement: "SELECT '" + literal + "'"}},
+		Transactions: []model.Transaction{{ID: "trx", Statement: "UPDATE accounts SET balance=?", LiveStatement: "UPDATE accounts SET balance='" + literal + "'"}},
+	}
+	result, err := Write(ctx, filepath.Join(t.TempDir(), "bundle"), Options{Zip: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = filepath.WalkDir(result.Directory, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), literal) {
+			t.Errorf("literal in %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.OpenReader(result.Archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	for _, f := range archive.File {
+		r, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(r)
+		r.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), literal) {
+			t.Fatal("literal in ZIP", f.Name)
+		}
+	}
+	store, err := history.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save(ctx); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Latest(ctx.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Processes[0].LiveStatement != "" || saved.Transactions[0].LiveStatement != "" {
+		t.Fatal("history retained TUI SQL")
+	}
+	data, err := json.Marshal(saved)
+	if err != nil || strings.Contains(string(data), literal) {
+		t.Fatal("literal in history", err)
+	}
+	if ctx.Processes[0].LiveStatement == "" {
+		t.Fatal("export erased live display evidence")
 	}
 }

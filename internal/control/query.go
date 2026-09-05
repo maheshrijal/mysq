@@ -29,6 +29,7 @@ type Execution struct {
 // and connection selections are bound to it; neither kill operation reconnects.
 type Queries struct {
 	Target    collect.Target
+	LiveSQL   bool // Expose live literals to the TUI in ephemeral fields only.
 	mu        sync.Mutex
 	conn      *sql.Conn
 	closeConn func()
@@ -51,7 +52,7 @@ const executionSelect = `SELECT @@server_uuid, t.PROCESSLIST_ID, t.THREAD_ID, es
  COALESCE(t.PROCESSLIST_USER,''), COALESCE(t.PROCESSLIST_HOST,''),
  COALESCE(es.CURRENT_SCHEMA,''), t.PROCESSLIST_COMMAND, COALESCE(t.PROCESSLIST_TIME,0),
  COALESCE(t.PROCESSLIST_STATE,''), COALESCE(es.DIGEST,''), COALESCE(es.TIMER_WAIT,0)/1000000000,
- COALESCE(es.DIGEST_TEXT,t.PROCESSLIST_INFO,'')
+ COALESCE(es.SQL_TEXT,t.PROCESSLIST_INFO,es.DIGEST_TEXT,'')
  FROM performance_schema.threads t
  JOIN performance_schema.events_statements_current es ON es.THREAD_ID=t.THREAD_ID
  JOIN performance_schema.setup_instruments i ON i.NAME=es.EVENT_NAME AND i.ENABLED='YES'
@@ -108,6 +109,9 @@ func (q *Queries) Sessions(ctx context.Context, schema, digest string) ([]Execut
 	}
 	var result []Execution
 	for _, e := range candidates {
+		if q.LiveSQL {
+			e.LiveStatement = sanitize.TerminalSQL(e.rawStatement)
+		}
 		if err := resolveDigest(ctx, conn, &e); err != nil {
 			var mysqlErr *mysql.MySQLError
 			if errors.As(err, &mysqlErr) && mysqlErr.Number == 3677 {
@@ -221,7 +225,7 @@ func sameExecution(a, b Execution) bool {
 }
 
 func (q *Queries) connect(ctx context.Context) (*sql.Conn, func(), error) {
-	db, err := sql.Open("mysql", q.Target.DSN)
+	db, err := collect.OpenDatabase(q.Target)
 	if err != nil {
 		return nil, nil, err
 	}

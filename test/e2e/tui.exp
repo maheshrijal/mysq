@@ -48,6 +48,7 @@ if {[llength $argv] > 3} {
   require_connection_frame {Filter .*1/[0-9]+}
   send "\r"
   require_connection_frame "Connection $connection_id · thread"
+  require_connection_frame {\(90\)}
   send "K"
   require_connection_frame "Kill connection $connection_id\\?"
   require_connection_frame {Type kill:}

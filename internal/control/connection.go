@@ -29,10 +29,13 @@ const connectionSelect = `SELECT @@server_uuid, t.PROCESSLIST_ID, t.THREAD_ID,
  WHERE t.TYPE='FOREGROUND' AND t.PROCESSLIST_USER IS NOT NULL
  AND t.PROCESSLIST_ID <> CONNECTION_ID() AND t.PROCESSLIST_ID=?`
 
-func readConnection(ctx context.Context, conn *sql.Conn, id uint64) (Connection, error) {
+func readConnection(ctx context.Context, conn *sql.Conn, id uint64, liveSQL bool) (Connection, error) {
 	var c Connection
 	err := conn.QueryRowContext(ctx, connectionSelect, id).Scan(&c.ServerUUID, &c.ID, &c.ThreadID,
 		&c.User, &c.Host, &c.Database, &c.Command, &c.Seconds, &c.State, &c.Statement)
+	if liveSQL {
+		c.LiveStatement = sanitize.TerminalSQL(c.Statement)
+	}
 	c.Statement = sanitize.SQL(c.Statement)
 	return c, err
 }
@@ -64,7 +67,7 @@ func (q *Queries) Connection(ctx context.Context, serverUUID string, process mod
 			return Connection{}, err
 		}
 	}
-	current, err := readConnection(ctx, q.conn, selected.ID)
+	current, err := readConnection(ctx, q.conn, selected.ID, q.LiveSQL)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Connection{}, errors.New("connection ended or is no longer visible; refresh the snapshot")
 	}
@@ -95,7 +98,7 @@ func (q *Queries) KillConnection(ctx context.Context, target Connection, confirm
 	if q.conn == nil || target.anchor == nil || target.anchor != q.conn {
 		return errors.New("control connection changed; nothing was sent. Refresh and select it again")
 	}
-	current, err := readConnection(ctx, q.conn, target.ID)
+	current, err := readConnection(ctx, q.conn, target.ID, false)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("connection ended or is no longer visible; nothing was sent")
 	}
