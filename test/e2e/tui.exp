@@ -62,7 +62,7 @@ expect -re {QUERY 2 OF [0-9]+}
 expect -re {NORMALIZED SQL}
 # The stopped workload leaves historical digests, never cancellation targets.
 send "K"
-expect -re {SELECT ONE EXECUTION TO KILL}
+expect -re {Choose an execution}
 expect -re {No matching instrumented execution visible now}
 send "\r"
 send "\033"

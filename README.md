@@ -69,6 +69,7 @@ mysq export --zip
 - Enter in Queries also reads current executions for the selected schema and digest, showing users, hosts, connection/thread/event IDs, database, duration, and state. Historical user attribution in the query summary remains tied to the snapshot; live session details are checked separately and are not persisted.
 - Live matching examines up to 100 instrumented candidates. Prepared executions with no event digest use MySQL's parser to normalize their current SQL; unparseable or invisible executions are excluded. An empty result means no match was identified in that bounded read.
 - `K` is available only in Queries: select one live execution with Up/Down, press Enter, then type exactly `kill` and press Enter. Esc cancels before dispatch. Historical digests with no visible current execution cannot be killed. No bulk cancellation or kill action is exposed in other tabs or CLI commands.
+- Query investigation uses aligned session columns, a highlighted selection, SQL syntax colors, and a distinct destructive confirmation input. Labels, elapsed time, execution state, and action outcomes have separate visual emphasis in light and dark terminals.
 - `e` writes the complete native agent bundle directly from the terminal and keeps its destination visible until dismissed with `Esc`.
 - Cards, gauges, tables, findings, and key hints reflow at terminal breakpoints; very small terminals get an explicit resize state instead of a broken layout.
 

@@ -1452,7 +1452,7 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 	out.WriteString(panelBox(fmt.Sprintf("QUERY %d OF %d · SNAPSHOT", selected+1, len(ctx.Queries)),
 		lipgloss.NewStyle().Width(max(20, width-4)).Render(important), width))
 	out.WriteString("\n" + sectionTitle("NORMALIZED SQL") + "\n")
-	out.WriteString(lipgloss.NewStyle().Foreground(text).Bold(true).Width(max(20, width-2)).Render(query.Statement) + "\n")
+	out.WriteString(lipgloss.NewStyle().Width(max(20, width-2)).Render(highlightedSQL(query.Statement)) + "\n")
 
 	evidence := []string{
 		labelValue("AVG / P99 / MAX", duration(query.MeanLatencyMillis)+" / "+duration(query.P99LatencyMillis)+" / "+duration(query.MaxLatencyMillis)),

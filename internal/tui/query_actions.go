@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -111,8 +112,11 @@ func (m Model) handleQueryAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.live.stage = "confirm"
 			m.live.input = textinput.New()
 			m.live.input.Prompt = "Type kill: "
-			m.live.input.Width = 12
+			m.live.input.Width = 6
 			m.live.input.CharLimit = 32
+			m.live.input.PromptStyle = lipgloss.NewStyle().Foreground(red).Bold(true)
+			m.live.input.TextStyle = lipgloss.NewStyle().Foreground(text).Bold(true)
+			m.live.input.Cursor.Style = lipgloss.NewStyle().Foreground(red)
 			cmd := m.live.input.Focus()
 			m.rebuild()
 			return m, cmd
@@ -146,6 +150,7 @@ func (m Model) receiveKill(msg killMessage) (tea.Model, tea.Cmd) {
 	}
 	m.live.stage = "result"
 	m.live.items = nil
+	m.live.err = msg.err
 	if msg.err != nil {
 		m.live.result = "Cancellation not confirmed: " + sanitize.Text(msg.err.Error())
 	} else {
@@ -159,69 +164,174 @@ func (m Model) receiveKill(msg killMessage) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func executionSummary(e control.Execution) string {
-	return fmt.Sprintf("Connection %d · user %s · host %s\nDatabase %s · %s · %ds · state %s\nThread %d · event %d · statement %s",
-		e.ID, sanitize.Text(e.User), sanitize.Text(e.Host), fallback(sanitize.Text(e.Database), "(none)"),
-		e.Command, e.Seconds, fallback(sanitize.Text(e.State), "(none)"), e.ThreadID, e.EventID, duration(e.StatementLatencyMillis))
+// Keep SQL structure distinct from identifiers and redacted values. This only
+// styles already-normalized/redacted SQL; it never changes what is displayed.
+var sqlTokens = regexp.MustCompile("`[^`]*`|[A-Za-z_]+|[?]")
+
+func highlightedSQL(statement string) string {
+	return sqlTokens.ReplaceAllStringFunc(statement, func(token string) string {
+		if token == "?" {
+			return lipgloss.NewStyle().Foreground(muted).Render(token)
+		}
+		switch strings.ToUpper(token) {
+		case "SELECT", "FROM", "WHERE", "UPDATE", "SET", "INSERT", "INTO", "VALUES", "DELETE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ORDER", "BY", "GROUP", "HAVING", "LIMIT", "OFFSET", "DISTINCT", "WITH", "UNION", "ALL", "CASE", "WHEN", "THEN", "ELSE", "END", "ASC", "DESC", "FOR", "LOCK", "SHARE":
+			return lipgloss.NewStyle().Foreground(cyan).Bold(true).Render(token)
+		}
+		return lipgloss.NewStyle().Foreground(text).Render(token)
+	})
+}
+
+func quiet(value string) string { return lipgloss.NewStyle().Foreground(muted).Render(value) }
+
+func executionState(e control.Execution) string {
+	color := green
+	if strings.Contains(strings.ToLower(e.State), "wait") || strings.Contains(strings.ToLower(e.State), "lock") {
+		color = yellow
+	}
+	return lipgloss.NewStyle().Foreground(color).Render(fallback(sanitize.Text(e.State), e.Command))
+}
+
+func executionTable(items []control.Execution, selected, width int) string {
+	// Keep the selected row in a compact window; the caller bounds its height.
+	wide := width >= 76
+	widths := []int{3, 12, 12, 8, width - 35}
+	headings := []string{"", "CONNECTION", "USER", "ELAPSED", "STATE"}
+	if wide {
+		widths = []int{3, 12, 16, width - 61, 10, 20}
+		headings = []string{"", "CONNECTION", "USER", "HOST", "ELAPSED", "STATE"}
+	}
+	var out strings.Builder
+	for i, heading := range headings {
+		out.WriteString(lipgloss.NewStyle().Foreground(muted).Width(widths[i]).Render(heading))
+	}
+	out.WriteByte('\n')
+	for index, e := range items {
+		elapsedColor := text
+		if e.Seconds >= 10 {
+			elapsedColor = yellow
+		}
+		if e.Seconds >= 60 {
+			elapsedColor = red
+		}
+		values := []string{"", fmt.Sprint(e.ID), sanitize.Text(e.User), fmt.Sprintf("%ds", e.Seconds), fallback(sanitize.Text(e.State), e.Command)}
+		colors := []lipgloss.TerminalColor{cyan, cyan, text, elapsedColor, green}
+		if wide {
+			values = []string{"", fmt.Sprint(e.ID), sanitize.Text(e.User), sanitize.Text(e.Host), fmt.Sprintf("%ds", e.Seconds), fallback(sanitize.Text(e.State), e.Command)}
+			colors = []lipgloss.TerminalColor{cyan, cyan, text, muted, elapsedColor, green}
+		}
+		if strings.Contains(strings.ToLower(e.State), "wait") || strings.Contains(strings.ToLower(e.State), "lock") {
+			colors[len(colors)-1] = yellow
+		}
+		if index == selected {
+			values[0] = "›"
+		}
+		for i, value := range values {
+			style := lipgloss.NewStyle().Foreground(colors[i]).Width(widths[i])
+			if index == selected {
+				style = style.Background(surface).Bold(i == 1 || i == 2)
+			}
+			out.WriteString(style.Render(compact(value, widths[i]-1)))
+		}
+		out.WriteByte('\n')
+	}
+	return strings.TrimSuffix(out.String(), "\n")
 }
 
 func (m Model) liveExecutionView() string {
 	if m.queryControl == nil {
 		return ""
 	}
+	width := max(42, m.viewport.Width-2)
 	var out strings.Builder
 	out.WriteString(sectionTitle("CURRENT EXECUTIONS") + "\n")
 	if m.live.loading {
-		return out.String() + "Reading live sessions…\n"
+		return out.String() + quiet("Reading live sessions…") + "\n"
 	}
 	if m.live.err != nil {
-		return out.String() + "Unavailable: " + sanitize.Text(m.live.err.Error()) + "\n"
+		return out.String() + lipgloss.NewStyle().Foreground(yellow).Width(width).Render("Unavailable: "+sanitize.Text(m.live.err.Error())) + "\n"
 	}
 	if m.live.identity != m.selectedQueryIdentity() {
-		return out.String() + "Press r to load executions for this query.\n"
+		return out.String() + quiet("Press r to load executions for this query.") + "\n"
 	}
 	if len(m.live.items) == 0 {
-		return out.String() + "No matching instrumented execution visible now.\nHistorical digests can outlive their sessions.\n"
+		return out.String() + quiet("No matching instrumented execution visible now.\nHistorical digests can outlive their sessions.") + "\n"
 	}
-	out.WriteString(fmt.Sprintf("Checked %s · %d visible (limit 100) · K select a query to kill\n", m.live.at.Format("15:04:05"), len(m.live.items)))
+	out.WriteString(quiet(fmt.Sprintf("Checked %s · %d visible · at most 100 candidates", m.live.at.Format("15:04:05"), len(m.live.items))) + "\n\n")
+	out.WriteString(executionTable(m.live.items, -1, width) + "\n")
 	for _, e := range m.live.items {
-		out.WriteString(executionSummary(e) + "\n\n")
+		out.WriteString(lipgloss.NewStyle().Width(width).Render(quiet(fmt.Sprintf("Connection %d · Thread %d · event %d", e.ID, e.ThreadID, e.EventID))+"\n"+labelValue("Database", fallback(sanitize.Text(e.Database), "(none)"))+"  "+labelValue("Host", sanitize.Text(e.Host))+"  "+labelValue("Statement", duration(e.StatementLatencyMillis))) + "\n")
 	}
-	return lipgloss.NewStyle().Width(max(20, m.viewport.Width-2)).Render(out.String())
+	out.WriteString("\n" + keyHint("K", "select an execution to cancel"))
+	return out.String()
 }
 
 func (m Model) queryActionView() string {
-	width := max(20, m.viewport.Width-2)
+	width := max(42, min(104, m.viewport.Width-2))
 	wrap := lipgloss.NewStyle().Width(width).Render
+	small := m.viewport.Height < 17
+	gap := "\n\n"
+	if small {
+		gap = "\n"
+	}
 	if m.live.stage == "choose" {
-		heading := sectionTitle("SELECT ONE EXECUTION TO KILL") + "\n"
+		heading := padBetween(lipgloss.NewStyle().Foreground(text).Bold(true).Render("Choose an execution"), quiet(fallbackStep(small, "1")), width) + "\n"
 		if m.live.loading {
-			return heading + "Reading live sessions…\nEsc cancel"
+			return heading + quiet("Reading live sessions…") + gap + keyHint("Esc", "cancel")
 		}
 		if m.live.err != nil {
-			return heading + wrap("Unavailable: "+sanitize.Text(m.live.err.Error())) + "\nEsc cancel"
+			return heading + gap + lipgloss.NewStyle().Foreground(yellow).Width(width).Render("Unavailable: "+sanitize.Text(m.live.err.Error())) + gap + keyHint("Esc", "back")
 		}
 		if len(m.live.items) == 0 {
-			return heading + wrap("No matching instrumented execution visible now. Historical digests cannot be killed. Esc to return.")
+			return heading + gap + lipgloss.NewStyle().Foreground(yellow).Width(width).Render("No matching instrumented execution visible now.") + "\n" + wrap(quiet("This query is in history, but no live execution was identified.")) + gap + keyHint("Esc", "back to query")
 		}
 		e := m.live.items[m.live.index]
-		return heading + fmt.Sprintf("Execution %d of %d visible (limit 100) · ↑/↓ select\n\n", m.live.index+1, len(m.live.items)) +
-			wrap(executionSummary(e)) + "\n\n" + wrap(compact(e.Statement, width*2)) + "\n\nEnter review cancellation · Esc cancel"
+		count := fmt.Sprintf("%d of %d visible", m.live.index+1, len(m.live.items))
+		instructions := "Only this execution will be cancelled."
+		if len(m.live.items) > 1 {
+			instructions = "↑/↓ choose · Only the selected execution will be cancelled."
+		}
+		limit := min(len(m.live.items), max(1, m.viewport.Height-14))
+		start := min(max(0, m.live.index-limit/2), len(m.live.items)-limit)
+		body := heading + quiet(compact(instructions, width)) + gap + executionTable(m.live.items[start:start+limit], m.live.index-start, width)
+		body += "\n" + quiet(count+" · checked "+m.live.at.Format("15:04:05"))
+		body += gap + labelValue("Database", fallback(sanitize.Text(e.Database), "(none)")) + "   " + labelValue("Host", compact(sanitize.Text(e.Host), max(12, width-30)))
+		if !small {
+			body += "\n" + quiet(fmt.Sprintf("Thread %d · event %d · statement %s", e.ThreadID, e.EventID, duration(e.StatementLatencyMillis)))
+		}
+		body += gap + quiet("SQL · literals redacted") + "\n" + wrap(highlightedSQL(compact(e.Statement, width*2)))
+		body += gap + lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("Enter  Review cancellation →") + "   " + keyHint("Esc", "back")
+		return body
 	}
 	if m.live.stage == "sending" {
-		return sectionTitle("CANCELLATION IN PROGRESS") + "\n" + wrap(fmt.Sprintf("Rechecking and sending KILL QUERY %d…", m.live.target.ID))
+		return lipgloss.NewStyle().Foreground(yellow).Bold(true).Render("Sending cancellation…") + gap + wrap(quiet(fmt.Sprintf("Rechecking execution and sending KILL QUERY %d.", m.live.target.ID)))
 	}
 	if m.live.stage == "result" {
-		return sectionTitle("CANCELLATION RESULT") + "\n\n" + wrap(m.live.result) + "\n\nEnter / Esc return · snapshot refresh requested"
+		color, title := green, "✓ Cancellation request accepted"
+		if m.live.err != nil {
+			color, title = yellow, "! Cancellation not confirmed"
+		}
+		return lipgloss.NewStyle().Foreground(color).Bold(true).Render(title) + gap + wrap(m.live.result) + gap + keyHint("Enter / Esc", "back to query") + "\n" + quiet("Diagnostic snapshot refresh requested.")
 	}
 	e := m.live.target
-	// Keep confirmation and consequences visible even at the minimum 52×18.
-	return sectionTitle(fmt.Sprintf("CONFIRM KILL QUERY %d", e.ID)) + "\n" +
-		compact("Server "+e.ServerUUID, width) + "\n" +
-		compact("User "+sanitize.Text(e.User)+" · host "+sanitize.Text(e.Host), width) + "\n" +
-		compact("Database "+sanitize.Text(e.Database)+fmt.Sprintf(" · %ds · ", e.Seconds)+sanitize.Text(e.State), width) + "\n" +
-		compact(e.Statement, width) + "\n" +
-		wrap("Connection stays open; transaction locks may remain.") + "\n" +
-		wrap("Rechecked before sending; a new statement can race the kill.") + "\n" +
-		m.live.input.View() + "  Enter confirm · Esc cancel\n" + wrap(m.live.result)
+	// Compact variants retain the target, consequences, and input at 52×18.
+	title := lipgloss.NewStyle().Foreground(red).Bold(true).Render(fmt.Sprintf("Cancel query on connection %d?", e.ID))
+	body := padBetween(title, quiet(fallbackStep(small, "2")), width) + gap
+	body += lipgloss.NewStyle().Foreground(text).Bold(true).Render(compact(sanitize.Text(e.User), width/3)) + quiet(" @ ") + quiet(compact(sanitize.Text(e.Host), width/2)) + "\n"
+	body += labelValue("Database", compact(sanitize.Text(e.Database), width/3)) + "   " + lipgloss.NewStyle().Foreground(yellow).Bold(true).Render(fmt.Sprintf("%ds", e.Seconds)) + "   " + executionState(e) + "\n"
+	body += quiet(compact("Server "+e.ServerUUID, width)) + gap
+	body += wrap(highlightedSQL(compact(e.Statement, width))) + gap
+	body += lipgloss.NewStyle().Foreground(yellow).Width(width).Render("Connection stays open; transaction locks may remain.") + "\n"
+	body += wrap(quiet("Rechecked before sending; a new statement can race the kill.")) + gap
+	body += lipgloss.NewStyle().Background(surface).Padding(0, 1).Render(m.live.input.View()) + "  " + lipgloss.NewStyle().Foreground(red).Bold(true).Render("Enter confirm") + "  " + keyHint("Esc", "cancel")
+	if m.live.result != "" {
+		body += "\n" + lipgloss.NewStyle().Foreground(red).Width(width).Render(m.live.result)
+	}
+	return body
+}
+
+func fallbackStep(small bool, step string) string {
+	if small {
+		return step + "/2"
+	}
+	return "STEP " + step + " / 2"
 }
