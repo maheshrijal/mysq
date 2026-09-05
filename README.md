@@ -4,6 +4,10 @@ Find slow queries, blocked transactions, and MySQL performance problems from you
 
 Open an interactive dashboard, get a quick health report, or export the evidence to share with your team. Diagnostics read MySQL's own statistics; there is no service to deploy. Cancelling a query is a separate, explicitly confirmed action.
 
+[![mysq overview in cmux, showing database health and live query, thread, lock-wait, and InnoDB I/O graphs](docs/images/mysq-overview.png)](docs/images/mysq-overview.png)
+
+*Captured in cmux against a running local MySQL 8.4 workload.*
+
 [Install](#install) · [Connect](#connect) · [Use the dashboard](#use-the-dashboard) · [Export a report](#export-a-report) · [Troubleshooting](#troubleshooting)
 
 ## Install
