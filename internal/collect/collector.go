@@ -194,9 +194,7 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		return nil, fmt.Errorf("collect server identity: %w", err)
 	}
 	result.Variables, err = queryNameValue(ctx, conn, "SHOW GLOBAL VARIABLES")
-	if err != nil {
-		result.Warnings = append(result.Warnings, "global variables unavailable: "+err.Error())
-	}
+	c.recordCapability(result, "global variables", err)
 	redactVariables(result.Variables)
 	result.Server.PerformanceSchema = strings.EqualFold(result.Variables["performance_schema"], "ON")
 
@@ -477,6 +475,32 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 
 	result := newContext(c.ToolVersion, target)
 	switch section {
+	case "blockers":
+		if err := c.collectServer(ctx, conn, &result.Server); err != nil {
+			return nil, fmt.Errorf("collect server identity: %w", err)
+		}
+		result.Fingerprint = fingerprint(result.Server)
+		if err := c.focusedProbe(result, "row lock waits", func() error {
+			var err error
+			result.Locks, err = c.collectLocks(ctx, conn)
+			return err
+		}); err != nil {
+			return nil, err
+		}
+		if err := c.focusedOptionalProbe(ctx, result, "active transactions", func() error {
+			var err error
+			result.Transactions, err = c.collectTransactions(ctx, conn)
+			return err
+		}); err != nil {
+			return nil, err
+		}
+		if err := c.focusedOptionalProbe(ctx, result, "metadata locks", func() error {
+			var err error
+			result.MetadataLocks, err = c.collectMetadataLocks(ctx, conn)
+			return err
+		}); err != nil {
+			return nil, err
+		}
 	case "queries":
 		if err := c.focusedProbe(result, "statement digests", func() error {
 			var probeErr error
@@ -1130,8 +1154,8 @@ func (c *Collector) collectProcesses(ctx context.Context, conn *sql.Conn) ([]mod
 		COALESCE(ew.EVENT_NAME,''), COALESCE(es.TIMER_WAIT,0) / 1000000000,
 		COALESCE(es.DIGEST_TEXT, t.PROCESSLIST_INFO, '')
 	  FROM performance_schema.threads t
-	  LEFT JOIN performance_schema.events_statements_current es ON es.THREAD_ID=t.THREAD_ID
-	  LEFT JOIN performance_schema.events_waits_current ew ON ew.THREAD_ID=t.THREAD_ID
+	  LEFT JOIN performance_schema.events_statements_current es ON es.THREAD_ID=t.THREAD_ID AND es.END_EVENT_ID IS NULL
+	  LEFT JOIN performance_schema.events_waits_current ew ON ew.THREAD_ID=t.THREAD_ID AND ew.END_EVENT_ID IS NULL
 	  WHERE t.TYPE='FOREGROUND' AND t.PROCESSLIST_ID IS NOT NULL
 		AND t.PROCESSLIST_USER IS NOT NULL
 		AND t.PROCESSLIST_ID <> CONNECTION_ID()
@@ -1284,7 +1308,10 @@ func (c *Collector) collectMetadataLocks(ctx context.Context, conn *sql.Conn) ([
 	  FROM performance_schema.metadata_locks ml
 	  LEFT JOIN performance_schema.threads t ON t.THREAD_ID=ml.OWNER_THREAD_ID
 	  WHERE t.PROCESSLIST_ID IS NOT NULL AND t.PROCESSLIST_ID <> CONNECTION_ID()
-		AND (ml.LOCK_STATUS='PENDING' OR COALESCE(t.PROCESSLIST_COMMAND,'') <> 'Sleep')
+		AND (ml.LOCK_STATUS='PENDING' OR COALESCE(t.PROCESSLIST_COMMAND,'') <> 'Sleep' OR EXISTS (
+            SELECT 1 FROM performance_schema.metadata_locks pending
+            WHERE pending.LOCK_STATUS='PENDING' AND pending.OBJECT_TYPE=ml.OBJECT_TYPE
+              AND pending.OBJECT_SCHEMA <=> ml.OBJECT_SCHEMA AND pending.OBJECT_NAME <=> ml.OBJECT_NAME))
 	  ORDER BY ml.LOCK_STATUS='PENDING' DESC, t.PROCESSLIST_TIME DESC
 	  LIMIT 100`
 	rows, err := conn.QueryContext(ctx, statement)
@@ -1706,6 +1733,9 @@ func (c *Collector) collectReplication(ctx context.Context, conn *sql.Conn) (*mo
 	}
 	if len(rows) == 0 {
 		return nil, nil
+	}
+	if len(rows) > 1 {
+		return nil, fmt.Errorf("%d replication channels reported; channel-aware assessment is not supported", len(rows))
 	}
 	r := rows[0]
 	value := func(current, legacy string) string {

@@ -6,6 +6,13 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Added
 
+- Live Overview trends for QPS, running threads, row-lock waits, and physical InnoDB read/write throughput, with a shared timeline, responsive line charts/sparklines, five-minute in-memory history, and `p` pause/resume. A separate two-second sampler preserves diagnostic snapshots and query selection; missing/reset samples appear as gaps.
+- Queries-only `K` cancellation with live session selection, exact typed `kill` confirmation, execution identity revalidation, and explicit accepted/failed outcomes. Query details show current executing users, hosts, connections, and statement timing independently of historical digest totals.
+- Findings-first 80×24 overview, selectable findings with evidence drill-down, and `B` blocking-chain investigations in the TUI.
+- `mysq blockers` and scoped JSON for root owners, captured edges, distinct waiters, metadata-lock candidates, and coverage caveats.
+- Context 1.5.0 with shared subsystem assessments, incomplete-coverage counts, and blocking chains.
+- Findings for pending metadata locks, sampled statement errors, and log/buffer-capacity waits.
+
 - Findings-first MySQL 8.0/8.4 inspection with deterministic health scoring.
 - Adaptive seven-view interactive terminal with refresh and one-key agent export.
 - Statement, table, index, process, connection-group, transaction, row/metadata lock, wait-event, memory, replication, configuration, and InnoDB diagnostics.
@@ -18,6 +25,16 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 - Interval statement database-time attribution with Top SQL share in Overview and a dedicated export artifact.
 
 ### Changed
+
+- Bind query cancellation to the original pinned control session, refusing stale selections after connection loss or MySQL restart even when execution IDs are reused.
+- Apply semantic colors to the main Connections, Queries, Engine, and Tables grids, including SQL syntax and explicit lock/primary-key/visibility signals. Fix literal ANSI fragments and flickering in the typed query-cancellation confirmation.
+- Use Ghostty's native foreground/background and ANSI palette instead of cached light/dark RGB colors. Theme changes retain readable body text and selection. Give SQL identifiers and numeric evidence distinct colors, reduce bold labels, align query metrics, and remove repeated live-session metadata.
+- Make query investigation and cancellation easier to scan with aligned session columns, a highlighted selection, SQL syntax colors, explicit steps, and semantic confirmation/result colors in both terminal themes.
+- Failed refreshes show STALE; unavailable replication and other failed probes produce warning-level coverage findings. Multi-channel replication is explicitly unsupported rather than assessing only the first channel.
+- Query comparisons use schema plus digest, omit detected reset/restart deltas, expose interval means, and avoid declaring resolution through coverage gaps.
+- SQL redaction covers comments, truncated strings, both escape modes, numeric encodings, and terminal controls; InnoDB record dumps are omitted. Export manifests now declare `secret_free: false` because infrastructure metadata and arbitrary diagnostics still require review.
+- Include sleeping metadata-lock owner candidates and exclude completed statement/wait events from current process attribution.
+- Suppress tiny-workload dominance warnings and small-scan index warnings; clarify InnoDB primary-key recommendations.
 
 - Reorder investigation views to Overview, Connections, Queries, Engine, Findings, Tables, and Config; use Left/Right for tabs and Up/Down for viewport scrolling, while Queries keeps an Up/Down and Enter/Esc master-detail workflow with a smaller high-value column set that retains current user attribution.
 - Replace the generic Overview engine strip with current MySQL load, query health, and contention panels; enrich Engine with sampled waits, file I/O, errors, replication, and instrumentation coverage without adding host metrics or new analysis rules.

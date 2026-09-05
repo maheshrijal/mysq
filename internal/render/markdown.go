@@ -14,7 +14,13 @@ func Markdown(w io.Writer, ctx *model.Context) error {
 	fmt.Fprintf(&out, "Collected `%s` from `%s:%d/%s` running %s %s. Snapshot `%s`.\n\n",
 		ctx.CollectedAt.Format("2006-01-02T15:04:05Z"), ctx.Server.Host, ctx.Server.Port,
 		ctx.Server.Database, ctx.Server.Flavor, ctx.Server.Version, ctx.Fingerprint)
-	fmt.Fprintf(&out, "## Health: %d/100\n\n", ctx.Health.Score)
+	fmt.Fprintf(&out, "## %s\n\n%d subsystems unverified. Finding score: %d/100; this is not a measure of coverage.\n\n", ctx.Health.State(), ctx.Health.Unknown, ctx.Health.Score)
+	for _, subsystem := range ctx.Health.Subsystems {
+		if !subsystem.Complete {
+			fmt.Fprintf(&out, "- Unverified %s: %s\n", subsystem.Name, subsystem.Reason)
+		}
+	}
+	out.WriteString("\n")
 	fmt.Fprintf(&out, "| QPS | TPS | Connections | Running | Buffer hit | Temp on disk |\n")
 	fmt.Fprintf(&out, "|---:|---:|---:|---:|---:|---:|\n")
 	fmt.Fprintf(&out, "| %.2f | %.2f | %d/%d | %d | %.2f%% | %.2f%% |\n\n",

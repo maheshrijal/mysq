@@ -38,61 +38,74 @@ const totalViews = 7
 var tabs = [totalViews]string{"Overview", "Connections", "Queries", "Engine", "Findings", "Tables", "Config"}
 
 type Model struct {
-	ctx                       context.Context
-	inspect                   Inspector
-	export                    Exporter
-	snapshot                  *model.Context
-	viewport                  viewport.Model
-	spinner                   spinner.Model
-	keyHelp                   help.Model
-	keys                      navigationKeyMap
-	filterInput               textinput.Model
-	width                     int
-	height                    int
-	tab                       int
-	viewOffsets               [totalViews]int
-	queryIndex                int
-	queryDetail               bool
-	queryDetailOffset         int
-	loading                   bool
-	exporting                 bool
-	help                      bool
-	filtering                 bool
-	filters                   [totalViews]string
-	filterBefore              string
-	filterOffsetBefore        int
-	filterQueryBefore         int
-	filterQueryIdentityBefore string
-	status                    string
-	statusOverridesFilter     bool
-	exportPath                string
-	err                       error
-	refreshed                 time.Time
+	ctx                         context.Context
+	inspect                     Inspector
+	export                      Exporter
+	queryControl                QueryController
+	live                        liveQueries
+	trends                      trendHistory
+	snapshot                    *model.Context
+	viewport                    viewport.Model
+	spinner                     spinner.Model
+	keyHelp                     help.Model
+	keys                        navigationKeyMap
+	filterInput                 textinput.Model
+	width                       int
+	height                      int
+	tab                         int
+	viewOffsets                 [totalViews]int
+	queryIndex                  int
+	queryDetail                 bool
+	queryDetailOffset           int
+	findingIndex                int
+	findingDetailID             string
+	blockerDetail               bool
+	investigationOffset         int
+	loading                     bool
+	exporting                   bool
+	help                        bool
+	filtering                   bool
+	filters                     [totalViews]string
+	filterBefore                string
+	filterOffsetBefore          int
+	filterQueryBefore           int
+	filterQueryIdentityBefore   string
+	filterFindingIdentityBefore string
+	status                      string
+	statusOverridesFilter       bool
+	exportPath                  string
+	err                         error
+	refreshed                   time.Time
 }
 
 var (
-	// The palette deliberately leaves the terminal background alone. Adaptive
-	// foregrounds keep the UI legible in both light and dark terminals while the
-	// Tokyo Night/Catppuccin-inspired accents remain restrained and semantic.
-	surface    = lipgloss.AdaptiveColor{Light: "#E6E9EF", Dark: "#24283B"}
-	surfaceAlt = lipgloss.AdaptiveColor{Light: "#DCE0E8", Dark: "#1F2335"}
-	border     = lipgloss.AdaptiveColor{Light: "#BCC0CC", Dark: "#3B4261"}
-	muted      = lipgloss.AdaptiveColor{Light: "#7C7F93", Dark: "#737AA2"}
-	text       = lipgloss.AdaptiveColor{Light: "#4C4F69", Dark: "#C0CAF5"}
-	green      = lipgloss.AdaptiveColor{Light: "#40A02B", Dark: "#9ECE6A"}
-	yellow     = lipgloss.AdaptiveColor{Light: "#DF8E1D", Dark: "#E0AF68"}
-	red        = lipgloss.AdaptiveColor{Light: "#D20F39", Dark: "#F7768E"}
-	cyan       = lipgloss.AdaptiveColor{Light: "#1E66F5", Dark: "#7AA2F7"}
+	// Ghostty resolves default colors and ANSI slots against its current theme,
+	// including already-painted cells. Never cache light/dark RGB colors here.
+	// Keep all body text on the terminal's own high-contrast foreground/background.
+	surface    = lipgloss.NoColor{}
+	surfaceAlt = lipgloss.NoColor{}
+	border     = lipgloss.Color("8")
+	muted      = lipgloss.NoColor{}
+	text       = lipgloss.NoColor{}
+	green      = lipgloss.Color("2")
+	yellow     = lipgloss.Color("3")
+	red        = lipgloss.Color("1")
+	cyan       = lipgloss.Color("4")
+	identity   = lipgloss.Color("6")
+	number     = lipgloss.Color("5")
 )
 
-func Run(ctx context.Context, inspect Inspector, export Exporter) error {
-	model := New(ctx, inspect, export)
+func Run(ctx context.Context, inspect Inspector, export Exporter, control QueryController, sample TrendSampler) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	model := New(ctx, inspect, export, control)
+	model.trends.sample = sample
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	_, err := program.Run()
 	return err
 }
 
-func New(ctx context.Context, inspect Inspector, export Exporter) Model {
+func New(ctx context.Context, inspect Inspector, export Exporter, control ...QueryController) Model {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = lipgloss.NewStyle().Foreground(cyan)
@@ -111,18 +124,33 @@ func New(ctx context.Context, inspect Inspector, export Exporter) Model {
 	filterInput.TextStyle = lipgloss.NewStyle().Foreground(text)
 	filterInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(muted)
 	filterInput.Cursor.Style = lipgloss.NewStyle().Foreground(cyan)
+	var queryControl QueryController
+	if len(control) > 0 {
+		queryControl = control[0]
+	}
 	return Model{
 		ctx: ctx, inspect: inspect, export: export, spinner: spin,
-		viewport: viewport.New(80, 20), keyHelp: keyHelp, keys: defaultNavigationKeyMap(), filterInput: filterInput,
+		queryControl: queryControl,
+		viewport:     viewport.New(80, 20), keyHelp: keyHelp, keys: defaultNavigationKeyMap(), filterInput: filterInput,
 		loading: true,
 	}
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(m.spinner.Tick, m.inspectCommand()) }
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, m.inspectCommand(), m.trendTickCommand())
+}
 
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	var commands []tea.Cmd
 	switch msg := message.(type) {
+	case trendTick:
+		return m.onTrendTick(time.Time(msg))
+	case trendMessage:
+		return m.onTrendSample(msg)
+	case sessionsMessage:
+		return m.receiveSessions(msg)
+	case killMessage:
+		return m.receiveKill(msg)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	case tea.WindowSizeMsg:
@@ -131,7 +159,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.resizeViewport()
 		m.rebuild()
-		if tabs[m.tab] == "Queries" && !m.queryDetail && !m.help {
+		if tabs[m.tab] == "Queries" && !m.queryDetail && !m.inInvestigation() && !m.help {
 			m.ensureQuerySelectionVisible()
 		}
 	case inspectMessage:
@@ -139,10 +167,17 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		if msg.err != nil {
 			m.setStatus("Refresh failed: "+compact(msg.err.Error(), max(20, m.width-20)), true)
+			m.rebuild()
 		} else {
 			selectedQuery := m.selectedQueryIdentity()
+			selectedFinding := m.selectedFindingID()
 			wasQueryDetail := m.queryDetail
 			m.snapshot = msg.context
+			m.restoreFindingSelection(selectedFinding)
+			if m.findingDetailID != "" && m.findingByID(m.findingDetailID) == nil {
+				m.findingDetailID = ""
+			}
+			m.investigationOffset = 0
 			if !m.restoreQuerySelection(selectedQuery) {
 				m.clampQuerySelection()
 				if wasQueryDetail {
@@ -154,7 +189,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshed = time.Now()
 			m.setStatus(fmt.Sprintf("Refreshed %s · snapshot %s", m.refreshed.Format("15:04:05"), msg.context.Fingerprint), false)
 			m.rebuild()
-			if tabs[m.tab] == "Queries" && !m.queryDetail && !m.help {
+			if tabs[m.tab] == "Queries" && !m.queryDetail && !m.inInvestigation() && !m.help {
 				m.ensureQuerySelectionVisible()
 			}
 		}
@@ -169,7 +204,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resizeViewport()
 		m.rebuild()
-		if tabs[m.tab] == "Queries" && !m.queryDetail && !m.help {
+		if tabs[m.tab] == "Queries" && !m.queryDetail && !m.inInvestigation() && !m.help {
 			m.ensureQuerySelectionVisible()
 		}
 	}
@@ -185,6 +220,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		commands = append(commands, command)
 		m.applyFilterInputChange(before)
 	}
+	if m.live.stage == "confirm" {
+		m.live.input, command = m.live.input.Update(message)
+		commands = append(commands, command)
+		m.rebuild()
+	}
 	return m, tea.Batch(commands...)
 }
 
@@ -193,10 +233,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if m.width > 0 && (m.width < 52 || m.height < 18) {
+		if msg.String() == "esc" && m.live.stage != "sending" {
+			m.live.stage = ""
+		}
 		if key.Matches(msg, m.keys.Quit) {
 			return m, tea.Quit
 		}
 		return m, nil
+	}
+	if m.live.stage != "" {
+		return m.handleQueryAction(msg)
 	}
 	if m.filtering {
 		return m.updateFilter(msg)
@@ -206,7 +252,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Help, m.keys.Back):
 			m.help = false
 			m.rebuild()
-			if tabs[m.tab] == "Queries" && !m.queryDetail {
+			if tabs[m.tab] == "Queries" && !m.queryDetail && !m.inInvestigation() {
 				m.ensureQuerySelectionVisible()
 			}
 			return m, nil
@@ -220,6 +266,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case key.Matches(msg, m.keys.PauseTrends):
+		if m.trends.sample != nil {
+			m.trends.paused = !m.trends.paused
+			m.trends.generation++
+			m.trends.previous = nil
+			m.rebuild()
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.KillQuery):
+		if tabs[m.tab] == "Queries" && !m.inInvestigation() && !m.loading && !m.exporting && m.exportPath == "" {
+			return m, m.loadSessions(true)
+		}
+		return m, nil
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Back):
@@ -228,6 +287,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.exportPath = ""
 			m.resizeViewport()
 			m.rebuild()
+		case m.inInvestigation():
+			m.findingDetailID = ""
+			m.blockerDetail = false
+			m.rebuild()
+			m.ensureFindingSelectionVisible()
 		case m.queryDetail:
 			m.saveCurrentOffset()
 			m.queryDetail = false
@@ -245,7 +309,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Filter):
-		if !m.loading && !m.exporting && m.exportPath == "" && m.filterable() && !m.queryDetail && m.snapshot != nil {
+		if !m.loading && !m.exporting && m.exportPath == "" && m.filterable() && !m.queryDetail && !m.inInvestigation() && m.snapshot != nil {
 			return m, m.startFilter()
 		}
 		return m, nil
@@ -259,6 +323,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(msg.Runes) == 1 {
 			m.saveCurrentOffset()
 			m.queryDetail = false
+			m.findingDetailID = ""
+			m.blockerDetail = false
 			m.tab = int(msg.Runes[0] - '1')
 			if strings.HasPrefix(m.status, "Filter ") || m.status == "Filter cleared" {
 				m.setStatus("", false)
@@ -269,16 +335,47 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case key.Matches(msg, m.keys.Blockers):
+		if m.snapshot != nil && !m.exporting && m.exportPath == "" {
+			m.saveCurrentOffset()
+			m.blockerDetail = true
+			m.findingDetailID = ""
+			m.investigationOffset = 0
+			m.rebuild()
+		}
+		return m, nil
 	case key.Matches(msg, m.keys.Open):
+		if m.inInvestigation() {
+			return m, nil
+		}
+		if tabs[m.tab] == "Overview" || tabs[m.tab] == "Findings" || tabs[m.tab] == "Connections" {
+			if m.snapshot == nil {
+				return m, nil
+			}
+			m.saveCurrentOffset()
+			m.investigationOffset = 0
+			if tabs[m.tab] == "Connections" {
+				m.blockerDetail = true
+			} else if tabs[m.tab] == "Overview" && len(m.snapshot.Findings) > 0 {
+				m.findingDetailID = m.snapshot.Findings[0].ID
+			} else {
+				m.findingDetailID = m.selectedFindingID()
+			}
+			m.rebuild()
+			return m, nil
+		}
 		visible := m.filteredContext()
 		if tabs[m.tab] == "Queries" && !m.queryDetail && visible != nil && len(visible.Queries) > 0 {
 			m.saveCurrentOffset()
 			m.queryDetailOffset = 0
 			m.queryDetail = true
 			m.rebuild()
+			return m, m.loadSessions(false)
 		}
 		return m, nil
-	case m.scroll(msg, tabs[m.tab] == "Queries" && !m.queryDetail):
+	case m.scrollFindingList(msg):
+		return m, nil
+	case m.scroll(msg, tabs[m.tab] == "Queries" && !m.queryDetail && !m.inInvestigation()):
 		return m, nil
 	case key.Matches(msg, m.keys.Refresh):
 		if !m.loading && !m.exporting {
@@ -286,7 +383,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.resizeViewport()
 			m.loading = true
 			m.setStatus("Refreshing every diagnostic probe…", true)
-			return m, tea.Batch(m.inspectCommand(), m.spinner.Tick)
+			var sessions tea.Cmd
+			if m.queryDetail {
+				sessions = m.loadSessions(false)
+			}
+			return m, tea.Batch(m.inspectCommand(), m.spinner.Tick, sessions)
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Export):
@@ -303,6 +404,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) switchView(next int) {
 	m.saveCurrentOffset()
 	m.queryDetail = false
+	m.findingDetailID = ""
+	m.blockerDetail = false
 	m.tab = next
 	if strings.HasPrefix(m.status, "Filter ") || m.status == "Filter cleared" {
 		m.setStatus("", false)
@@ -396,6 +499,10 @@ func (m *Model) saveCurrentOffset() {
 	if m.help || len(m.viewOffsets) != len(tabs) || m.tab < 0 || m.tab >= len(tabs) {
 		return
 	}
+	if m.inInvestigation() {
+		m.investigationOffset = m.viewport.YOffset
+		return
+	}
 	if m.queryDetail {
 		m.queryDetailOffset = m.viewport.YOffset
 		return
@@ -404,6 +511,9 @@ func (m *Model) saveCurrentOffset() {
 }
 
 func (m Model) currentOffset() int {
+	if m.inInvestigation() {
+		return m.investigationOffset
+	}
 	if m.queryDetail {
 		return m.queryDetailOffset
 	}
@@ -430,6 +540,7 @@ func (m *Model) startFilter() tea.Cmd {
 	m.filterOffsetBefore = m.currentOffset()
 	m.filterQueryBefore = m.queryIndex
 	m.filterQueryIdentityBefore = m.selectedQueryIdentity()
+	m.filterFindingIdentityBefore = m.selectedFindingID()
 	m.filterInput.SetValue(m.filterBefore)
 	m.filterInput.CursorEnd()
 	m.filtering = true
@@ -449,6 +560,7 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "esc":
 		m.filters[m.tab] = m.filterBefore
+		m.restoreFindingSelection(m.filterFindingIdentityBefore)
 		m.viewOffsets[m.tab] = m.filterOffsetBefore
 		if !m.restoreQuerySelection(m.filterQueryIdentityBefore) {
 			m.queryIndex = m.filterQueryBefore
@@ -532,6 +644,7 @@ func (m *Model) applyFilterInputChange(before string) {
 		return
 	}
 	m.filters[m.tab] = m.filterInput.Value()
+	m.findingIndex = 0
 	m.viewOffsets[m.tab] = 0
 	if tabs[m.tab] == "Queries" {
 		m.queryIndex = 0
@@ -541,6 +654,7 @@ func (m *Model) applyFilterInputChange(before string) {
 
 func (m *Model) clearFilter() {
 	m.filters[m.tab] = ""
+	m.findingIndex = 0
 	m.filterInput.Reset()
 	m.viewOffsets[m.tab] = 0
 	if tabs[m.tab] == "Queries" {
@@ -669,24 +783,55 @@ func (m Model) filterCounts() (int, int) {
 }
 
 func (m Model) helpBindings() contextualHelp {
+	if m.live.stage == "sending" {
+		return contextualHelp{}
+	}
+	if m.live.stage != "" {
+		bindings := []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel / back"))}
+		if m.live.stage == "choose" {
+			bindings = append(bindings, m.keys.Up, m.keys.Down, m.keys.Open)
+		} else if m.live.stage == "confirm" {
+			bindings = append(bindings, key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm exact kill")))
+		}
+		return contextualHelp{short: bindings, full: [][]key.Binding{bindings}}
+	}
 	paging := []key.Binding{m.keys.PageUp, m.keys.PageDown, m.keys.HalfPageUp, m.keys.HalfPageDown, m.keys.Top, m.keys.Bottom}
 	navigation := []key.Binding{m.keys.PreviousView, m.keys.NextView, m.keys.Jump}
-	actions := []key.Binding{m.keys.Refresh, m.keys.Export, m.keys.Help, m.keys.Quit}
+	actions := []key.Binding{m.keys.Blockers, m.keys.Refresh, m.keys.Export, m.keys.Help, m.keys.Quit}
+	if m.trends.sample != nil {
+		actions = append([]key.Binding{m.keys.PauseTrends}, actions...)
+	}
 	context := []key.Binding{m.keys.Up, m.keys.Down}
 	short := []key.Binding{m.keys.PreviousView, m.keys.NextView, m.keys.Up, m.keys.Down}
 
-	if tabs[m.tab] == "Queries" && !m.queryDetail {
+	if m.inInvestigation() {
+		context = []key.Binding{m.keys.Back, m.keys.Up, m.keys.Down}
+		short = context
+	} else if (tabs[m.tab] == "Queries" && !m.queryDetail) || tabs[m.tab] == "Findings" {
 		context = []key.Binding{m.keys.Up, m.keys.Down, m.keys.Open, m.keys.Filter}
 		short = []key.Binding{m.keys.Up, m.keys.Down, m.keys.Open, m.keys.Filter}
 	} else if m.queryDetail {
 		context = []key.Binding{m.keys.Back, m.keys.Up, m.keys.Down, m.keys.PageUp, m.keys.PageDown}
 		short = []key.Binding{m.keys.Back, m.keys.Up, m.keys.Down, m.keys.PageUp, m.keys.PageDown}
+	} else if tabs[m.tab] == "Overview" || tabs[m.tab] == "Connections" {
+		context = append([]key.Binding{m.keys.Open, m.keys.Blockers}, context...)
+		if tabs[m.tab] == "Overview" && m.trends.sample != nil {
+			context = append(context, m.keys.PauseTrends)
+		}
+		if tabs[m.tab] == "Connections" {
+			context = append(context, m.keys.Filter)
+		}
+		short = context
 	} else if m.filterable() {
 		context = append(context, m.keys.Filter)
 		short = append(short, m.keys.Filter)
 	}
 	if m.activeFilter() != "" && !m.queryDetail {
 		context = append(context, m.keys.Back)
+	}
+	if tabs[m.tab] == "Queries" && !m.inInvestigation() {
+		context = append(context, m.keys.KillQuery)
+		short = append([]key.Binding{m.keys.KillQuery}, short...)
 	}
 	short = append(short, m.keys.Refresh, m.keys.Export, m.keys.Help, m.keys.Quit)
 
@@ -764,19 +909,12 @@ func (m Model) header() string {
 	if m.loading {
 		right = m.spinner.View() + lipgloss.NewStyle().Foreground(muted).Render(" collecting")
 	} else if m.snapshot != nil {
-		scoreColor := green
-		if m.snapshot.Health.Critical > 0 {
-			scoreColor = red
-		} else if m.snapshot.Health.Warnings > 0 {
-			scoreColor = yellow
+		state := m.snapshot.Health.State()
+		if m.err != nil {
+			state = "STALE"
 		}
-		state := "HEALTHY"
-		if m.snapshot.Health.Critical > 0 {
-			state = "CRITICAL"
-		} else if m.snapshot.Health.Warnings > 0 {
-			state = "ATTENTION"
-		}
-		right = lipgloss.NewStyle().Foreground(scoreColor).Bold(true).Render(fmt.Sprintf("● %s  %d", state, m.snapshot.Health.Score))
+		color := healthStateColor(state)
+		right = lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("● %s  %d", state, m.snapshot.Health.Score))
 	}
 	line := padBetween(left, right, max(1, m.width-2))
 	return lipgloss.NewStyle().Background(surfaceAlt).Padding(0, 1).Width(max(1, m.width)).Render(line)
@@ -825,7 +963,7 @@ func (m Model) renderTabs(indices []int, measureOnly bool) string {
 		}
 		style := lipgloss.NewStyle().Foreground(muted).Padding(0, 1)
 		if active {
-			style = style.Foreground(cyan).Background(surface).Bold(true)
+			style = style.Foreground(text).Reverse(true).Bold(true)
 		}
 		items = append(items, style.Render(label))
 	}
@@ -889,7 +1027,7 @@ func (m Model) footer() string {
 	}
 	status := m.status
 	if status == "" {
-		status = "Read-only · SQL literals redacted"
+		status = "Diagnostics · SQL literals redacted"
 	}
 	if m.help {
 		keys := keyHint("esc/?", "close help") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("q", "quit")
@@ -929,6 +1067,11 @@ func (m Model) contentPanel(width, height int) string {
 }
 
 func (m *Model) rebuild() {
+	if m.live.stage != "" {
+		m.viewport.SetContent(m.queryActionView())
+		m.viewport.GotoTop()
+		return
+	}
 	if m.help {
 		m.viewport.SetContent(m.keyboardHelp())
 		m.viewport.GotoTop()
@@ -940,6 +1083,17 @@ func (m *Model) rebuild() {
 		} else {
 			m.viewport.SetContent("\n  " + m.spinner.View() + " Collecting server identity, counters, statements, tables, indexes, locks, and configuration…")
 		}
+		return
+	}
+	if m.inInvestigation() {
+		content := blockerInvestigation(m.snapshot, m.viewport.Width)
+		if !m.blockerDetail {
+			if f := m.findingByID(m.findingDetailID); f != nil {
+				content = findingInvestigation(m.snapshot, *f, m.viewport.Width)
+			}
+		}
+		m.viewport.SetContent(content)
+		m.viewport.SetYOffset(m.investigationOffset)
 		return
 	}
 	visible := m.filteredContext()
@@ -954,13 +1108,17 @@ func (m *Model) rebuild() {
 	var content string
 	switch tabs[m.tab] {
 	case "Overview":
-		content = overview(visible, m.viewport.Width)
+		content = overview(visible, m.viewport.Width, m.err != nil)
+		if m.trends.sample != nil {
+			content += "\n\n" + m.trendView(m.viewport.Width, m.viewport.Height-lipgloss.Height(content)-2)
+		}
 	case "Findings":
-		content = findings(visible, m.viewport.Width)
+		m.findingIndex = min(max(0, m.findingIndex), max(0, len(visible.Findings)-1))
+		content = findingList(visible, m.viewport.Width, m.findingIndex)
 	case "Queries":
 		totalLatency := totalQueryLatency(m.snapshot.Queries)
 		if m.queryDetail {
-			content = queryDetail(visible, m.viewport.Width, m.queryIndex, totalLatency)
+			content = m.liveExecutionView() + "\n" + queryDetail(visible, m.viewport.Width, m.queryIndex, totalLatency)
 		} else {
 			content = queries(visible, m.viewport.Width, m.queryIndex, totalLatency)
 		}
@@ -975,9 +1133,13 @@ func (m *Model) rebuild() {
 	}
 	m.viewport.SetContent(content)
 	m.viewport.SetYOffset(m.currentOffset())
+	m.ensureFindingSelectionVisible()
 }
 
 func (m *Model) ensureQuerySelectionVisible() {
+	if m.inInvestigation() {
+		return
+	}
 	// The query header and underline occupy two lines. Keep the selected statement inside
 	// the viewport as the engineer walks a long digest list.
 	line := m.queryIndex + 2
@@ -1006,79 +1168,45 @@ func (m Model) exportCommand() tea.Cmd {
 	}
 }
 
-func overview(ctx *model.Context, width int) string {
-	healthColor := green
-	posture := "Operational"
-	postureNote := "No critical conditions detected"
-	if ctx.Health.Critical > 0 {
-		healthColor = red
-		posture = "Critical"
-		postureNote = "Immediate action is recommended"
-	} else if ctx.Health.Warnings > 0 {
-		healthColor = yellow
-		posture = "Needs attention"
-		postureNote = fmt.Sprintf("%d warning signals need review", ctx.Health.Warnings)
+func overview(ctx *model.Context, width int, stale ...bool) string {
+	state := ctx.Health.State()
+	if len(stale) > 0 && stale[0] {
+		state = "STALE · REFRESH FAILED"
 	}
-	postureLine := lipgloss.NewStyle().Foreground(healthColor).Bold(true).Render("● "+posture) +
-		lipgloss.NewStyle().Foreground(muted).Render("  "+postureNote)
-	score := lipgloss.NewStyle().Foreground(healthColor).Bold(true).Render(fmt.Sprintf("%d/100", ctx.Health.Score))
-	postureBox := panelBox("DATABASE POSTURE", padBetween(postureLine, score, max(20, width-4)), width)
-
-	cardColumns := 4
-	if width < 88 {
-		cardColumns = 2
+	coverage := fmt.Sprintf("%d unverified subsystems", ctx.Health.Unknown)
+	if len(ctx.Health.Subsystems) == 0 {
+		coverage = "coverage not recorded"
 	}
-	cardWidth := max(20, (width-(cardColumns-1))/cardColumns)
-	throughput := kpiCard("Throughput", fmt.Sprintf("%.1f qps", ctx.Metrics.QueriesPerSecond), fmt.Sprintf("%.1f tx/s", ctx.Metrics.TransactionsPerSecond), cyan, cardWidth)
-	connectionCard := kpiCard("Connections", fmt.Sprintf("%d / %d", ctx.Metrics.ConnectionsCurrent, ctx.Metrics.ConnectionsMax), fmt.Sprintf("%.1f%% capacity", ctx.Metrics.ConnectionsUsedPercent), colorForPercent(ctx.Metrics.ConnectionsUsedPercent, 75, 90), cardWidth)
-	bufferCard := kpiCard("Buffer pool", fmt.Sprintf("%.2f%% hit", ctx.Metrics.BufferPoolHitPercent), fmt.Sprintf("%.1f%% used · %.1f%% dirty", ctx.Metrics.BufferPoolUsedPercent, ctx.Metrics.BufferPoolDirtyPercent), colorForLow(ctx.Metrics.BufferPoolHitPercent, 99, 95), cardWidth)
-	concurrency := kpiCard("Concurrency", fmt.Sprintf("%d running", ctx.Metrics.ThreadsRunning), fmt.Sprintf("%d row-lock waits", len(ctx.Locks)), colorForCount(len(ctx.Locks)), cardWidth)
-	cards := lipgloss.JoinHorizontal(lipgloss.Top, throughput, " ", connectionCard, " ", bufferCard, " ", concurrency)
-	if cardColumns == 2 {
-		cards = lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.JoinHorizontal(lipgloss.Top, throughput, " ", connectionCard),
-			lipgloss.JoinHorizontal(lipgloss.Top, bufferCard, " ", concurrency),
-		)
+	captured := "capture time unavailable"
+	if !ctx.CollectedAt.IsZero() {
+		captured = "Captured " + ctx.CollectedAt.Local().Format("15:04:05")
 	}
-
-	pressureWidth := width
-	findingWidth := width
-	if width >= 82 {
-		pressureWidth = (width - 1) * 56 / 100
-		findingWidth = width - pressureWidth - 1
+	posture := lipgloss.NewStyle().Foreground(healthStateColor(state)).Bold(true).Render("● "+state) + "  ·  " + coverage
+	result := sectionTitle("DATABASE POSTURE") + "\n" + posture + "\n" +
+		lipgloss.NewStyle().Foreground(muted).Width(width).Render(fmt.Sprintf("%s · %.1fs status window · r refresh", captured, float64(ctx.IntervalMillis)/1000)) + "\n"
+	body := "No actionable findings in the captured evidence."
+	if ctx.Health.Unknown > 0 {
+		body += " Some checks remain unverified; see Config."
 	}
-	pressureInner := max(20, pressureWidth-4)
-	pressure := strings.Join([]string{
-		gaugeLine("Connection slots", ctx.Metrics.ConnectionsUsedPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.ConnectionsUsedPercent), colorForPercent(ctx.Metrics.ConnectionsUsedPercent, 75, 90), pressureInner),
-		gaugeLine("Redo checkpoint", ctx.Metrics.RedoCheckpointAgePct, fmt.Sprintf("%.1f%%", ctx.Metrics.RedoCheckpointAgePct), colorForPercent(ctx.Metrics.RedoCheckpointAgePct, 60, 80), pressureInner),
-		gaugeLine("Dirty pages", ctx.Metrics.BufferPoolDirtyPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.BufferPoolDirtyPercent), colorForPercent(ctx.Metrics.BufferPoolDirtyPercent, 40, 75), pressureInner),
-		gaugeLine("Disk temp tables", ctx.Metrics.TempDiskTablePercent, fmt.Sprintf("%.1f%%", ctx.Metrics.TempDiskTablePercent), colorForPercent(ctx.Metrics.TempDiskTablePercent, 10, 25), pressureInner),
-	}, "\n")
-	pressureBox := panelBox("WORKLOAD PRESSURE", pressure, pressureWidth)
-
-	topFinding := lipgloss.NewStyle().Foreground(green).Render("● No actionable findings") + "\n" +
-		lipgloss.NewStyle().Foreground(muted).Render("All collected subsystems are within policy.")
 	if len(ctx.Findings) > 0 {
 		f := ctx.Findings[0]
-		color := severityColor(f.Severity)
-		topFinding = lipgloss.NewStyle().Foreground(color).Bold(true).Render("▌ "+strings.ToUpper(string(f.Severity))) + "  " +
-			lipgloss.NewStyle().Foreground(text).Bold(true).Render(f.Title) + "\n" +
-			lipgloss.NewStyle().Foreground(muted).Width(max(16, findingWidth-4)).Render(f.Summary) + "\n" +
-			lipgloss.NewStyle().Foreground(cyan).Render("Press 5 for remediation")
+		body = lipgloss.NewStyle().Foreground(severityColor(f.Severity)).Bold(true).Width(max(16, width-4)).Render(f.Title) + "\n" +
+			lipgloss.NewStyle().Width(max(16, width-4)).Render(f.Summary) + "\n" + keyHint("enter", "investigate") + "  " + keyHint("5", "all findings") + "  " + keyHint("B", "blocking chains")
 	}
-	findingBox := panelBox("PRIORITY SIGNAL", topFinding, findingWidth)
-	lower := lipgloss.JoinHorizontal(lipgloss.Top, pressureBox, " ", findingBox)
-	if width < 82 {
-		lower = lipgloss.JoinVertical(lipgloss.Left, pressureBox, findingBox)
-	}
-
-	identity := lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("%s %s · uptime %s · %.1fs status window",
-		ctx.Server.Flavor, ctx.Server.Version, humanDuration(ctx.Server.UptimeSeconds), float64(ctx.IntervalMillis)/1000))
-	result := postureBox + "\n" + cards + "\n" + lower + "\n" + mysqlInvestigationPanels(ctx, width)
+	result += "\n" + panelBox("PRIORITY SIGNAL", body, width) + "\n"
+	metrics := fmt.Sprintf("%.1f qps · %d running · %d/%d connections · %.2f%% buffer hit", ctx.Metrics.QueriesPerSecond, ctx.Metrics.ThreadsRunning, ctx.Metrics.ConnectionsCurrent, ctx.Metrics.ConnectionsMax, ctx.Metrics.BufferPoolHitPercent)
+	result += lipgloss.NewStyle().Foreground(cyan).Width(width).Render(metrics) + "\n\n" + mysqlInvestigationPanels(ctx, width)
+	pressure := strings.Join([]string{
+		gaugeLine("Connection slots", ctx.Metrics.ConnectionsUsedPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.ConnectionsUsedPercent), colorForPercent(ctx.Metrics.ConnectionsUsedPercent, 75, 90), max(20, width-4)),
+		gaugeLine("Redo checkpoint", ctx.Metrics.RedoCheckpointAgePct, fmt.Sprintf("%.1f%%", ctx.Metrics.RedoCheckpointAgePct), colorForPercent(ctx.Metrics.RedoCheckpointAgePct, 60, 80), max(20, width-4)),
+		gaugeLine("Dirty pages", ctx.Metrics.BufferPoolDirtyPercent, fmt.Sprintf("%.1f%%", ctx.Metrics.BufferPoolDirtyPercent), colorForPercent(ctx.Metrics.BufferPoolDirtyPercent, 40, 75), max(20, width-4)),
+		gaugeLine("Disk temp tables", ctx.Metrics.TempDiskTablePercent, fmt.Sprintf("%.1f%%", ctx.Metrics.TempDiskTablePercent), colorForPercent(ctx.Metrics.TempDiskTablePercent, 10, 25), max(20, width-4)),
+	}, "\n")
+	result += "\n" + panelBox("WORKLOAD PRESSURE", pressure, width)
 	if conditional := overviewConditionalPanels(ctx, width); conditional != "" {
 		result += "\n" + conditional
 	}
-	return result + "\n" + identity
+	return result + "\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("%s %s · uptime %s · server-wide activity, visible catalog objects", ctx.Server.Flavor, ctx.Server.Version, humanDuration(ctx.Server.UptimeSeconds)))
 }
 
 func mysqlInvestigationPanels(ctx *model.Context, width int) string {
@@ -1185,9 +1313,13 @@ func overviewConditionalPanels(ctx *model.Context, width int) string {
 				workerErrors++
 			}
 		}
-		state, color := "healthy", green
-		if !strings.EqualFold(r.IORunning, "Yes") || !strings.EqualFold(r.SQLRunning, "Yes") || workerErrors > 0 || r.LastIOError != "" || r.LastSQLError != "" {
-			state, color = "attention", red
+		assessment := ctx.Health.Subsystem("replication")
+		state := assessment.Status
+		color := yellow
+		if state == "ok" {
+			color = green
+		} else if state == "fail" {
+			color = red
 		}
 		body := lipgloss.NewStyle().Foreground(color).Bold(true).Render("● "+state) + "  " +
 			labelValue("IO / SQL / APPLIER", r.IORunning+" / "+r.SQLRunning+" / "+fallback(r.ApplierState, "unknown")) + "  ·  " +
@@ -1308,7 +1440,7 @@ func queries(ctx *model.Context, width, selected int, totalLatency float64) stri
 		} else if !wide {
 			values = []string{marker, duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.P95LatencyMillis), users, query.Statement}
 		}
-		out.WriteString(selectableRow(values, widths, index == selected) + "\n")
+		out.WriteString(semanticRow(values, headings, widths, index == selected) + "\n")
 	}
 	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  user is point-in-time  ·  selected share %.1f%%  ·  literals removed", queryShare(ctx.Queries, selected, totalLatency))))
 	return out.String()
@@ -1330,6 +1462,7 @@ func totalQueryLatency(queries []model.Query) float64 {
 }
 
 func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) string {
+	width = min(width, 108)
 	if selected < 0 || selected >= len(ctx.Queries) {
 		return empty("The selected query is no longer available. Press Esc to return to Queries.")
 	}
@@ -1346,23 +1479,41 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 		labelValue("P95", duration(query.P95LatencyMillis)),
 	}, "  ·  ")
 	var out strings.Builder
-	out.WriteString(panelBox(fmt.Sprintf("QUERY %d OF %d", selected+1, len(ctx.Queries)),
+	out.WriteString(panelBox(fmt.Sprintf("QUERY %d OF %d · SNAPSHOT", selected+1, len(ctx.Queries)),
 		lipgloss.NewStyle().Width(max(20, width-4)).Render(important), width))
 	out.WriteString("\n" + sectionTitle("NORMALIZED SQL") + "\n")
-	out.WriteString(lipgloss.NewStyle().Foreground(text).Bold(true).Width(max(20, width-2)).Render(query.Statement) + "\n")
+	out.WriteString(lipgloss.NewStyle().Width(max(20, width-2)).Render(highlightedSQL(query.Statement)) + "\n")
 
-	evidence := []string{
-		labelValue("AVG / P99 / MAX", duration(query.MeanLatencyMillis)+" / "+duration(query.P99LatencyMillis)+" / "+duration(query.MaxLatencyMillis)),
-		labelValue("ROWS EXAMINED", humanCount(query.RowsExamined)),
-		labelValue("ROWS SENT", humanCount(query.RowsSent)),
-		labelValue("ERRORS / WARNINGS", humanCount(query.Errors)+" / "+humanCount(query.Warnings)),
-		labelValue("NO INDEX CALLS", humanCount(query.NoIndexUsed)),
-		labelValue("FULL SCANS", humanCount(query.FullScans)),
-		labelValue("TEMP TABLES", humanCount(query.TmpTables)),
-		labelValue("TEMP ON DISK", humanCount(query.TmpDiskTables)),
+	evidence := [][2]string{
+		{"AVG / P99 / MAX", duration(query.MeanLatencyMillis) + " / " + duration(query.P99LatencyMillis) + " / " + duration(query.MaxLatencyMillis)},
+		{"ROWS EXAMINED", humanCount(query.RowsExamined)},
+		{"ROWS SENT", humanCount(query.RowsSent)},
+		{"ERRORS / WARNINGS", humanCount(query.Errors) + " / " + humanCount(query.Warnings)},
+		{"NO INDEX CALLS", humanCount(query.NoIndexUsed)},
+		{"FULL SCANS", humanCount(query.FullScans)},
+		{"TEMP TABLES", humanCount(query.TmpTables)},
+		{"TEMP ON DISK", humanCount(query.TmpDiskTables)},
 	}
-	out.WriteString("\n" + sectionTitle("EXECUTION EVIDENCE") + "\n" +
-		lipgloss.NewStyle().Width(max(20, width-2)).Render(strings.Join(evidence, "  ·  ")) + "\n")
+	out.WriteString("\n" + sectionTitle("EXECUTION EVIDENCE") + "\n")
+	columns := 1
+	if width >= 100 {
+		columns = 2
+	}
+	cellWidth := (width - 2) / columns
+	for i, item := range evidence {
+		valueColor := lipgloss.TerminalColor(number)
+		if item[1] == "0" || item[1] == "0 / 0" {
+			valueColor = text
+		}
+		if i == 3 && (query.Errors > 0 || query.Warnings > 0) {
+			valueColor = yellow
+		}
+		cell := lipgloss.NewStyle().Width(19).Render(item[0]) + lipgloss.NewStyle().Foreground(valueColor).Render(item[1])
+		out.WriteString(lipgloss.NewStyle().Width(cellWidth).Render(cell))
+		if (i+1)%columns == 0 {
+			out.WriteByte('\n')
+		}
+	}
 	if query.FirstSeen != "" || query.LastSeen != "" {
 		out.WriteString("\n" + lipgloss.NewStyle().Width(max(20, width-2)).Render(labelValue("OBSERVED", fallback(query.FirstSeen, "—")+" → "+fallback(query.LastSeen, "—"))) + "\n")
 	}
@@ -1373,8 +1524,17 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 }
 
 func labelValue(label, value string) string {
-	return lipgloss.NewStyle().Foreground(muted).Bold(true).Render(label+" ") +
-		lipgloss.NewStyle().Foreground(text).Render(value)
+	var color lipgloss.TerminalColor = text
+	switch strings.ToUpper(label) {
+	case "USER", "DATABASE", "HOST", "SCHEMA":
+		color = identity
+	default:
+		if len(value) > 0 && value[0] >= '0' && value[0] <= '9' {
+			color = number
+		}
+	}
+	return lipgloss.NewStyle().Foreground(muted).Render(label+" ") +
+		lipgloss.NewStyle().Foreground(color).Render(value)
 }
 
 func engine(ctx *model.Context, width int) string {
@@ -1383,7 +1543,7 @@ func engine(ctx *model.Context, width int) string {
 	currentLoad := summarizeCurrentLoad(ctx)
 	load := fmt.Sprintf("active %d  ·  executing %d  ·  waiting %d  ·  top wait %s  ·  top user %s",
 		currentLoad.active, currentLoad.executing, currentLoad.waiting, currentLoad.topWait, currentLoad.topUser)
-	out.WriteString(panelBox("CURRENT DATABASE LOAD", lipgloss.NewStyle().Foreground(text).Bold(true).Render(load), width) + "\n")
+	out.WriteString(panelBox("CURRENT DATABASE LOAD", lipgloss.NewStyle().Foreground(text).Render(load), width) + "\n")
 
 	out.WriteString(sectionTitle("INNODB I/O AND REDO") + "\n")
 	metricWidths := []int{max(24, width/3), max(18, width/5), max(24, width-width/3-width/5)}
@@ -1422,7 +1582,7 @@ func engine(ctx *model.Context, width int) string {
 				identityWidth = waitWidths[0]
 				values = []string{compactMiddle(wait.Name, waitWidths[0]-1), fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s"}
 			}
-			out.WriteString(row(values, waitWidths, false) + "\n")
+			out.WriteString(semanticRow(values, waitHeadings, waitWidths, false) + "\n")
 			out.WriteString(identityContinuation(wait.Name, identityWidth, width))
 		}
 	}
@@ -1444,7 +1604,7 @@ func engine(ctx *model.Context, width int) string {
 				identityWidth = ioWidths[0]
 				values = []string{compactPath(item.Name, ioWidths[0]-1), fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond)}
 			}
-			out.WriteString(row(values, ioWidths, false) + "\n")
+			out.WriteString(semanticRow(values, ioHeadings, ioWidths, false) + "\n")
 			out.WriteString(identityContinuation(item.Name, identityWidth, width))
 		}
 	}
@@ -1465,7 +1625,7 @@ func engine(ctx *model.Context, width int) string {
 				identityWidth = errorWidths[0]
 				values = []string{compactMiddle(item.Name, errorWidths[0]-1), fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond)}
 			}
-			out.WriteString(row(values, errorWidths, false) + "\n")
+			out.WriteString(semanticRow(values, errorHeadings, errorWidths, false) + "\n")
 			out.WriteString(identityContinuation(item.Name, identityWidth, width))
 		}
 	}
@@ -1519,7 +1679,7 @@ func engine(ctx *model.Context, width int) string {
 				identityWidth = memoryWidths[0]
 				values = []string{compactMiddle(consumer.Name, memoryWidths[0]-1), humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes)}
 			}
-			out.WriteString(row(values, memoryWidths, false) + "\n")
+			out.WriteString(semanticRow(values, memoryHeadings, memoryWidths, false) + "\n")
 			out.WriteString(identityContinuation(consumer.Name, identityWidth, width))
 		}
 	}
@@ -1531,7 +1691,7 @@ func rows(values [][]string, headings []string, widths []int) string {
 	var out strings.Builder
 	out.WriteString(row(headings, widths, true) + "\n")
 	for _, values := range values {
-		out.WriteString(row(values, widths, false) + "\n")
+		out.WriteString(semanticRow(values, headings, widths, false) + "\n")
 	}
 	return out.String()
 }
@@ -1568,7 +1728,7 @@ func tablesView(ctx *model.Context, width int) string {
 				values = []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), duration(table.ReadLatencyMillis),
 					humanCount(table.Writes), duration(table.WriteLatencyMillis), pk, table.Schema + "." + table.Name}
 			}
-			out.WriteString(row(values, widths, false) + "\n")
+			out.WriteString(semanticRow(values, headings, widths, false) + "\n")
 			out.WriteString(identityContinuation(table.Schema+"."+table.Name, identityWidth, width))
 		}
 	}
@@ -1600,7 +1760,7 @@ func tablesView(ctx *model.Context, width int) string {
 				compactIdentity := index.Schema + "." + index.Table + "." + index.Name
 				values = []string{compactMiddle(compactIdentity, indexWidths[0]-1), humanCount(index.Reads), humanCount(index.Writes), strings.TrimSpace(flags)}
 			}
-			out.WriteString(row(values, indexWidths, false) + "\n")
+			out.WriteString(semanticRow(values, indexHeadings, indexWidths, false) + "\n")
 			out.WriteString(identityContinuation(identity, identityWidth, width))
 		}
 	}
@@ -1626,30 +1786,33 @@ func connections(ctx *model.Context, width int) string {
 			if compactLayout {
 				values = []string{group.Kind, compactMiddle(group.Key, groupWidths[1]-1), fmt.Sprint(group.Total), fmt.Sprint(group.Active)}
 			}
-			out.WriteString(row(values, groupWidths, false) + "\n")
+			out.WriteString(semanticRow(values, groupHeadings, groupWidths, false) + "\n")
 			out.WriteString(identityContinuation(group.Key, groupWidths[1], width))
 		}
 		out.WriteString("\n" + sectionTitle("PROCESS SNAPSHOT") + "\n")
 	}
 	if compactLayout {
 		processWidths := []int{7, max(16, width-32), 9, 7, 9}
-		out.WriteString("\n" + row([]string{"ID", "STATEMENT", "USER", "TIME", "WAIT"}, processWidths, true) + "\n")
+		processHeadings := []string{"ID", "STATEMENT", "USER", "TIME", "WAIT"}
+		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
-			out.WriteString(row([]string{compactMiddle(fmt.Sprint(process.ID), processWidths[0]-1), compactMiddle(process.Statement, processWidths[1]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processWidths, false) + "\n")
+			out.WriteString(semanticRow([]string{compactMiddle(fmt.Sprint(process.ID), processWidths[0]-1), compactMiddle(process.Statement, processWidths[1]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processHeadings, processWidths, false) + "\n")
 			out.WriteString(processContinuation(process, processWidths[0], processWidths[1], width))
 		}
 	} else if width < 103 {
 		processWidths := []int{8, 12, 8, 18, max(22, width-46)}
-		out.WriteString("\n" + row([]string{"ID", "USER", "TIME", "WAIT", "STATEMENT"}, processWidths, true) + "\n")
+		processHeadings := []string{"ID", "USER", "TIME", "WAIT", "STATEMENT"}
+		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
-			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processWidths, false) + "\n")
+			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, false) + "\n")
 			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
 		}
 	} else {
 		processWidths := []int{8, 13, 18, 8, 28, max(28, width-75)}
-		out.WriteString("\n" + row([]string{"ID", "USER", "HOST", "TIME", "WAIT", "STATEMENT"}, processWidths, true) + "\n")
+		processHeadings := []string{"ID", "USER", "HOST", "TIME", "WAIT", "STATEMENT"}
+		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
-			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processWidths, false) + "\n")
+			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, false) + "\n")
 			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
 		}
 	}
@@ -1660,7 +1823,7 @@ func connections(ctx *model.Context, width int) string {
 		out.WriteString("\n\n" + sectionTitle("ROW LOCK WAITS") + "\n")
 		for _, lock := range ctx.Locks {
 			line := fmt.Sprintf("%s waits for %s on %s.%s index %s (%s %s)", lock.WaitingTransaction, lock.BlockingTransaction, lock.Schema, lock.Table, lock.Index, lock.LockType, lock.LockMode)
-			out.WriteString(lipgloss.NewStyle().Width(width).Render(line) + "\n")
+			out.WriteString(lipgloss.NewStyle().Foreground(yellow).Width(width).Render(line) + "\n")
 		}
 	}
 	if len(ctx.Transactions) > 0 {
@@ -1679,7 +1842,7 @@ func connections(ctx *model.Context, width int) string {
 				identityWidth = transactionWidths[0]
 				values = []string{compactMiddle(transaction.Statement, transactionWidths[0]-1), transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds)}
 			}
-			out.WriteString(row(values, transactionWidths, false) + "\n")
+			out.WriteString(semanticRow(values, transactionHeadings, transactionWidths, false) + "\n")
 			out.WriteString(identityContinuation(transaction.Statement, identityWidth, width))
 		}
 	}
@@ -1700,7 +1863,7 @@ func connections(ctx *model.Context, width int) string {
 				identityWidth = metadataWidths[0]
 				values = []string{compactMiddle(object, metadataWidths[0]-1), lock.Status, lock.User, lock.LockType}
 			}
-			out.WriteString(row(values, metadataWidths, false) + "\n")
+			out.WriteString(semanticRow(values, metadataHeadings, metadataWidths, false) + "\n")
 			out.WriteString(identityContinuation(object, identityWidth, width))
 		}
 	}
@@ -1765,7 +1928,7 @@ func config(ctx *model.Context, width int) string {
 func row(values []string, widths []int, header bool) string {
 	style := lipgloss.NewStyle().Foreground(text)
 	if header {
-		style = style.Foreground(cyan).Background(surfaceAlt).Bold(true)
+		style = style.Bold(true)
 	}
 	var out strings.Builder
 	for i, value := range values {
@@ -1784,7 +1947,7 @@ func row(values []string, widths []int, header bool) string {
 func selectableRow(values []string, widths []int, selected bool) string {
 	style := lipgloss.NewStyle().Foreground(text)
 	if selected {
-		style = style.Foreground(cyan).Background(surfaceAlt).Bold(true)
+		style = style.Reverse(true).Bold(true)
 	}
 	var out strings.Builder
 	for i, value := range values {
@@ -1825,7 +1988,7 @@ func miniBar(percent float64, width int, color lipgloss.TerminalColor) string {
 }
 
 func sectionTitle(value string) string {
-	return lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("▌ " + value)
+	return lipgloss.NewStyle().Foreground(cyan).Render("▌ ") + lipgloss.NewStyle().Foreground(text).Bold(true).Render(value)
 }
 func empty(value string) string { return "\n" + lipgloss.NewStyle().Foreground(muted).Render(value) }
 func errorView(err error) string {

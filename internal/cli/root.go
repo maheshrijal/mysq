@@ -17,6 +17,7 @@ import (
 	"github.com/maheshrijal/mysq/internal/analyze"
 	"github.com/maheshrijal/mysq/internal/collect"
 	"github.com/maheshrijal/mysq/internal/compare"
+	"github.com/maheshrijal/mysq/internal/control"
 	bundle "github.com/maheshrijal/mysq/internal/export"
 	"github.com/maheshrijal/mysq/internal/history"
 	"github.com/maheshrijal/mysq/internal/model"
@@ -53,11 +54,12 @@ func newRoot(version string, out, errOut io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
-		Long: `mysq is a read-only, findings-first MySQL diagnostic.
+		Long: `mysq is a findings-first MySQL diagnostic.
 
 It samples MySQL's own status and Performance Schema, produces a polished terminal
-report, remembers local snapshots, and exports a secret-free evidence bundle for
-agents. It never creates objects or writes data in the inspected database.`,
+report, remembers local snapshots, and exports a redacted evidence bundle for
+agents. Diagnostics are read-only. The TUI Queries tab can send KILL QUERY for one
+live execution after explicit typed confirmation.`,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 			noColor, _ := cmd.Flags().GetBool("no-color")
 			app.color = !noColor && os.Getenv("NO_COLOR") == "" && term.IsTerminal(os.Stdout.Fd())
@@ -67,7 +69,7 @@ agents. It never creates objects or writes data in the inspected database.`,
 	root.SetErr(errOut)
 	root.PersistentFlags().Bool("no-color", false, "disable ANSI color")
 	root.AddCommand(app.inspectCommand(), app.tuiCommand(), app.exportCommand(), app.diffCommand(), app.snapshotsCommand(), app.initCommand())
-	for _, section := range []string{"queries", "tables", "indexes", "processes", "transactions", "locks", "metadata-locks", "waits", "io", "errors", "memory", "engine", "coverage", "variables", "replication"} {
+	for _, section := range []string{"queries", "tables", "indexes", "processes", "transactions", "blockers", "locks", "metadata-locks", "waits", "io", "errors", "memory", "engine", "coverage", "variables", "replication"} {
 		root.AddCommand(app.focusedCommand(section))
 	}
 	return root
@@ -110,7 +112,17 @@ func (a *App) tuiCommand() *cobra.Command {
 				result, err := bundle.Write(ctx, output, bundle.Options{})
 				return result.Directory, err
 			}
-			return terminalui.Run(cmd.Context(), inspect, export)
+			db, err := collect.OpenTrendSampler(target)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			sample := func(ctx context.Context) (collect.TrendCounters, error) {
+				return collect.SampleTrends(ctx, db)
+			}
+			controller := &control.Queries{Target: target}
+			defer controller.Close()
+			return terminalui.Run(cmd.Context(), inspect, export, controller, sample)
 		},
 	}
 	command.Flags().DurationVar(&interval, "interval", time.Second, "counter sampling interval")
@@ -203,7 +215,7 @@ func (a *App) exportCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.Out, "Exported %d secret-free artifacts to %s\n", len(result.Files), result.Directory)
+			fmt.Fprintf(a.Out, "Exported %d redacted artifacts to %s\n", len(result.Files), result.Directory)
 			if result.Archive != "" {
 				fmt.Fprintf(a.Out, "Archive: %s\n", result.Archive)
 			}
@@ -231,6 +243,9 @@ func (a *App) focusedCommand(section string) *cobra.Command {
 			ctx, err := a.inspectSection(cmd.Context(), argument, interval, section)
 			if err != nil {
 				return ExitError{Code: 3, Err: err}
+			}
+			if section == "blockers" {
+				ctx.BlockingChains = analyze.BlockingChains(ctx)
 			}
 			value := focusedValue(section, ctx)
 			if jsonOutput {
@@ -446,6 +461,9 @@ func failCode(ctx *model.Context, threshold string) int {
 
 func focusedValue(section string, ctx *model.Context) any {
 	switch section {
+	case "blockers":
+		return map[string]any{"schema_version": model.SchemaVersion, "tool_version": ctx.ToolVersion, "collected_at": ctx.CollectedAt, "fingerprint": ctx.Fingerprint, "server": map[string]any{"host": ctx.Server.Host, "port": ctx.Server.Port, "database": ctx.Server.Database, "uuid": ctx.Server.UUID, "version": ctx.Server.Version, "read_only": ctx.Server.ReadOnly, "super_read_only": ctx.Server.SuperReadOnly}, "scope": "server-wide, point-in-time", "blocking_chains": ctx.BlockingChains, "metadata_locks": ctx.MetadataLocks, "capabilities": ctx.Capabilities, "collection_warnings": ctx.Warnings}
+
 	case "queries":
 		return ctx.Queries
 	case "tables":
@@ -485,7 +503,7 @@ func focusedDescription(section string) string {
 	descriptions := map[string]string{
 		"queries": "Show top normalized statements by total latency", "tables": "Show table size and I/O activity",
 		"indexes": "Show index definitions and usage", "processes": "Show the redacted connection snapshot",
-		"transactions": "Show active InnoDB transactions", "locks": "Show active InnoDB row lock waits",
+		"transactions": "Show active InnoDB transactions", "locks": "Show active InnoDB row lock waits", "blockers": "Investigate row-lock chains and metadata-lock owner candidates",
 		"metadata-locks": "Show active and pending metadata locks", "waits": "Show top Performance Schema wait events",
 		"io": "Show sampled MySQL file I/O latency and throughput", "errors": "Show sampled and cumulative MySQL server errors",
 		"memory": "Show top MySQL memory consumers", "engine": "Show sampled InnoDB I/O, redo, and network metrics",

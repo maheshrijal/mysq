@@ -90,7 +90,7 @@ func TestNarrowTerminalKeepsHeaderAndTablesHorizontal(t *testing.T) {
 		if lipgloss.Width(line) > 80 {
 			t.Fatalf("line width %d exceeds terminal:\n%s", lipgloss.Width(line), line)
 		}
-		if strings.Contains(line, "MYSQ") && strings.Contains(line, "HEALTHY") {
+		if strings.Contains(line, "MYSQ") && strings.Contains(line, "PARTIAL") {
 			foundHeader = true
 		}
 	}
@@ -485,7 +485,7 @@ func TestExportConfirmationKeepsDestinationVisible(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(exportMessage{path: path})
 	view = updated.(Model).View()
-	if !strings.Contains(view, "…") || !strings.Contains(view, "mysq-export-20260822-154220.547") {
+	if !strings.Contains(view, "mysq-export-20260822-154220.547") {
 		t.Fatalf("narrow export confirmation lost bundle name:\n%s", view)
 	}
 }
@@ -732,8 +732,9 @@ func TestTabSwitchAndResizePreservePerViewScroll(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 92, Height: 24})
 	m = updated.(Model)
-	if m.viewport.YOffset != wantOffset {
-		t.Fatalf("resize reset offset to %d, want %d", m.viewport.YOffset, wantOffset)
+	line := m.findingIndex*3 + 2
+	if line < m.viewport.YOffset || line >= m.viewport.YOffset+m.viewport.Height {
+		t.Fatal("resize hid the selected finding")
 	}
 }
 

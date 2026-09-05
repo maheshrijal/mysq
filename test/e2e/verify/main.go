@@ -79,7 +79,7 @@ func idleContextError(ctx model.Context) error {
 }
 
 func verifyFocused(directory string) {
-	sections := []string{"queries", "tables", "indexes", "processes", "transactions", "locks", "metadata-locks", "waits", "io", "errors", "memory", "engine", "coverage", "variables", "replication"}
+	sections := []string{"queries", "tables", "indexes", "processes", "transactions", "blockers", "locks", "metadata-locks", "waits", "io", "errors", "memory", "engine", "coverage", "variables", "replication"}
 	for _, section := range sections {
 		data, err := os.ReadFile(filepath.Join(directory, section+".json"))
 		if err != nil {
@@ -101,6 +101,19 @@ func verifyFocusedData(section string, data []byte) error {
 		return errors.New("unexpected null output")
 	}
 	switch section {
+	case "blockers":
+		var evidence struct {
+			SchemaVersion string                `json:"schema_version"`
+			Fingerprint   string                `json:"fingerprint"`
+			Chains        []model.BlockingChain `json:"blocking_chains"`
+			Capabilities  []model.Capability    `json:"capabilities"`
+		}
+		if err := json.Unmarshal(trimmed, &evidence); err != nil {
+			return err
+		}
+		if evidence.SchemaVersion != model.SchemaVersion || evidence.Fingerprint == "" || len(evidence.Chains) == 0 || evidence.Chains[0].WaiterCount == 0 || len(evidence.Capabilities) != 3 {
+			return errors.New("missing scoped blocking-chain evidence")
+		}
 	case "queries":
 		var items []model.Query
 		if err := decodeStrictJSON(trimmed, &items); err != nil || len(items) == 0 || items[0].Digest == "" {
@@ -300,7 +313,7 @@ func verifyBundle(directory string) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		log.Fatal(err)
 	}
-	if !m.SecretFree || len(m.Files) != 24 {
+	if m.SecretFree || len(m.Files) != 24 {
 		log.Fatalf("invalid manifest: secret_free=%t files=%d", m.SecretFree, len(m.Files))
 	}
 	for _, file := range m.Files {

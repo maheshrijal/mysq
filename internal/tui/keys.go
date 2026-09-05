@@ -16,7 +16,10 @@ type navigationKeyMap struct {
 	Open         key.Binding
 	Back         key.Binding
 	Filter       key.Binding
+	Blockers     key.Binding
+	KillQuery    key.Binding
 	Refresh      key.Binding
+	PauseTrends  key.Binding
 	Export       key.Binding
 	Help         key.Binding
 	Quit         key.Binding
@@ -77,6 +80,9 @@ func defaultNavigationKeyMap() navigationKeyMap {
 			key.WithKeys("/"),
 			key.WithHelp("/", "filter current view"),
 		),
+		Blockers:    key.NewBinding(key.WithKeys("B"), key.WithHelp("B", "blocking chains")),
+		KillQuery:   key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "kill query…")),
+		PauseTrends: key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause/resume trends")),
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "refresh"),

@@ -80,7 +80,7 @@ if [[ "$gate_code" -ne 2 ]]; then
   exit 1
 fi
 
-for section in queries tables indexes processes transactions locks metadata-locks waits io errors memory engine coverage variables replication; do
+for section in queries tables indexes processes transactions blockers locks metadata-locks waits io errors memory engine coverage variables replication; do
   MYSQ_DATABASE_URL="$monitor_dsn" "$binary" "$section" --json --interval 250ms >"$work_dir/${section}.json"
 done
 go run ./test/e2e/verify --focused-dir "$work_dir"
@@ -101,6 +101,9 @@ MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --store "$histo
 # history. Stop it before the navigation-only PTY phase so hosted-runner load
 # cannot starve Bubble Tea's initial full refresh.
 stop_load
+
+MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" go test ./internal/collect -run 'TestFixture(SleepingMetadataOwner|TrendSampler)$' -count=1
+MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" MYSQ_E2E_CONTROL_DSN="mysq_operator:mysq-operator-test@tcp(127.0.0.1:${port})/app?parseTime=true" go test ./internal/control -run TestFixtureKillQuery -count=1
 
 # With no application client active, a full inspection must not count its own
 # digest-sampler SELECTs as workload inside the global-status window. Briefly
