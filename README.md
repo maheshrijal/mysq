@@ -8,169 +8,79 @@ Open an interactive dashboard, get a quick health report, or export the evidence
 
 ## Install
 
-On macOS or Linux, install the latest release:
+macOS and Linux, on Intel/AMD or Apple Silicon/ARM:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | sh
 ```
 
-The installer detects **amd64** (Intel/AMD) or **arm64** (including Apple Silicon), downloads the matching GoReleaser archive, verifies its SHA-256 checksum, and installs into `~/.local/bin`. No Go installation or sudo is needed. It adds the directory to PATH for **sh, Bash, Zsh, and Fish**, preserving existing configuration and avoiding duplicate entries on repeat installs.
-
-Open a new terminal and run `mysq --help`, or copy the shell-specific command printed by the installer to use mysq immediately. A piped installer cannot change PATH in the terminal that launched it. Run the installer again to update.
-
-To choose a directory or a specific published tag:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | INSTALL_DIR="$HOME/bin" sh
-curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | VERSION=v0.1.0 sh
-```
-
-Use an existing tag from [Releases](https://github.com/maheshrijal/mysq/releases). The installer needs a published release; until the first release is available, use the Go installation below.
-
-To manage PATH yourself (for example, in CI or a dotfiles manager):
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | env MYSQ_NO_MODIFY_PATH=1 sh
-```
-
-Shell setup uses `~/.profile`, `~/.bashrc`, the existing Bash login profile if present, `${ZDOTDIR:-$HOME}/.zshrc`, and `${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/mysq.fish`. Fish requires `fish_add_path` (Fish 3.2+). Other shells need their own PATH configuration.
+Open a new terminal after installation, or run the PATH command it prints. Run the same command to update.
 
 <details>
-<summary>Install with Go</summary>
+<summary>Windows, Go, and installer options</summary>
 
-With [Go 1.25 or newer](https://go.dev/dl/):
+**Windows:** download the amd64 or arm64 ZIP from [Releases](https://github.com/maheshrijal/mysq/releases), extract `mysq.exe`, and add its directory to `Path`.
+
+**Go 1.25+:** this also works before the first binary release is published:
 
 ```sh
-mkdir -p "$HOME/.local/bin"
-GOBIN="$HOME/.local/bin" go install github.com/maheshrijal/mysq/cmd/mysq@latest
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Run the same command to update from source.
-
-</details>
-
-<details>
-<summary>Windows installation</summary>
-
-Download `mysq_windows_amd64.zip` or `mysq_windows_arm64.zip` from [Releases](https://github.com/maheshrijal/mysq/releases), extract `mysq.exe`, and add its directory to `Path`. The release includes `checksums.txt`; use `Get-FileHash -Algorithm SHA256` to check the downloaded ZIP.
-
-Alternatively, with Go installed, run in PowerShell:
-
-```powershell
 go install github.com/maheshrijal/mysq/cmd/mysq@latest
-$env:Path += ";$(go env GOPATH)\bin"
-mysq --help
 ```
 
-If you have set `GOBIN`, add that directory to `Path` instead.
+Add `$(go env GOPATH)/bin` to PATH, or your `GOBIN` directory if configured.
+
+The curl installer needs a published release. It verifies SHA-256 checksums, installs into `~/.local/bin`, and configures PATH for sh, Bash, Zsh, and Fish. Set `INSTALL_DIR` to choose another directory, `VERSION` to pin a published tag, or `MYSQ_NO_MODIFY_PATH=1` to manage PATH yourself:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | env INSTALL_DIR="$HOME/bin" sh
+```
 
 </details>
 
 ## Connect
 
-You need network access to MySQL 8.0 or 8.4 and a monitoring account. If you need an account, see [Monitoring permissions](#monitoring-permissions).
-
-### 1. Export your credentials
-
-If your terminal already has `DBOPS_MYSQL_USER` and `DBOPS_MYSQL_PWD`, you can skip this step. mysq uses them automatically.
-
-In Bash or zsh, set your username and enter the password at the hidden prompt:
+Export your MySQL connection string, then open the dashboard:
 
 ```sh
-export DBOPS_MYSQL_USER='mysq_monitor'
-printf 'MySQL password: '
-IFS= read -r -s DBOPS_MYSQL_PWD
-printf '\n'
-export DBOPS_MYSQL_PWD
-```
-
-The password is not echoed or written into the command you type. Credentials remain in your shell environment and are inherited by mysq.
-
-<details>
-<summary>PowerShell credentials</summary>
-
-```powershell
-$env:DBOPS_MYSQL_USER = 'mysq_monitor'
-$password = Read-Host 'MySQL password' -AsSecureString
-$env:DBOPS_MYSQL_PWD = [System.Net.NetworkCredential]::new('', $password).Password
-Remove-Variable password
-```
-
-</details>
-
-### 2. Choose your database
-
-Pass `host/database` to open the dashboard:
-
-```sh
-mysq tui 'db.example.com/app'
-```
-
-Port **3306** is the default. Include a different port when needed:
-
-```sh
-mysq tui '127.0.0.1:3307/app'
-```
-
-Or just run:
-
-```sh
+export MYSQ_DATABASE_URL='mysql://mysq_monitor:password@localhost:3306/app'
 mysq tui
 ```
 
-When no endpoint is configured, the TUI asks for **host[:port]/database**. Enter the endpoint, then press **Enter** to connect or **Esc** to cancel. Your password comes from the exported credentials. The prompt does not save the endpoint or credentials.
+Replace the example credentials, host, and database with yours. You need network access and a [monitoring account](#monitoring-permissions). MySQL URLs require percent-encoding special characters in credentials; for example, `@` becomes `%40`.
 
-For a quick report instead of a dashboard, use the same endpoint with `inspect`:
-
-```sh
-mysq inspect 'db.example.com/app'
-```
-
-### 3. Reuse the connection
-
-To avoid entering the endpoint on every run, export it once:
+The same connection works for reports and focused commands:
 
 ```sh
-export MYSQ_DATABASE_URL='db.example.com/app'
-
-mysq tui
 mysq inspect
 mysq queries
 mysq blockers
 ```
 
-`MYSQ_DATABASE_URL` can hold the endpoint alone; credentials still come from `DBOPS_MYSQL_USER` and `DBOPS_MYSQL_PWD`. Omitting `/database` inspects all databases visible to your account. Quote endpoints so shells such as zsh do not expand special characters.
-
-For encrypted connections with certificate verification, append `?tls=true`:
+You can also pass a connection string directly:
 
 ```sh
-export MYSQ_DATABASE_URL='db.example.com/app?tls=true'
+mysq tui 'mysql://mysq_monitor:password@localhost:3306/app'
 ```
 
-The server certificate must be trusted by your machine and match the hostname.
+For TLS with certificate verification, append `?tls=true`. Port **3306** is the default when omitted.
 
-### Full connection strings
+<details>
+<summary>Connection formats and compatibility</summary>
 
-You can pass a full MySQL URL or native driver DSN to `tui`, `inspect`, and the other database commands, or store it in `MYSQ_DATABASE_URL`:
+Native MySQL DSNs are supported, including TCP and Unix sockets:
 
 ```sh
-mysq tui 'mysql://mysq_monitor:password@db.example.com:3306/app?tls=true'
-mysq inspect 'mysq_monitor:password@tcp(db.example.com:3306)/app?tls=true'
-mysq tui 'mysq_monitor:password@unix(/var/run/mysqld/mysqld.sock)/app'
+export MYSQ_DATABASE_URL='mysq_monitor:password@tcp(localhost:3306)/app'
+export MYSQ_DATABASE_URL='mysq_monitor:password@unix(/var/run/mysqld/mysqld.sock)/app'
 ```
 
-These examples contain placeholder passwords. To keep passwords out of shell history and process arguments, prefer the exported DBOPS credentials with a credential-free connection string:
+A command argument overrides `MYSQ_DATABASE_URL`. The legacy `MYSQLDOT_DATABASE_URL` and then `DATABASE_URL` are accepted as fallbacks. Omitting the database inspects all databases visible to your account.
 
-```sh
-export MYSQ_DATABASE_URL='mysql://db.example.com:3306/app?tls=true'
-# Native driver format, with credentials taken from the DBOPS variables:
-export MYSQ_DATABASE_URL='tcp(db.example.com:3306)/app?tls=true'
-```
+For compatibility with existing shell setups, `DBOPS_MYSQL_USER` and `DBOPS_MYSQL_PWD` can supply credentials when the connection string has no username. With those exported, `mysq tui 'host[:port]/database'` works, and `mysq tui` asks for the endpoint if none is configured. An explicit username always keeps its own password, including an empty one.
 
-A connection string that includes a username uses its own credentials, including an empty password. mysq does not combine that username with `DBOPS_MYSQL_PWD`. Full URLs require percent-encoding special characters in credentials; using the separate environment variables avoids that step.
+The examples use placeholder passwords. For sensitive credentials, load environment variables through your usual secret-management workflow instead of typing passwords into shell history.
 
-Endpoint precedence is: command argument → `MYSQ_DATABASE_URL` → legacy `MYSQLDOT_DATABASE_URL` → `DATABASE_URL`. The TUI prompts only when none is set. Other database commands require an endpoint and print setup guidance if one is missing. Credentials alone never silently select localhost.
+</details>
 
 ## Use the dashboard
 
