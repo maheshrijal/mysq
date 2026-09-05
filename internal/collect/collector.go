@@ -223,83 +223,138 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	redactVariables(result.Variables)
 	result.Server.PerformanceSchema = strings.EqualFold(result.Variables["performance_schema"], "ON")
 
-	c.probe(ctx, result, "statement digests", func() error {
-		var probeErr error
-		result.Queries, probeErr = c.collectQueries(ctx, conn)
-		return probeErr
-	})
-	c.probe(ctx, result, "table statistics", func() error {
-		var probeErr error
-		result.Tables, probeErr = c.collectTables(ctx, conn)
-		return probeErr
-	})
-	c.probe(ctx, result, "index statistics", func() error {
-		var probeErr error
-		result.Indexes, probeErr = c.collectIndexes(ctx, conn)
-		return probeErr
-	})
-	c.probe(ctx, result, "process list", func() error {
-		var probeErr error
-		result.Processes, probeErr = c.collectProcesses(ctx, conn)
-		result.ConnectionGroups = summarizeProcesses(result.Processes)
-		return probeErr
-	})
-	c.probe(ctx, result, "active query users", func() error {
+	pool := &probePool{collector: c, target: target, server: result.Server}
+	defer pool.close()
+	var historyLength uint64
+	tasks := []probeTask{
+		{name: "statement digests", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.Queries, probeErr = c.collectQueries(ctx, conn)
+			return probeErr
+		}},
+		{name: "table statistics", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.Tables, probeErr = c.collectTables(ctx, conn)
+			return probeErr
+		}},
+		{name: "index statistics", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.Indexes, probeErr = c.collectIndexes(ctx, conn)
+			return probeErr
+		}},
+		{name: "process list", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.Processes, probeErr = c.collectProcesses(ctx, conn)
+			result.ConnectionGroups = summarizeProcesses(result.Processes)
+			return probeErr
+		}},
+		{name: "row lock waits", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.Locks, probeErr = c.collectLocks(ctx, conn)
+			return probeErr
+		}},
+		{name: "active transactions", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.Transactions, probeErr = c.collectTransactions(ctx, conn)
+			return probeErr
+		}},
+		{name: "metadata locks", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.MetadataLocks, probeErr = c.collectMetadataLocks(ctx, conn)
+			return probeErr
+		}},
+		{name: "statement latency histogram", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.StatementLatency, probeErr = c.collectStatementLatency(ctx, conn)
+			return probeErr
+		}},
+		{name: "instrumentation coverage", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.Instrumentation, probeErr = c.collectInstrumentation(ctx, conn, result.Variables)
+			return probeErr
+		}},
+		{name: "memory consumers", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.MemoryConsumers, probeErr = c.collectMemoryConsumers(ctx, conn)
+			return probeErr
+		}},
+		{name: "replication", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.Replication, probeErr = c.collectReplication(ctx, conn)
+			return probeErr
+		}},
+		{name: "InnoDB monitor", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			result.InnoDBStatus, probeErr = collectInnoDBStatus(ctx, conn)
+			return probeErr
+		}},
+		{name: "InnoDB history list", run: func(ctx context.Context, conn *sql.Conn) error {
+			var probeErr error
+			historyLength, probeErr = readHistoryListLength(ctx, conn)
+			return probeErr
+		}},
+	}
+	probeErrors, err := pool.run(ctx, tasks)
+	if err != nil {
+		return nil, err
+	}
+	for i, task := range tasks {
+		if task.name == "InnoDB history list" {
+			if probeErrors[i] != nil {
+				result.Warnings = append(result.Warnings, "InnoDB history list unavailable: "+compactError(probeErrors[i]))
+			}
+		} else {
+			c.recordCapability(result, task.name, probeErrors[i])
+		}
+	}
+	// User attribution depends on the selected digest set, so it follows the
+	// independent probes rather than racing their writes to result.Queries.
+	userErrors, err := pool.run(ctx, []probeTask{{name: "active query users", run: func(ctx context.Context, conn *sql.Conn) error {
 		return c.collectActiveQueryUsers(ctx, conn, result.Queries)
-	})
-	c.probe(ctx, result, "row lock waits", func() error {
-		var probeErr error
-		result.Locks, probeErr = c.collectLocks(ctx, conn)
-		return probeErr
-	})
-	c.probe(ctx, result, "active transactions", func() error {
-		var probeErr error
-		result.Transactions, probeErr = c.collectTransactions(ctx, conn)
-		return probeErr
-	})
-	c.probe(ctx, result, "metadata locks", func() error {
-		var probeErr error
-		result.MetadataLocks, probeErr = c.collectMetadataLocks(ctx, conn)
-		return probeErr
-	})
-	c.probe(ctx, result, "statement latency histogram", func() error {
-		var probeErr error
-		result.StatementLatency, probeErr = c.collectStatementLatency(ctx, conn)
-		return probeErr
-	})
-	c.probe(ctx, result, "instrumentation coverage", func() error {
-		var probeErr error
-		result.Instrumentation, probeErr = c.collectInstrumentation(ctx, conn, result.Variables)
-		return probeErr
-	})
-	c.probe(ctx, result, "memory consumers", func() error {
-		var probeErr error
-		result.MemoryConsumers, probeErr = c.collectMemoryConsumers(ctx, conn)
-		return probeErr
-	})
-	c.probe(ctx, result, "replication", func() error {
-		var probeErr error
-		result.Replication, probeErr = c.collectReplication(ctx, conn)
-		return probeErr
-	})
-	c.probe(ctx, result, "InnoDB monitor", func() error {
-		var probeErr error
-		result.InnoDBStatus, probeErr = collectInnoDBStatus(ctx, conn)
-		return probeErr
-	})
-	result.Metrics.HistoryListLength = c.historyListLength(ctx, conn, result)
-
-	// Counter endpoints are collected sequentially, so each family keeps its own
-	// elapsed window. Sharing the status timer would divide earlier/later counter
-	// deltas by a window that did not match their actual endpoints.
-	firstWaits, firstWaitErr := c.collectWaitCounters(ctx, conn)
-	waitsStarted := time.Now()
-	firstFileIO, firstFileErr := c.collectFileIOCounters(ctx, conn)
-	fileIOStarted := time.Now()
-	firstErrors, firstErrorErr := c.collectErrorCounters(ctx, conn)
-	errorsStarted := time.Now()
-	firstDigests, firstDigestErr := c.collectStatementDigestCounters(ctx, conn)
-	digestsStarted := time.Now()
+	}}})
+	if err != nil {
+		return nil, err
+	}
+	c.recordCapability(result, "active query users", userErrors[0])
+	// Run expensive counter endpoints concurrently, but finish every worker
+	// before the statement/global baselines. The global window remains quiet.
+	var firstWaits, secondWaits map[string]waitCounter
+	var firstFileIO, secondFileIO map[string]fileIOCounter
+	var firstErrors, secondErrors map[uint64]errorCounter
+	var firstDigests, secondDigests map[string]statementDigestCounter
+	var waitsStarted, fileIOStarted, errorsStarted, digestsStarted time.Time
+	var waitsElapsed, fileIOElapsed, errorsElapsed, digestsElapsed time.Duration
+	firstTasks := []probeTask{
+		{name: "sample waits", run: func(ctx context.Context, conn *sql.Conn) error {
+			var err error
+			firstWaits, err = c.collectWaitCounters(ctx, conn)
+			waitsStarted = time.Now()
+			return err
+		}},
+		{name: "sample file I/O", run: func(ctx context.Context, conn *sql.Conn) error {
+			var err error
+			firstFileIO, err = c.collectFileIOCounters(ctx, conn)
+			fileIOStarted = time.Now()
+			return err
+		}},
+		{name: "sample server errors", run: func(ctx context.Context, conn *sql.Conn) error {
+			var err error
+			firstErrors, err = c.collectErrorCounters(ctx, conn)
+			errorsStarted = time.Now()
+			return err
+		}},
+		{name: "sample statement digests", run: func(ctx context.Context, conn *sql.Conn) error {
+			var err error
+			firstDigests, err = c.collectStatementDigestCounters(ctx, conn)
+			digestsStarted = time.Now()
+			return err
+		}},
+	}
+	firstProbeErrors, err := pool.run(ctx, firstTasks)
+	if err != nil {
+		return nil, err
+	}
+	firstWaitErr, firstFileErr, firstErrorErr, firstDigestErr := firstProbeErrors[0], firstProbeErrors[1], firstProbeErrors[2], firstProbeErrors[3]
 	firstStatements, firstStatementErr := c.collectStatementCounters(ctx, conn)
 	statementsStarted := time.Now()
 	first, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
@@ -329,14 +384,50 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	statusElapsed := time.Since(statusStarted)
 	secondStatements, secondStatementErr := c.collectStatementCounters(ctx, conn)
 	statementsElapsed := time.Since(statementsStarted)
-	secondDigests, secondDigestErr := c.collectStatementDigestCounters(ctx, conn)
-	digestsElapsed := time.Since(digestsStarted)
-	secondWaits, secondWaitErr := c.collectWaitCounters(ctx, conn)
-	waitsElapsed := time.Since(waitsStarted)
-	secondFileIO, secondFileErr := c.collectFileIOCounters(ctx, conn)
-	fileIOElapsed := time.Since(fileIOStarted)
-	secondErrors, secondErrorErr := c.collectErrorCounters(ctx, conn)
-	errorsElapsed := time.Since(errorsStarted)
+	secondTasks := []probeTask{
+		{name: "sample waits", run: func(ctx context.Context, conn *sql.Conn) error {
+			var err error
+			secondWaits, err = c.collectWaitCounters(ctx, conn)
+			waitsElapsed = time.Since(waitsStarted)
+			return err
+		}},
+		{name: "sample file I/O", run: func(ctx context.Context, conn *sql.Conn) error {
+			var err error
+			secondFileIO, err = c.collectFileIOCounters(ctx, conn)
+			fileIOElapsed = time.Since(fileIOStarted)
+			return err
+		}},
+		{name: "sample server errors", run: func(ctx context.Context, conn *sql.Conn) error {
+			var err error
+			secondErrors, err = c.collectErrorCounters(ctx, conn)
+			errorsElapsed = time.Since(errorsStarted)
+			return err
+		}},
+		{name: "sample statement digests", run: func(ctx context.Context, conn *sql.Conn) error {
+			var err error
+			secondDigests, err = c.collectStatementDigestCounters(ctx, conn)
+			digestsElapsed = time.Since(digestsStarted)
+			return err
+		}},
+	}
+	// A failed baseline cannot produce a delta; do not repeat an expensive read.
+	var viableTasks []probeTask
+	var viableIndexes []int
+	secondProbeErrors := append([]error(nil), firstProbeErrors...)
+	for i, task := range secondTasks {
+		if firstProbeErrors[i] == nil {
+			viableTasks = append(viableTasks, task)
+			viableIndexes = append(viableIndexes, i)
+		}
+	}
+	secondResults, err := pool.run(ctx, viableTasks)
+	if err != nil {
+		return nil, err
+	}
+	for i, index := range viableIndexes {
+		secondProbeErrors[index] = secondResults[i]
+	}
+	secondWaitErr, secondFileErr, secondErrorErr, secondDigestErr := secondProbeErrors[0], secondProbeErrors[1], secondProbeErrors[2], secondProbeErrors[3]
 	if err := sampledContextError(ctx); err != nil {
 		return nil, err
 	}
@@ -347,7 +438,7 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		result.FileIO = deriveFileIO(firstFileIO, secondFileIO, fileIOElapsed)
 	}
 	serverErrorSampleErr := sampledServerError(firstErrorErr, secondErrorErr,
-		firstDigestErr, firstStatementErr, secondStatementErr, secondDigestErr, secondWaitErr, secondFileErr)
+		firstWaitErr, firstFileErr, firstDigestErr, firstStatementErr, secondStatementErr, secondDigestErr, secondWaitErr, secondFileErr)
 	if c.sampleProbe(result, "server errors", serverErrorSampleErr) {
 		result.ServerErrors = deriveServerErrors(firstErrors, secondErrors, errorsElapsed)
 	}
@@ -358,12 +449,11 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	recordFullSampleIntervals(result, statusElapsed, waitsElapsed, fileIOElapsed, errorsElapsed, digestsElapsed, statementsElapsed)
 	result.GlobalStatus = second
 	result.Server.UptimeSeconds = unsigned(second["Uptime"])
-	historyListLength := result.Metrics.HistoryListLength
 	result.Metrics = deriveMetrics(first, second, result.Variables, statusElapsed)
 	if statementSampleAvailable {
 		applyStatementRates(&result.Metrics, firstStatements, secondStatements, statementsElapsed)
 	}
-	result.Metrics.HistoryListLength = historyListLength
+	result.Metrics.HistoryListLength = historyLength
 	applyInstrumentationStatus(&result.Instrumentation, second)
 	result.Fingerprint = fingerprint(result.Server)
 	normalizeRequiredCollections(result)
@@ -383,6 +473,10 @@ func recordFullSampleIntervals(result *model.Context, status, waits, fileIO, ser
 }
 
 func (c *Collector) openConnection(ctx context.Context, target Target) (*sql.DB, *sql.Conn, error) {
+	return c.openConnectionWithLimit(ctx, target, 10*time.Second)
+}
+
+func (c *Collector) openConnectionWithLimit(ctx context.Context, target Target, limit time.Duration) (*sql.DB, *sql.Conn, error) {
 	defer debuglog.Start(ctx, "collect.openConnection")()
 	db, err := sql.Open("mysql", target.DSN)
 	if err != nil {
@@ -403,7 +497,7 @@ func (c *Collector) openConnection(ctx context.Context, target Target) (*sql.DB,
 		db.Close()
 		return nil, nil, fmt.Errorf("reserve MySQL connection: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, "SET SESSION MAX_EXECUTION_TIME=10000"); err != nil {
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SET SESSION MAX_EXECUTION_TIME=%d", limit.Milliseconds())); err != nil {
 		conn.Close()
 		db.Close()
 		return nil, nil, fmt.Errorf("pin session statement timeout: %w", err)
@@ -1070,14 +1164,19 @@ func deriveMetrics(first, second, variables map[string]string, elapsed time.Dura
 }
 
 func (c *Collector) historyListLength(ctx context.Context, conn *sql.Conn, result *model.Context) uint64 {
-	defer debuglog.Start(ctx, "collect.historyListLength")()
-	var value uint64
-	err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(COUNT), 0)
-        FROM information_schema.INNODB_METRICS WHERE NAME='trx_rseg_history_len'`).Scan(&value)
+	value, err := readHistoryListLength(ctx, conn)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "InnoDB history list unavailable: "+compactError(err))
 	}
 	return value
+}
+
+func readHistoryListLength(ctx context.Context, conn *sql.Conn) (uint64, error) {
+	defer debuglog.Start(ctx, "collect.historyListLength")()
+	var value uint64
+	err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(COUNT), 0)
+        FROM information_schema.INNODB_METRICS WHERE NAME='trx_rseg_history_len'`).Scan(&value)
+	return value, err
 }
 
 func fingerprint(server model.Server) string {
@@ -1539,6 +1638,22 @@ func internalStatementSample(statement string) bool {
 		strings.Contains(canonical, "SUM_ERRORS") && strings.Contains(canonical, "SUM_WARNINGS") {
 		return true
 	}
+	// Parallel endpoints can complete inside another family's digest window.
+	// Exclude these collector-shaped reads and replacement-session setup too.
+	for _, shape := range []struct{ table, first, second string }{
+		{"PERFORMANCE_SCHEMA.EVENTS_WAITS_SUMMARY_GLOBAL_BY_EVENT_NAME", "MAX_TIMER_WAIT", "SUM_TIMER_WAIT"},
+		{"PERFORMANCE_SCHEMA.FILE_SUMMARY_BY_EVENT_NAME", "SUM_NUMBER_OF_BYTES_READ", "SUM_TIMER_WRITE"},
+		{"PERFORMANCE_SCHEMA.EVENTS_ERRORS_SUMMARY_GLOBAL_BY_ERROR", "SUM_ERROR_RAISED", "FIRST_SEEN"},
+	} {
+		if strings.Contains(canonical, shape.table) && strings.Contains(canonical, shape.first) && strings.Contains(canonical, shape.second) {
+			return true
+		}
+	}
+	if strings.HasPrefix(canonical, "SETSESSIONMAX_EXECUTION_TIME=") ||
+		strings.HasPrefix(canonical, "SETSESSIONTRANSACTION_READ_ONLY=") ||
+		strings.HasPrefix(canonical, "SELECTVERSION(),@@HOSTNAME,DATABASE(),@@SERVER_UUID,") {
+		return true
+	}
 	return strings.Contains(canonical, "PERFORMANCE_SCHEMA.EVENTS_STATEMENTS_SUMMARY_BY_DIGEST") &&
 		strings.Contains(canonical, "SUM_TIMER_WAIT") && strings.Contains(canonical, "COUNT_STAR")
 }
@@ -1681,14 +1796,22 @@ func (c *Collector) collectErrorCounters(ctx context.Context, conn *sql.Conn) (m
 	if err != nil {
 		return nil, err
 	}
+	return readErrorCounters(rows)
+}
+
+func readErrorCounters(rows *sql.Rows) (map[uint64]errorCounter, error) {
 	defer rows.Close()
 	result := make(map[uint64]errorCounter)
 	for rows.Next() {
 		var item errorCounter
-		if err := rows.Scan(&item.Number, &item.Name, &item.SQLState, &item.Raised, &item.Handled,
+		var number sql.NullInt64
+		if err := rows.Scan(&number, &item.Name, &item.SQLState, &item.Raised, &item.Handled,
 			&item.FirstSeen, &item.LastSeen); err != nil {
 			return nil, err
 		}
+		// NULL is MySQL's aggregate for uninstrumented errors. Preserve it
+		// as bucket zero, also used by newer servers for the same category.
+		item.Number = uint64(number.Int64)
 		result[item.Number] = item
 	}
 	return result, rows.Err()

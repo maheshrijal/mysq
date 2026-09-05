@@ -4,7 +4,7 @@ mysq is organized around a diagnostic snapshot: an inspection produces a complet
 
 ```text
 MySQL 8.x
-   │ read-only queries, one pinned connection
+   │ read-only queries, up to four pinned connections
    ▼
 collector ──► versioned Context ──► deterministic analyzer
                                       │
@@ -25,7 +25,7 @@ The `Context` interface includes the versioned JSON shape, collection timestamp 
 - `internal/history` stores gzip JSON by server/database fingerprint. `internal/compare` remains pure and performs offline comparisons.
 - `internal/sanitize` is intentionally early in the flow. Potential SQL literals are discarded before the context crosses any persistence or rendering seam.
 
-The full snapshot collector degrades individual optional probes, but server identity and two counter samples are required. This prevents a visually complete report built from absent data. Each optional failure appears in capabilities, collection warnings, the full report, the TUI Config view, and exports. Focused commands cross a separate collector interface that runs only the probes needed for that section; point-in-time sections return immediately, while rate-based sections retain the configured sample interval. Because counter endpoints are collected sequentially, `context.json.sample_intervals_ms` records the observed window for each family; the legacy `interval_ms` remains the global-status window for full inspections.
+The full snapshot collector degrades individual optional probes, but server identity and two counter samples are required. This prevents a visually complete report built from absent data. Each optional failure appears in capabilities, collection warnings, the full report, the TUI Config view, and exports. Focused commands cross a separate collector interface that runs only the probes needed for that section; point-in-time sections return immediately, while rate-based sections retain the configured sample interval. Counter families have different observation windows, so `context.json.sample_intervals_ms` records the observed window for each family; the legacy `interval_ms` remains the global-status window for full inspections.
 
 ## Terminal colors
 
@@ -43,7 +43,9 @@ Up to five minutes of timestamped observations remain in bounded memory. Graphs 
 
 Connection resolution accepts `host[:port]/database`, MySQL URLs, and native driver DSNs. An argument wins over `MYSQ_DATABASE_URL`, legacy `MYSQLDOT_DATABASE_URL`, and `DATABASE_URL`. When the selected connection omits a username, `DBOPS_MYSQL_USER` and `DBOPS_MYSQL_PWD` supply the credential pair; an explicit username keeps its own password, including an empty one. Credentials alone do not select an endpoint. `mysq tui` opens a local endpoint prompt if no argument or connection variable exists; validation precedes database access and nothing from the prompt is persisted. Other database commands return setup guidance instead of prompting.
 
-An inspection uses one connection and samples `SHOW GLOBAL STATUS`, statement digest and global counters, wait summaries, file-I/O summaries, and error summaries around the configured interval. The emitted collections are bounded to 20 cumulative statement digests, 20 interval statement samples, 30 waits, 30 file instruments, 30 errors, 30 memory consumers, 100 tables, 100 processes, 100 transactions, and 100 metadata locks. It never queries application rows. `MAX_EXECUTION_TIME` is 10 seconds and the session is pinned read-only. Active user, process, transaction, and lock data is explicitly point-in-time and can change while the report is being consumed.
+A full inspection uses one primary connection plus at most three optional-probe worker connections and samples `SHOW GLOBAL STATUS`, statement digest and global counters, wait summaries, file-I/O summaries, and error summaries around the configured interval. The emitted collections are bounded to 20 cumulative statement digests, 20 interval statement samples, 30 waits, 30 file instruments, 30 errors, 30 memory consumers, 100 tables, 100 processes, 100 transactions, and 100 metadata locks. It never queries application rows. Every connection is pinned read-only. The primary connection and focused commands retain the 10-second `MAX_EXECUTION_TIME` limit; full-inspection worker sessions use three seconds, with a three-second client budget per task (including any connection setup). Timed-out optional probes are marked unavailable. Each worker validates server UUID and selected database against the primary before reading evidence, including after reconnection. Active user, process, transaction, and lock data is explicitly point-in-time and can change while the report is being consumed.
+
+Independent metadata probes run concurrently, followed by active-user attribution, which depends on selected digests. Wait, file-I/O, error, and digest counter endpoints run in bounded parallel batches. Workers finish their first batch before the primary statement/global baselines; the final global/statement reads finish before workers resume. This keeps collector work outside the primary status window. Each counter family records its own measured interval. A failed first endpoint skips its second read, and collector failures invalidate potentially contaminated server-error deltas. Per-task results are joined before capability/warning slices are updated. The first screen still waits for the complete, possibly partial snapshot; there is no progressive rendering.
 
 Some Performance Schema summary tables grow with schema size. Their queries do not scan application data, but operators should still validate run time on unusually large fleets before aggressive scheduling. mysq is an on-demand diagnostic, not a monitoring daemon.
 

@@ -10,6 +10,14 @@ Reproduce the slow action and quit with `q`. Events are written immediately, so 
 
 The log excludes connection strings, endpoints, SQL text, results, and keyboard input. Visible errors and ordinary exports retain their existing behavior; the timing file is separate. Logging adds file I/O, so use a local disk and capture a short reproduction. Files are not rotated. Without the flag, timing calls are no-ops and no log file is opened.
 
+## Parallel full inspections
+
+Full inspections use three optional-probe workers alongside one pinned primary connection. Independent metadata probes and counter endpoint batches overlap, while the primary global-status window remains free of collector queries. Optional tasks have a three-second client budget and worker sessions have a three-second server statement limit. Slow optional sections degrade explicitly; focused commands retain their ten-second statement limit. A failed counter baseline is not queried again. NULL error numbers are retained as the uninstrumented error bucket (number zero).
+
+These changes shorten serial waits without increasing concurrency beyond four diagnostic clients. Full snapshots still wait for all scheduled work; three seconds is a per-task budget, not a whole-startup guarantee. TUI graph sampling and explicitly opened query-control sessions are separate from this limit. On a busy server, parallel reads can contend for resources, so compare debug captures on the affected database rather than extrapolating a localhost benchmark.
+
+A 2026-09-05 local comparison used MySQL 8.4, a TCP proxy delaying each direction by 12.5 ms per relay read, and `inspect --format json --no-store --interval 100ms`. Six measured pairs after one warmup pair alternated execution order on the same fixture. The sequential `caadd38` binary had a 1,198.30 ms median; the parallel candidate had a 941.20 ms median (21.5% lower), with all 19 current capabilities available and every sample window at least 100 ms. This isolates network-latency savings; it does not reproduce the affected database's expensive summary queries or predict its startup time.
+
 ## Command benchmark
 
 mysq has an end-to-end command benchmark because its useful latency includes the MySQL connection, real Performance Schema queries, sampling, analysis, and output serialization. Microbenchmarks of individual Go helpers would miss the dominant costs.

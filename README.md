@@ -113,6 +113,8 @@ Active users are sampled independently of the Connections tab’s 100-session li
 
 Ghostty is the primary terminal target. Colors follow your terminal theme, and layouts adapt to the window size. Use at least 52 columns × 18 rows; 100 columns or more gives tables and graphs more room.
 
+Full diagnostic refreshes use up to four database connections to collect independent evidence in parallel. Optional probes have a three-second budget; slow or failed sections appear as unavailable while successful evidence remains visible. The separate live graph sampler uses one additional connection. Focused commands such as `mysq memory` retain the longer ten-second statement limit for targeted investigation.
+
 ### Cancel a running query
 
 In **Queries**, press `K`, select one current execution, and press Enter to review its user, host, and connection. Type exactly **`kill`**, then press Enter to confirm.
