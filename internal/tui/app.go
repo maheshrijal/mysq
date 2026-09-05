@@ -1415,13 +1415,13 @@ func queries(ctx *model.Context, width, selected int, totalLatency float64) stri
 	wide := width >= 96
 	compactLayout := width < 68
 	widths := []int{2, 9, 8, 9, 11, 14, max(24, width-53)}
-	headings := []string{"", "DB TIME", "CALLS", "P95", "ROWS EXAM", "USER", "QUERY"}
+	headings := []string{"", "DB TIME", "CALLS", "P95", "ROWS EXAM", "ACTIVE USERS", "QUERY"}
 	if compactLayout {
-		widths = []int{2, 9, 12, max(20, width-23)}
-		headings = []string{"", "DB TIME", "USER", "QUERY"}
+		widths = []int{2, 9, 13, max(20, width-24)}
+		headings = []string{"", "DB TIME", "ACTIVE USERS", "QUERY"}
 	} else if !wide {
 		widths = []int{2, 9, 8, 9, 13, max(24, width-41)}
-		headings = []string{"", "DB TIME", "CALLS", "P95", "USER", "QUERY"}
+		headings = []string{"", "DB TIME", "CALLS", "P95", "ACTIVE USERS", "QUERY"}
 	}
 	out.WriteString(row(headings, widths, true) + "\n")
 	for index, query := range ctx.Queries {
@@ -1442,7 +1442,7 @@ func queries(ctx *model.Context, width, selected int, totalLatency float64) stri
 		}
 		out.WriteString(semanticRow(values, headings, widths, index == selected) + "\n")
 	}
-	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  user is point-in-time  ·  selected share %.1f%%  ·  literals removed", queryShare(ctx.Queries, selected, totalLatency))))
+	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  active users at snapshot; — = not observed  ·  selected share %.1f%%  ·  literals removed", queryShare(ctx.Queries, selected, totalLatency))))
 	return out.String()
 }
 
@@ -1467,12 +1467,12 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 		return empty("The selected query is no longer available. Press Esc to return to Queries.")
 	}
 	query := ctx.Queries[selected]
-	users := "not active in this snapshot"
+	users := "not observed"
 	if len(query.ActiveUsers) > 0 {
 		users = strings.Join(query.ActiveUsers, ", ")
 	}
 	important := strings.Join([]string{
-		labelValue("USER", users),
+		labelValue("ACTIVE USERS", users),
 		labelValue("DATABASE", fallback(query.Schema, "all databases")),
 		labelValue("DB TIME", fmt.Sprintf("%s (%.1f%%)", duration(query.TotalLatencyMillis), queryShare(ctx.Queries, selected, totalLatency))),
 		labelValue("CALLS", humanCount(query.Calls)),
@@ -1526,7 +1526,7 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 func labelValue(label, value string) string {
 	var color lipgloss.TerminalColor = text
 	switch strings.ToUpper(label) {
-	case "USER", "DATABASE", "HOST", "SCHEMA":
+	case "USER", "ACTIVE USERS", "DATABASE", "HOST", "SCHEMA":
 		color = identity
 	default:
 		if len(value) > 0 && value[0] >= '0' && value[0] <= '9' {

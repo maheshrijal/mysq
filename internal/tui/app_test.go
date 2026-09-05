@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/maheshrijal/mysq/internal/model"
 )
@@ -1429,5 +1430,24 @@ func assertViewWidth(t *testing.T, view string, width int) {
 		if got := lipgloss.Width(line); got > width {
 			t.Fatalf("rendered line width %d exceeds %d:\n%s", got, width, view)
 		}
+	}
+}
+
+func TestQueryUsersDescribeSnapshotAttribution(t *testing.T) {
+	ctx := &model.Context{Queries: []model.Query{
+		{Statement: "SELECT ?", ActiveUsers: []string{"api"}},
+		{Statement: "SELECT SLEEP(?)"},
+	}}
+	for _, width := range []int{52, 80, 120} {
+		view := ansi.Strip(queries(ctx, width, 0, 0))
+		for _, want := range []string{"ACTIVE USERS", "api", "— = not observed"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("width %d: missing %q in query table:\n%s", width, want, view)
+			}
+		}
+	}
+	view := ansi.Strip(queryDetail(ctx, 100, 1, 0))
+	if !strings.Contains(view, "ACTIVE USERS not observed") {
+		t.Fatalf("query detail must not claim a historical owner:\n%s", view)
 	}
 }

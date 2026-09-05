@@ -240,8 +240,10 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 		var probeErr error
 		result.Processes, probeErr = c.collectProcesses(ctx, conn)
 		result.ConnectionGroups = summarizeProcesses(result.Processes)
-		attributeActiveUsers(result.Queries, result.Processes)
 		return probeErr
+	})
+	c.probe(ctx, result, "active query users", func() error {
+		return c.collectActiveQueryUsers(ctx, conn, result.Queries)
 	})
 	c.probe(ctx, result, "row lock waits", func() error {
 		var probeErr error
@@ -535,8 +537,12 @@ func (c *Collector) InspectSection(ctx context.Context, target Target, section s
 		if err := c.focusedOptionalProbe(ctx, result, "process list", func() error {
 			var probeErr error
 			result.Processes, probeErr = c.collectProcesses(ctx, conn)
-			attributeActiveUsers(result.Queries, result.Processes)
 			return probeErr
+		}); err != nil {
+			return nil, err
+		}
+		if err := c.focusedOptionalProbe(ctx, result, "active query users", func() error {
+			return c.collectActiveQueryUsers(ctx, conn, result.Queries)
 		}); err != nil {
 			return nil, err
 		}
@@ -1182,7 +1188,8 @@ func (c *Collector) collectProcesses(ctx context.Context, conn *sql.Conn) ([]mod
 	  WHERE t.TYPE='FOREGROUND' AND t.PROCESSLIST_ID IS NOT NULL
 		AND t.PROCESSLIST_USER IS NOT NULL
 		AND t.PROCESSLIST_ID <> CONNECTION_ID()
-	  ORDER BY t.PROCESSLIST_TIME DESC LIMIT 100`
+	  ORDER BY (t.PROCESSLIST_COMMAND IN ('Query','Execute')) DESC,
+		t.PROCESSLIST_TIME DESC, t.PROCESSLIST_ID LIMIT 100`
 	rows, err := conn.QueryContext(ctx, statement)
 	if err != nil {
 		return nil, err
@@ -1200,6 +1207,50 @@ func (c *Collector) collectProcesses(ctx context.Context, conn *sql.Conn) ([]mod
 		processes = append(processes, item)
 	}
 	return processes, rows.Err()
+}
+
+// collectActiveQueryUsers reads current execution identities independently of the
+// display's 100-session limit. Filter to the returned schema/digest pairs and
+// deduplicate on the server so busy pools do not inflate the result set.
+func (c *Collector) collectActiveQueryUsers(ctx context.Context, conn *sql.Conn, queries []model.Query) error {
+	var filters []string
+	var args []any
+	for _, query := range queries {
+		if query.Digest == "" {
+			continue
+		}
+		filters = append(filters, "(COALESCE(es.CURRENT_SCHEMA,'')=? AND es.DIGEST=?)")
+		args = append(args, query.Schema, query.Digest)
+	}
+	if len(filters) == 0 {
+		return nil
+	}
+	statement := `SELECT DISTINCT COALESCE(es.CURRENT_SCHEMA,''), es.DIGEST, t.PROCESSLIST_USER
+	  FROM performance_schema.threads t
+	  JOIN performance_schema.events_statements_current es ON es.THREAD_ID=t.THREAD_ID
+	  WHERE t.TYPE='FOREGROUND' AND t.PROCESSLIST_ID IS NOT NULL
+		AND t.PROCESSLIST_ID <> CONNECTION_ID()
+		AND t.PROCESSLIST_COMMAND IN ('Query','Execute')
+		AND t.PROCESSLIST_USER IS NOT NULL AND es.END_EVENT_ID IS NULL
+		AND (` + strings.Join(filters, " OR ") + `)`
+	rows, err := conn.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var executions []model.Process
+	for rows.Next() {
+		process := model.Process{Command: "Query"}
+		if err := rows.Scan(&process.Database, &process.Digest, &process.User); err != nil {
+			return err
+		}
+		executions = append(executions, process)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	attributeActiveUsers(queries, executions)
+	return nil
 }
 
 func attributeActiveUsers(queries []model.Query, processes []model.Process) {

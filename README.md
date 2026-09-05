@@ -16,7 +16,7 @@ macOS and Linux, on Intel/AMD or Apple Silicon/ARM:
 curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | sh
 ```
 
-Open a new terminal after installation, or run the PATH command it prints. Run the same command to update.
+Open a new terminal after installation, or run the PATH command it prints. Run the same command to upgrade to the latest release; it reports the old and new versions.
 
 <details>
 <summary>Windows, Go, and installer options</summary>
@@ -90,7 +90,7 @@ The examples use placeholder passwords. For sensitive credentials, load environm
 mysq tui
 ```
 
-**Overview** highlights the most important finding first. **Connections** shows sessions and locks; **Queries** shows expensive statements and their users. **Engine**, **Findings**, **Tables**, and **Config** provide the supporting details.
+**Overview** highlights the most important finding first. **Connections** shows sessions and locks; **Queries** shows expensive statements and users observed executing them at the last snapshot. **Engine**, **Findings**, **Tables**, and **Config** provide the supporting details.
 
 | Key | Action |
 |---|---|
@@ -107,6 +107,8 @@ mysq tui
 | `?` / `q` | Keyboard help / quit |
 
 Overview graphs update every two seconds and retain up to five minutes: queries/sec, running threads, row-lock waits, and InnoDB read/write throughput. Large terminals show four charts; smaller layouts use sparklines below the summary. Use `G` to reach them. Graphs update independently; press `r` to refresh findings and tables.
+
+Active users are sampled independently of the Connections tab’s 100-session limit. A `—` means no user was observed for that query; historical query totals do not retain user attribution. Press Enter to check current executions. Ctrl+C closes mysq’s database connections.
 
 Ghostty is the primary terminal target. Colors follow your terminal theme, and layouts adapt to the window size. Use at least 52 columns × 18 rows; 100 columns or more gives tables and graphs more room.
 

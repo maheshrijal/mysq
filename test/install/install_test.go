@@ -20,10 +20,13 @@ func TestReleaseInstaller(t *testing.T) {
 	for _, tc := range []struct {
 		name, system, machine, platform, arch, version, failure string
 	}{
+		{name: "fresh_install", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64"},
 		{name: "linux_amd64", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64"},
 		{name: "linux_arm64", system: "Linux", machine: "aarch64", platform: "linux", arch: "arm64"},
 		{name: "darwin_amd64", system: "Darwin", machine: "x86_64", platform: "darwin", arch: "amd64"},
 		{name: "darwin_arm64_pinned", system: "Darwin", machine: "arm64", platform: "darwin", arch: "arm64", version: "v1.2.3"},
+		{name: "unknown_previous_version", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64"},
+		{name: "invalid_binary_version", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64", failure: "cannot read version from downloaded mysq"},
 		{name: "no_modify_path", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64"},
 		{name: "corrupt", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64", failure: "checksum mismatch"},
 		{name: "missing_checksum", system: "Linux", machine: "x86_64", platform: "linux", arch: "amd64", failure: "missing or invalid checksum"},
@@ -56,26 +59,19 @@ func TestReleaseInstaller(t *testing.T) {
 			} else if tc.name == "linux_arm64" {
 				write(filepath.Join(home, ".bash_login"), originalProfile, 0600)
 			}
-			write(filepath.Join(installDir, "mysq"), "previous installation", 0755)
+			previous := "#!/bin/sh\nprintf 'mysq version 1.2.2\\n'\n"
+			if tc.name == "unknown_previous_version" {
+				previous = "#!/bin/sh\nexit 1\n"
+			}
+			if tc.name != "fresh_install" {
+				write(filepath.Join(installDir, "mysq"), previous, 0755)
+			}
 			archive := fmt.Sprintf("mysq_%s_%s.tar.gz", tc.platform, tc.arch)
-			var payload strings.Builder
-			gz := gzip.NewWriter(&payload)
-			tw := tar.NewWriter(gz)
-			const binary = "#!/bin/sh\nprintf 'fixture mysq\\n'\n"
-			if err := tw.WriteHeader(&tar.Header{Name: "mysq", Mode: 0755, Size: int64(len(binary))}); err != nil {
-				t.Fatal(err)
+			binary := "#!/bin/sh\nprintf 'mysq version 1.2.3\\n'\n"
+			if tc.name == "invalid_binary_version" {
+				binary = "#!/bin/sh\nprintf 'unexpected output\\n'\n"
 			}
-			if _, err := tw.Write([]byte(binary)); err != nil {
-				t.Fatal(err)
-			}
-			if err := tw.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if err := gz.Close(); err != nil {
-				t.Fatal(err)
-			}
-			write(filepath.Join(dir, archive), payload.String(), 0600)
-			checksum := fmt.Sprintf("%x  %s\n", sha256.Sum256([]byte(payload.String())), archive)
+			checksum := releaseFixture(t, dir, archive, binary)
 			if tc.name == "corrupt" {
 				checksum = strings.Repeat("0", 64) + "  " + archive + "\n"
 			} else if tc.name == "missing_checksum" {
@@ -113,7 +109,7 @@ cp "$TEST_FIXTURE/${url##*/}" "$output"
 				t.Fatal(readErr)
 			}
 			if tc.failure != "" {
-				if err == nil || !strings.Contains(string(output), tc.failure) || string(installed) != "previous installation" {
+				if err == nil || !strings.Contains(string(output), tc.failure) || string(installed) != previous {
 					t.Fatalf("unsafe failure: %v\n%s", err, output)
 				}
 				assertProfileUnchanged(t, home, originalProfile)
@@ -122,8 +118,18 @@ cp "$TEST_FIXTURE/${url##*/}" "$output"
 			if err != nil || string(installed) != binary {
 				t.Fatalf("installation failed: %v\n%s", err, output)
 			}
+			wantResult := "Updated mysq v1.2.2 → v1.2.3 (" + installDir + "/mysq)"
+			if tc.name == "fresh_install" {
+				wantResult = "Installed mysq v1.2.3 (" + installDir + "/mysq)"
+			}
+			if tc.name == "unknown_previous_version" {
+				wantResult = "Updated mysq unknown → v1.2.3 (" + installDir + "/mysq)"
+			}
+			if !strings.Contains(string(output), wantResult) {
+				t.Fatalf("missing version transition: %s", output)
+			}
 			run, err := exec.Command(filepath.Join(installDir, "mysq")).CombinedOutput()
-			if err != nil || string(run) != "fixture mysq\n" {
+			if err != nil || string(run) != "mysq version 1.2.3\n" {
 				t.Fatalf("installed binary is not executable: %v %s", err, run)
 			}
 			requests, err := os.ReadFile(filepath.Join(dir, "requests"))
@@ -170,10 +176,28 @@ cp "$TEST_FIXTURE/${url##*/}" "$output"
 			if !strings.HasPrefix(before[filepath.Join(home, ".profile")], originalProfile+"\n") {
 				t.Fatal("existing profile content was not preserved")
 			}
+			// Advance the mocked latest release. A pinned tag must keep its payload.
+			upgraded := binary
+			if tc.version == "" {
+				upgraded = strings.ReplaceAll(binary, "1.2.3", "1.2.4")
+				write(filepath.Join(dir, "checksums.txt"), releaseFixture(t, dir, archive, upgraded), 0600)
+			}
 			reinstall := exec.Command("sh", "../../install.sh")
 			reinstall.Env = cmd.Env
-			if output, err := reinstall.CombinedOutput(); err != nil {
+			output, err = reinstall.CombinedOutput()
+			if err != nil {
 				t.Fatalf("reinstall failed: %v %s", err, output)
+			}
+			wantTransition := "Updated mysq v1.2.3 → v1.2.4"
+			if tc.version != "" {
+				wantTransition = "Updated mysq v1.2.3 → v1.2.3"
+			}
+			if !strings.Contains(string(output), wantTransition) {
+				t.Fatalf("wrong upgrade versions: %s", output)
+			}
+			installed, err = os.ReadFile(filepath.Join(installDir, "mysq"))
+			if err != nil || string(installed) != upgraded {
+				t.Fatalf("upgrade did not replace existing binary: %v", err)
 			}
 			for path, want := range before {
 				data, err := os.ReadFile(path)
@@ -230,4 +254,27 @@ func verifyShellStartup(t *testing.T, env []string, home, installDir string) {
 			t.Fatalf("%s PATH contains install directory %d times", tc.shell, count)
 		}
 	}
+}
+
+func releaseFixture(t *testing.T, dir, archive, binary string) string {
+	t.Helper()
+	var payload strings.Builder
+	gz := gzip.NewWriter(&payload)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "mysq", Mode: 0755, Size: int64(len(binary))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(binary)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, archive), []byte(payload.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%x  %s\n", sha256.Sum256([]byte(payload.String())), archive)
 }
