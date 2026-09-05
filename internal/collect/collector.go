@@ -28,6 +28,7 @@ type Collector struct {
 	Interval    time.Duration
 	Timeout     time.Duration
 	QueryLimit  int
+	LiveSQL     bool // Retain terminal-safe live SQL only in non-serialized fields for the TUI.
 }
 
 type Target struct {
@@ -478,7 +479,7 @@ func (c *Collector) openConnection(ctx context.Context, target Target) (*sql.DB,
 
 func (c *Collector) openConnectionWithLimit(ctx context.Context, target Target, limit time.Duration) (*sql.DB, *sql.Conn, error) {
 	defer debuglog.Start(ctx, "collect.openConnection")()
-	db, err := sql.Open("mysql", target.DSN)
+	db, err := OpenDatabase(target)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open MySQL connection: %w", err)
 	}
@@ -1296,20 +1297,32 @@ func (c *Collector) collectIndexes(ctx context.Context, conn *sql.Conn) ([]model
 
 func (c *Collector) collectProcesses(ctx context.Context, conn *sql.Conn) ([]model.Process, error) {
 	defer debuglog.Start(ctx, "collect.collectProcesses")()
-	statement := `SELECT t.PROCESSLIST_ID, t.THREAD_ID, COALESCE(t.PROCESSLIST_USER,''),
-		COALESCE(t.PROCESSLIST_HOST,''), COALESCE(t.PROCESSLIST_DB,''),
-		COALESCE(t.PROCESSLIST_COMMAND,''), COALESCE(t.PROCESSLIST_TIME,0),
-		COALESCE(t.PROCESSLIST_STATE,''), COALESCE(es.DIGEST,''),
-		COALESCE(ew.EVENT_NAME,''), COALESCE(es.TIMER_WAIT,0) / 1000000000,
-		COALESCE(es.DIGEST_TEXT, t.PROCESSLIST_INFO, '')
-	  FROM performance_schema.threads t
-	  LEFT JOIN performance_schema.events_statements_current es ON es.THREAD_ID=t.THREAD_ID AND es.END_EVENT_ID IS NULL
-	  LEFT JOIN performance_schema.events_waits_current ew ON ew.THREAD_ID=t.THREAD_ID AND ew.END_EVENT_ID IS NULL
-	  WHERE t.TYPE='FOREGROUND' AND t.PROCESSLIST_ID IS NOT NULL
-		AND t.PROCESSLIST_USER IS NOT NULL
-		AND t.PROCESSLIST_ID <> CONNECTION_ID()
-	  ORDER BY (t.PROCESSLIST_COMMAND IN ('Query','Execute')) DESC,
-		t.PROCESSLIST_TIME DESC, t.PROCESSLIST_ID LIMIT 100`
+	// Limit threads before decorating them with statement and wait evidence:
+	// nested waits must never consume multiple slots in the 100-session list.
+	statement := `WITH sessions AS (
+  SELECT t.* FROM performance_schema.threads t
+  WHERE t.TYPE='FOREGROUND' AND t.PROCESSLIST_ID IS NOT NULL
+   AND t.PROCESSLIST_USER IS NOT NULL AND t.PROCESSLIST_ID <> CONNECTION_ID()
+   AND ` + excludeMysqSessions + `
+  ORDER BY (t.PROCESSLIST_COMMAND IN ('Query','Execute')) DESC,
+   t.PROCESSLIST_TIME DESC, t.PROCESSLIST_ID LIMIT 100
+ )
+ SELECT t.PROCESSLIST_ID, t.THREAD_ID, COALESCE(t.PROCESSLIST_USER,''),
+  COALESCE(t.PROCESSLIST_HOST,''), COALESCE(t.PROCESSLIST_DB,''),
+  COALESCE(t.PROCESSLIST_COMMAND,''), COALESCE(t.PROCESSLIST_TIME,0),
+  COALESCE(t.PROCESSLIST_STATE,''), COALESCE(es.DIGEST,''),
+  COALESCE((SELECT ew.EVENT_NAME FROM performance_schema.events_waits_current ew
+   WHERE ew.THREAD_ID=t.THREAD_ID AND ew.END_EVENT_ID IS NULL
+   ORDER BY ew.EVENT_ID DESC LIMIT 1),''),
+  COALESCE(es.TIMER_WAIT,0)/1000000000,
+  COALESCE(es.SQL_TEXT,t.PROCESSLIST_INFO,es.DIGEST_TEXT,'')
+ FROM sessions t
+ LEFT JOIN performance_schema.events_statements_current es ON es.THREAD_ID=t.THREAD_ID
+  AND es.EVENT_ID=(SELECT MAX(current_statement.EVENT_ID)
+   FROM performance_schema.events_statements_current current_statement
+   WHERE current_statement.THREAD_ID=t.THREAD_ID AND current_statement.END_EVENT_ID IS NULL)
+ ORDER BY (t.PROCESSLIST_COMMAND IN ('Query','Execute')) DESC,
+  t.PROCESSLIST_TIME DESC,t.PROCESSLIST_ID`
 	rows, err := conn.QueryContext(ctx, statement)
 	if err != nil {
 		return nil, err
@@ -1322,6 +1335,9 @@ func (c *Collector) collectProcesses(ctx context.Context, conn *sql.Conn) ([]mod
 			&item.Command, &item.Seconds, &item.State, &item.Digest, &item.WaitEvent,
 			&item.StatementLatencyMillis, &item.Statement); err != nil {
 			return nil, err
+		}
+		if c.LiveSQL {
+			item.LiveStatement = sanitize.TerminalSQL(item.Statement)
 		}
 		item.Statement = sanitize.SQL(item.Statement)
 		processes = append(processes, item)
@@ -1351,6 +1367,7 @@ func (c *Collector) collectActiveQueryUsers(ctx context.Context, conn *sql.Conn,
 	  JOIN performance_schema.events_statements_current es ON es.THREAD_ID=t.THREAD_ID
 	  WHERE t.TYPE='FOREGROUND' AND t.PROCESSLIST_ID IS NOT NULL
 		AND t.PROCESSLIST_ID <> CONNECTION_ID()
+		AND ` + excludeMysqSessions + `
 		AND t.PROCESSLIST_COMMAND IN ('Query','Execute')
 		AND t.PROCESSLIST_USER IS NOT NULL AND es.END_EVENT_ID IS NULL
 		AND (` + strings.Join(filters, " OR ") + `)`
@@ -1489,6 +1506,9 @@ func (c *Collector) collectTransactions(ctx context.Context, conn *sql.Conn) ([]
 			&item.ProcessID, &item.User, &item.Host, &item.RowsLocked, &item.RowsModified,
 			&item.TablesInUse, &item.TablesLocked, &item.Statement); err != nil {
 			return nil, err
+		}
+		if c.LiveSQL {
+			item.LiveStatement = sanitize.TerminalSQL(item.Statement)
 		}
 		item.Statement = sanitize.SQL(item.Statement)
 		transactions = append(transactions, item)

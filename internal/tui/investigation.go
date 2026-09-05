@@ -179,7 +179,7 @@ func blockerInvestigation(ctx *model.Context, width int) string {
 				kind = "Root owner"
 			}
 			result += wrap(fmt.Sprintf("%s %s · connection %d · %s@%s · age %s · %s", kind, trx.ID, trx.ProcessID, fallback(trx.User, "unknown"), fallback(trx.Host, "unknown"), humanDuration(trx.AgeSeconds), trx.State)) + "\n"
-			result += wrap(fmt.Sprintf("  %d rows locked · %d modified · SQL: %s", trx.RowsLocked, trx.RowsModified, fallback(trx.Statement, "not currently executing / not captured"))) + "\n"
+			result += wrap(fmt.Sprintf("  %d rows locked · %d modified · SQL: %s", trx.RowsLocked, trx.RowsModified, fallback(transactionSQL(trx), "not currently executing / not captured"))) + "\n"
 		}
 		result += "\n"
 		for _, edge := range chain.Edges {

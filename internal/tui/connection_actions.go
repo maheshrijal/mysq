@@ -30,7 +30,7 @@ func (m Model) filteredConnections() []model.Process {
 	}
 	var items []model.Process
 	for _, p := range m.snapshot.Processes {
-		if m.filters[1] == "" || containsFold(m.filters[1], fmt.Sprint(p.ID), p.User, p.Host, p.Database, p.Command, p.State, p.Digest, p.WaitEvent, p.Statement) {
+		if m.filters[1] == "" || containsFold(m.filters[1], fmt.Sprint(p.ID), p.User, p.Host, p.Database, p.Command, p.State, p.Digest, p.WaitEvent, processSQL(p)) {
 			items = append(items, p)
 		}
 	}
@@ -153,7 +153,7 @@ func (m Model) connectionDetailView() string {
 	width := max(42, m.viewport.Width-2)
 	return sectionTitle(fmt.Sprintf("CONNECTION %d OF %d", m.connectionIndex+1, len(m.filteredConnections()))) + "\n\n" +
 		lipgloss.NewStyle().Width(width).Render(connectionDescription(p)) + "\n\n" +
-		quiet("SQL · snapshot, literals redacted") + "\n" + lipgloss.NewStyle().Width(width).Render(highlightedSQL(fallback(p.Statement, "(no current statement)"))) +
+		quiet("SQL · live text captured at refresh") + "\n" + lipgloss.NewStyle().Width(width).Render(highlightedSQL(fallback(processSQL(p), "(no current statement)"))) +
 		"\n\n" + keyHint("K", "kill connection…") + "   " + keyHint("B", "blocking chains") + "   " + keyHint("Esc", "back")
 }
 
@@ -195,4 +195,11 @@ func (m Model) connectionActionView() string {
 		body += "\n" + wrap(m.live.result)
 	}
 	return strings.TrimSpace(body)
+}
+
+func processSQL(p model.Process) string {
+	return sanitize.TerminalSQL(fallback(p.LiveStatement, p.Statement))
+}
+func transactionSQL(t model.Transaction) string {
+	return sanitize.TerminalSQL(fallback(t.LiveStatement, t.Statement))
 }

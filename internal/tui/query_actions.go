@@ -263,6 +263,10 @@ func (m Model) liveExecutionView() string {
 			out.WriteString(lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("Connection %d · ", e.ID)+labelValue("Host", sanitize.Text(e.Host))) + "\n")
 		}
 	}
+	for _, e := range m.live.items {
+		out.WriteString("\n" + quiet(fmt.Sprintf("Connection %d · current SQL", e.ID)) + "\n")
+		out.WriteString(lipgloss.NewStyle().Width(width).Render(highlightedSQL(processSQL(e.Process))) + "\n")
+	}
 	out.WriteString("\n" + keyHint("K", "select an execution to cancel"))
 	return out.String()
 }
@@ -303,7 +307,7 @@ func (m Model) queryActionView() string {
 		if !small {
 			body += "\n" + quiet(fmt.Sprintf("Thread %d · event %d · statement %s", e.ThreadID, e.EventID, duration(e.StatementLatencyMillis)))
 		}
-		body += gap + quiet("SQL · literals redacted") + "\n" + wrap(highlightedSQL(compact(e.Statement, width*2)))
+		body += gap + quiet("SQL · live text") + "\n" + wrap(highlightedSQL(compact(processSQL(e.Process), width*2)))
 		body += gap + lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("Enter  Review cancellation →") + "   " + keyHint("Esc", "back")
 		return body
 	}
@@ -324,7 +328,7 @@ func (m Model) queryActionView() string {
 	body += lipgloss.NewStyle().Foreground(text).Bold(true).Render(compact(sanitize.Text(e.User), width/3)) + quiet(" @ ") + quiet(compact(sanitize.Text(e.Host), width/2)) + "\n"
 	body += labelValue("Database", compact(sanitize.Text(e.Database), width/3)) + "   " + lipgloss.NewStyle().Foreground(yellow).Bold(true).Render(fmt.Sprintf("%ds", e.Seconds)) + "   " + executionState(e) + "\n"
 	body += quiet(compact("Server "+e.ServerUUID, width)) + gap
-	body += wrap(highlightedSQL(compact(e.Statement, width))) + gap
+	body += wrap(highlightedSQL(compact(processSQL(e.Process), width))) + gap
 	body += lipgloss.NewStyle().Foreground(yellow).Width(width).Render("Connection stays open; transaction locks may remain.") + "\n"
 	body += wrap(quiet("Rechecked before sending; a new statement can race the kill.")) + gap
 	// The input owns its ANSI styles. Lip Gloss's underline space styler splits

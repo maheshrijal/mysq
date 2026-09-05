@@ -78,7 +78,7 @@ func TestFixtureKillQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer observer.Close()
-	operator, monitor := Queries{Target: targets[2]}, Queries{Target: targets[1]}
+	operator, monitor := Queries{Target: targets[2], LiveSQL: true}, Queries{Target: targets[1]}
 	defer operator.Close()
 	defer monitor.Close()
 	newConn := func() (*sql.Conn, uint64) {
@@ -149,6 +149,9 @@ func TestFixtureKillQuery(t *testing.T) {
 	execution, otherExecution := find(id), find(otherID)
 	if execution.Digest != otherExecution.Digest || execution.User != "loadgen" || execution.Database != "app" || execution.Host == "" || execution.EventID == 0 {
 		t.Fatalf("incorrect live attribution: %+v / %+v", execution, otherExecution)
+	}
+	if !strings.Contains(execution.LiveStatement, "SLEEP(15)") {
+		t.Fatal("TUI live execution lost literals")
 	}
 	if strings.Contains(execution.Statement, "15") || strings.Contains(execution.Statement, "7") {
 		t.Fatal("SQL literals leaked")

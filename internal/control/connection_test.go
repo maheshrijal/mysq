@@ -80,7 +80,7 @@ func TestFixtureKillConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer observer.Close()
-	operator, monitor := Queries{Target: targets[2]}, Queries{Target: targets[1]}
+	operator, monitor := Queries{Target: targets[2], LiveSQL: true}, Queries{Target: targets[1]}
 	defer operator.Close()
 	defer monitor.Close()
 	newSession := func() (*sql.Conn, model.Process, string) {
@@ -185,6 +185,9 @@ func TestFixtureKillConnection(t *testing.T) {
 	for ctx.Err() == nil {
 		current := lookup(rp, ruuid)
 		if current.Command == "Query" {
+			if !strings.Contains(current.LiveStatement, "SLEEP(20)") {
+				t.Fatal("TUI live connection lost literals")
+			}
 			if strings.Contains(current.Statement, "20") {
 				t.Fatal("SQL literal leaked")
 			}

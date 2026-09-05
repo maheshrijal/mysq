@@ -767,7 +767,7 @@ func (m Model) filteredContext() *model.Context {
 		}
 		filtered.Transactions = make([]model.Transaction, 0, len(m.snapshot.Transactions))
 		for _, transaction := range m.snapshot.Transactions {
-			if containsFold(filter, transaction.ID, transaction.State, fmt.Sprint(transaction.ProcessID), transaction.User, transaction.Host, transaction.Statement) {
+			if containsFold(filter, transaction.ID, transaction.State, fmt.Sprint(transaction.ProcessID), transaction.User, transaction.Host, transactionSQL(transaction)) {
 				filtered.Transactions = append(filtered.Transactions, transaction)
 			}
 		}
@@ -1073,7 +1073,7 @@ func (m Model) footer() string {
 	}
 	status := m.status
 	if status == "" {
-		status = "Diagnostics · SQL literals redacted"
+		status = "Diagnostics · live SQL"
 	}
 	if m.help {
 		keys := keyHint("esc/?", "close help") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("q", "quit")
@@ -1854,34 +1854,32 @@ func connectionReport(ctx *model.Context, width, selected int) (string, []int) {
 		}
 		out.WriteString("\n" + sectionTitle("PROCESS SNAPSHOT") + "\n")
 	}
+	processWidths := []int{2, 12, 13, 18, 8, 28, width - 83}
+	processHeadings := []string{"", "ID", "USER", "HOST", "TIME", "WAIT", "STATEMENT"}
 	if compactLayout {
-		processWidths := []int{7, max(16, width-32), 9, 7, 9}
-		processHeadings := []string{"ID", "STATEMENT", "USER", "TIME", "WAIT"}
-		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
-		for index, process := range ctx.Processes {
-			processLines = append(processLines, strings.Count(out.String(), "\n"))
-			out.WriteString(semanticRow([]string{compactMiddle(fmt.Sprint(process.ID), processWidths[0]-1), compactMiddle(process.Statement, processWidths[1]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processHeadings, processWidths, index == selected) + "\n")
-			out.WriteString(processContinuation(process, processWidths[0], processWidths[1], width))
-		}
+		processWidths = []int{2, 11, 10, 7, width - 30}
+		processHeadings = []string{"", "ID", "USER", "TIME", "STATEMENT"}
 	} else if width < 103 {
-		processWidths := []int{8, 12, 8, 18, max(22, width-46)}
-		processHeadings := []string{"ID", "USER", "TIME", "WAIT", "STATEMENT"}
-		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
-		for index, process := range ctx.Processes {
-			processLines = append(processLines, strings.Count(out.String(), "\n"))
-			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, index == selected) + "\n")
-			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
-		}
-	} else {
-		processWidths := []int{8, 13, 18, 8, 28, max(28, width-75)}
-		processHeadings := []string{"ID", "USER", "HOST", "TIME", "WAIT", "STATEMENT"}
-		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
-		for index, process := range ctx.Processes {
-			processLines = append(processLines, strings.Count(out.String(), "\n"))
-			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, index == selected) + "\n")
-			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
-		}
+		processWidths = []int{2, 12, 12, 8, 18, width - 52}
+		processHeadings = []string{"", "ID", "USER", "TIME", "WAIT", "STATEMENT"}
 	}
+	out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
+	for index, process := range ctx.Processes {
+		processLines = append(processLines, strings.Count(out.String(), "\n"))
+		marker := ""
+		if index == selected {
+			marker = "›"
+		}
+		statement := strings.Join(strings.Fields(processSQL(process)), " ")
+		values := []string{marker, fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), statement}
+		if compactLayout {
+			values = []string{marker, fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), statement}
+		} else if width < 103 {
+			values = []string{marker, fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), statement}
+		}
+		out.WriteString(semanticRow(values, processHeadings, processWidths, index == selected) + "\n")
+	}
+
 	if len(ctx.Processes) == 0 {
 		out.WriteString("\nNo other connections are visible.")
 	}
@@ -1903,13 +1901,13 @@ func connectionReport(ctx *model.Context, width, selected int) (string, []int) {
 		out.WriteString(row(transactionHeadings, transactionWidths, true) + "\n")
 		for _, transaction := range ctx.Transactions {
 			identityWidth := transactionWidths[len(transactionWidths)-1]
-			values := []string{transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds), humanCount(transaction.RowsLocked), humanCount(transaction.RowsModified), transaction.Statement}
+			values := []string{transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds), humanCount(transaction.RowsLocked), humanCount(transaction.RowsModified), transactionSQL(transaction)}
 			if compactLayout {
 				identityWidth = transactionWidths[0]
-				values = []string{compactMiddle(transaction.Statement, transactionWidths[0]-1), transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds)}
+				values = []string{compactMiddle(transactionSQL(transaction), transactionWidths[0]-1), transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds)}
 			}
 			out.WriteString(semanticRow(values, transactionHeadings, transactionWidths, false) + "\n")
-			out.WriteString(identityContinuation(transaction.Statement, identityWidth, width))
+			out.WriteString(identityContinuation(transactionSQL(transaction), identityWidth, width))
 		}
 	}
 	if len(ctx.MetadataLocks) > 0 {
@@ -2196,15 +2194,6 @@ func identityContinuation(value string, cellWidth, rowWidth int) string {
 		return ""
 	}
 	return lipgloss.NewStyle().Foreground(muted).Width(rowWidth).Render("↳ "+value) + "\n"
-}
-
-func processContinuation(process model.Process, idWidth, statementWidth, rowWidth int) string {
-	id := fmt.Sprint(process.ID)
-	if ansi.StringWidth(id) <= max(1, idWidth-1) && ansi.StringWidth(process.Statement) <= max(1, statementWidth-1) {
-		return ""
-	}
-	value := fmt.Sprintf("↳ ID %s\n  %s", id, process.Statement)
-	return lipgloss.NewStyle().Foreground(muted).Width(rowWidth).Render(value) + "\n"
 }
 
 func padBetween(left, right string, width int) string {

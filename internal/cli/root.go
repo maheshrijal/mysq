@@ -109,6 +109,7 @@ func (a *App) tuiCommand() *cobra.Command {
 			inspect := func(ctx context.Context) (*model.Context, error) {
 				defer debuglog.Start(ctx, "tui.refresh")()
 				collector := collect.New(a.Version)
+				collector.LiveSQL = true
 				collector.Interval = interval
 				result, err := collector.Inspect(ctx, target)
 				if err != nil {
@@ -142,7 +143,7 @@ func (a *App) tuiCommand() *cobra.Command {
 			sample := func(ctx context.Context) (collect.TrendCounters, error) {
 				return collect.SampleTrends(ctx, db)
 			}
-			controller := &control.Queries{Target: target}
+			controller := &control.Queries{Target: target, LiveSQL: true}
 			defer controller.Close()
 			return terminalui.Run(cmd.Context(), inspect, export, controller, sample)
 		},

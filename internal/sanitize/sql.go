@@ -148,3 +148,14 @@ func SensitiveName(name string) bool {
 	}
 	return false
 }
+
+// TerminalSQL preserves SQL literals and comments for an interactive display,
+// while removing ANSI escapes and terminal control characters.
+func TerminalSQL(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, ansi.Strip(value))
+}

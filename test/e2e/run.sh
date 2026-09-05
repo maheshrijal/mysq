@@ -104,7 +104,11 @@ MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --store "$histo
 # cannot starve Bubble Tea's initial full refresh.
 stop_load
 
-MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" go test ./internal/collect -run 'TestFixture(SleepingMetadataOwner|TrendSampler|ActiveUsersBeyondSessionLimit|ParallelProbes|NullErrorNumber)$' -count=1
+# Exercise nested idle/socket waits on the disposable fixture. Runtime setup is
+# required because Performance Schema configuration resets after image init.
+docker exec "$mysql_container" mysql -uroot -pmysq-root-test --execute="UPDATE performance_schema.setup_consumers SET ENABLED='YES' WHERE NAME='events_waits_current'; UPDATE performance_schema.setup_instruments SET ENABLED='YES', TIMED='YES' WHERE NAME='wait/io/socket/sql/client_connection';"
+
+MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" go test ./internal/collect -run 'TestFixture(SleepingMetadataOwner|TrendSampler|ActiveUsersBeyondSessionLimit|ParallelProbes|NullErrorNumber|ProcessEvidence)$' -count=1
 MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" MYSQ_E2E_CONTROL_DSN="mysq_operator:mysq-operator-test@tcp(127.0.0.1:${port})/app?parseTime=true" go test ./internal/control -race -run 'TestFixtureKill(Query|Connection)$' -count=1
 
 # With no application client active, a full inspection must not count its own

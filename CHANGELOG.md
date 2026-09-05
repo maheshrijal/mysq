@@ -6,6 +6,8 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Added
 
+- TUI live SQL retains literals and comments in connection details, current query executions, and transaction/blocking evidence; history, reports, and exports remain redacted.
+
 - Release installer for macOS/Linux on amd64 and arm64, with SHA-256 verification, configurable install directory, and optional version pinning. GoReleaser publishes consistently named archives for those platforms and Windows.
 - Connect with `host[:port]/database` using exported `DBOPS_MYSQL_USER` and `DBOPS_MYSQL_PWD`. The TUI asks for an endpoint when none is configured; port defaults to 3306. Existing URLs/DSNs retain credential and endpoint precedence.
 - Live Overview trends for QPS, running threads, row-lock waits, and physical InnoDB read/write throughput, with a shared timeline, responsive line charts/sparklines, five-minute in-memory history, and `p` pause/resume. A separate two-second sampler preserves diagnostic snapshots and query selection; missing/reset samples appear as gaps.
@@ -27,6 +29,8 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 - Interval statement database-time attribution with Top SQL share in Overview and a dedicated export artifact.
 
 ### Changed
+
+- Connections uses compact single-line rows with an explicit selection marker and Enter for full SQL. Nested waits no longer duplicate sessions or consume the 100-connection limit. Tagged mysq diagnostic, trend, and control sessions are excluded from process lists and active-query-user attribution.
 
 - Simplify README installation and lead connection setup with `MYSQ_DATABASE_URL`; keep DBOPS credential variables as secondary compatibility options.
 - The release installer configures PATH for sh, Bash, Zsh, and Fish, respects custom shell config directories, avoids duplicate entries, and offers `MYSQ_NO_MODIFY_PATH=1` to leave shell configuration unchanged.
