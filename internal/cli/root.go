@@ -56,9 +56,9 @@ func newRoot(version string, out, errOut io.Writer) *cobra.Command {
 		Version:       version,
 		Long: `Find slow queries, blocked transactions, and MySQL performance problems.
 
-Export DBOPS_MYSQL_USER and DBOPS_MYSQL_PWD, then connect with host[:port]/database.
-Port defaults to 3306. Run mysq tui without an endpoint for a connection prompt,
-or export MYSQ_DATABASE_URL to reuse an endpoint across commands.
+Export MYSQ_DATABASE_URL with your MySQL connection string, then run mysq tui.
+For example: mysql://user:password@localhost:3306/database
+You can also pass a connection string directly to any database command.
 
 Diagnostics are read-only. Query cancellation in the TUI requires typing kill.
 Use inspect for a report, tui for the dashboard, or export to share the evidence.`,
