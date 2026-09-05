@@ -8,11 +8,11 @@ The collector contains read-only `SHOW` and `SELECT` statements, sets the sessio
 
 ## Credential handling
 
-Prefer `MYSQ_DATABASE_URL` rather than a positional DSN so passwords do not enter shell history or the process list. DSNs are used only to establish a connection. They are absent from contexts, local history, rendered reports, logs, and exports.
+Prefer `MYSQ_DATABASE_URL` rather than a positional DSN so passwords do not enter shell history or the process list. DSNs are used only to establish a connection. Connection credentials are not intentionally persisted. Error and diagnostic text may come from the server; review exports before sharing.
 
 ## Diagnostic data
 
-Statement digests are normalized by MySQL. Process-list and InnoDB SQL lines receive an additional conservative literal-redaction pass before they enter the context. Exports declare `secret_free: true` and include a SHA-256 manifest. Treat hostnames, schema names, table names, usernames, query shapes, configuration, and operational findings as sensitive infrastructure metadata even when literals are absent.
+Statement digests are normalized by MySQL. Process-list, transaction, and InnoDB SQL receive an additional lexical redaction pass before they enter the context. It covers comments, incomplete strings, numeric literals, and both backslash-escape modes; ambiguous input may lose diagnostic detail. Terminal controls and physical-record dumps are removed. This is redaction, not anonymization or a guarantee about arbitrary diagnostic text. Exports declare `secret_free: false` and include a SHA-256 manifest. Review exports before sharing. Treat hostnames, schema names, table names, usernames, query shapes, configuration, and operational findings as sensitive infrastructure metadata even when literals are absent.
 
 ## Local files
 

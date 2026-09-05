@@ -24,7 +24,7 @@ func TestWriteCreatesAgentBundleAndArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"manifest.json", "context.json", "summary.md", "queries.csv", "statement-samples.csv", "transactions.csv", "metadata-locks.csv", "wait-events.csv", "file-io.csv", "server-errors.csv", "memory-consumers.csv", "raw/instrumentation.json", "schema/context-1.4.0.json", "variables.cnf", "README.md"} {
+	for _, name := range []string{"manifest.json", "context.json", "summary.md", "queries.csv", "statement-samples.csv", "transactions.csv", "metadata-locks.csv", "wait-events.csv", "file-io.csv", "server-errors.csv", "memory-consumers.csv", "raw/instrumentation.json", "schema/context-1.5.0.json", "variables.cnf", "README.md"} {
 		if _, err := os.Stat(filepath.Join(output, name)); err != nil {
 			t.Fatalf("missing %s: %v", name, err)
 		}
@@ -37,7 +37,7 @@ func TestWriteCreatesAgentBundleAndArchive(t *testing.T) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
-	if !m.SecretFree || len(m.Files) < 10 {
+	if m.SecretFree || len(m.Files) < 10 {
 		t.Fatalf("unexpected manifest: %+v", m)
 	}
 	archive, err := zip.OpenReader(result.Archive)

@@ -13,7 +13,7 @@ func TestContextSchemaIsEmbeddedAndValidJSON(t *testing.T) {
 	if value["$schema"] == nil || value["properties"] == nil {
 		t.Fatalf("schema missing contract fields: %v", value)
 	}
-	if value["$id"] != "https://github.com/maheshrijal/mysq/schema/context-1.4.0.json" {
+	if value["$id"] != "https://github.com/maheshrijal/mysq/schema/context-1.5.0.json" {
 		t.Fatalf("schema id = %v", value["$id"])
 	}
 	properties, ok := value["properties"].(map[string]any)

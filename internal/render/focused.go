@@ -13,6 +13,33 @@ import (
 func Focused(w io.Writer, section string, ctx *model.Context) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	switch section {
+	case "blockers":
+		fmt.Fprintln(tw, "BLOCKING CHAINS · captured blocker → waiter edges")
+		if len(ctx.BlockingChains) == 0 {
+			fmt.Fprintln(tw, "No row-lock chain captured; inspect coverage and metadata locks below.")
+		}
+		for _, chain := range ctx.BlockingChains {
+			fmt.Fprintf(tw, "\nRoot transaction %s · %d distinct waiters · complete=%t\n", chain.RootTransaction, chain.WaiterCount, chain.Complete)
+			for _, trx := range chain.Transactions {
+				fmt.Fprintf(tw, "  Transaction %s · connection %d · %s@%s · age %ds · %s\n    %s\n", trx.ID, trx.ProcessID, trx.User, trx.Host, trx.AgeSeconds, trx.State, trx.Statement)
+			}
+			for _, edge := range chain.Edges {
+				fmt.Fprintf(tw, "  %s → %s · %s.%s · %s\n", edge.BlockingTransaction, edge.WaitingTransaction, edge.Schema, edge.Table, edge.LockMode)
+			}
+			for _, note := range chain.Caveats {
+				fmt.Fprintln(tw, "  Note: "+note)
+			}
+		}
+		fmt.Fprintln(tw, "\nMETADATA LOCKS · granted owners are candidates, not proven edges")
+		for _, lock := range ctx.MetadataLocks {
+			fmt.Fprintf(tw, "%s · %s.%s · connection %d · %s@%s · %s\n", lock.Status, lock.Schema, lock.Object, lock.ProcessID, lock.User, lock.Host, lock.LockType)
+		}
+		for _, capability := range ctx.Capabilities {
+			if !capability.Available {
+				fmt.Fprintf(tw, "Unavailable: %s · %s\n", capability.Name, capability.Reason)
+			}
+		}
+
 	case "queries":
 		fmt.Fprintln(tw, "TOTAL\tSHARE\tCALLS\tMEAN\tP95\tP99\tMAX\tERRORS/WARN\tEXAMINED\tSENT\tACTIVE USER\tSTATEMENT")
 		var total float64

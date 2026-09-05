@@ -57,6 +57,9 @@ mysq export --zip
 
 `mysq tui` opens the live interactive view:
 
+- Findings appear above metrics, including at 80×24. Enter on Overview opens the priority finding; Findings supports row selection, Enter for measured evidence and the next step, and Esc to return.
+- `B` opens blocking-chain evidence from any view (Enter also opens it from Connections): captured root owners, transaction SQL, distinct downstream waiters, and blocker → waiter edges. Missing owners and cycles are explicit. Metadata-lock owners are candidates, not inferred blocking edges.
+- Coverage and health are assessed once for all renderers. Unverified subsystems never join the healthy list, and failed refreshes retain the last snapshot under a **STALE** header. Capture time is shown on Overview; refresh remains manual.
 - Seven navigable views: Overview, Connections, Queries, Engine, Findings, Tables, and Config.
 - A restrained adaptive palette that respects light and dark terminal backgrounds; color communicates health instead of decorating every surface.
 - A compact browser-style tab strip with live counts and full-width diagnostic content, collapsing to neighboring tabs in narrow split panes.
@@ -66,7 +69,7 @@ mysq export --zip
 - `e` writes the complete native agent bundle directly from the terminal and keeps its destination visible until dismissed with `Esc`.
 - Cards, gauges, tables, findings, and key hints reflow at terminal breakpoints; very small terminals get an explicit resize state instead of a broken layout.
 
-The TUI and static report are two renderers over the same diagnostic snapshot. They cannot disagree about health or findings.
+The TUI and static report are two renderers over the same diagnostic snapshot. Both consume the same recorded subsystem assessments and findings. The numeric score summarizes detected findings only; it does not measure diagnostic coverage.
 
 ## Agent-native export
 
@@ -82,7 +85,7 @@ An export is written atomically and refuses to overwrite an existing path. It co
 |---|---|
 | `summary.md` | Findings-first narrative for a human or agent |
 | `context.json` | Complete versioned diagnostic contract |
-| `schema/context-1.4.0.json` | JSON Schema for validation and tool generation |
+| `schema/context-1.5.0.json` | JSON Schema for validation and tool generation |
 | `findings.json` / `metrics.json` | Small deterministic reasoning inputs |
 | `queries.csv` | Normalized statement digests, tail latency, errors, and cost |
 | `statement-samples.csv` | Statements ranked by database time during the collection interval |
@@ -98,7 +101,7 @@ An export is written atomically and refuses to overwrite an existing path. It co
 | `raw/instrumentation.json` | Digest capacity, disabled consumers, and lost-event counters |
 | `manifest.json` | Media types, descriptions, and SHA-256 for every artifact |
 
-The bundle is secret-free by construction. SQL string and numeric literals are removed before data enters the in-memory snapshot, so later renderers cannot accidentally choose to leak them. DSNs and passwords are never persisted.
+SQL literals and comments are redacted before data enters the snapshot, including truncated quoted strings and MySQL hexadecimal, binary, and exponent literals. Redaction covers both backslash-escape modes and removes terminal controls and InnoDB physical-record dumps. Infrastructure identifiers and arbitrary diagnostic metadata can still be sensitive: the manifest explicitly declares `secret_free: false`. Review a bundle before sharing it. Connection credentials are not intentionally persisted.
 
 ## Commands
 
@@ -112,6 +115,7 @@ The bundle is secret-free by construction. SQL string and numeric literals are r
 | `processes` | Redacted process-list snapshot |
 | `transactions` | Active InnoDB transactions, age, ownership, rows, and normalized SQL |
 | `locks` | Active InnoDB row-lock wait graph edges |
+| `blockers` | Rooted row-lock chains and metadata-lock owner candidates; scoped JSON with timestamp, target, capabilities, and caveats |
 | `metadata-locks` | Active and pending metadata locks with owners and objects |
 | `waits` | Sampled wait share and pressure with cumulative context |
 | `io` | Sampled MySQL file-I/O throughput and latency |
@@ -148,7 +152,7 @@ mysq diff --since 1h
 mysq diff --fingerprint 9fe955c8c0732deb4b5dbc65 --since 24h --json
 ```
 
-`diff` is offline: it never opens a database connection.
+`diff` is offline: it never opens a database connection. Query identity includes schema and digest. Detected restarts, counter decreases, and replaced digests omit invalid cumulative deltas. `interval_mean_ms` reports latency per observed call between snapshots (null when no calls were observed); `mean_ms_delta` remains the difference of cumulative averages. Missing findings are `inconclusive_findings` when current coverage or contract changes prevent verifying resolution. Missing query findings remain inconclusive because digest capture and query finding lists are bounded. An absent query is never proof that it stopped running.
 
 ## Monitoring privileges
 
@@ -177,10 +181,11 @@ The role is the primary safety boundary. mysq also sets `transaction_read_only=O
 - Statement digests by total latency, no-index execution, examined/sent rows, and disk temp tables, plus an interval sample ranked by current database time.
 - Current SQL attribution by database user, client host, database, digest, statement state, and wait event when instrumentation provides it.
 - Table storage and I/O, missing primary keys, duplicate definitions, and review-only unused-index candidates.
-- Process duration, active InnoDB transactions, current row locks, and active or pending metadata locks.
-- Replica thread health, lag, GTID positions, and last errors.
+- Process duration, active InnoDB transactions, current row locks, pending metadata locks, and granted owners including sleeping sessions on the same object. Completed statement/wait events are excluded from current attribution.
+- Pending metadata-lock findings, sampled statement errors, and InnoDB log/buffer capacity waits. Small, inexpensive queries no longer warn solely because they dominate a tiny captured workload.
+- Single-channel asynchronous replica health, lag, GTID positions, and last errors. Multiple channels are explicitly unavailable pending channel-aware support; the collector never silently grades only the first channel.
 - Crash durability (`innodb_flush_log_at_trx_commit`, `sync_binlog`) and important operational settings.
-- Probe capabilities, making partial visibility explicit rather than silently treating missing data as healthy.
+- Probe capabilities, making partial visibility explicit rather than silently treating missing data as healthy. Failed probes, including replication, produce a warning and can fail a warning-level CI gate. `health.subsystems` records status, completeness, and missing-evidence reasons; `health.unknown` counts incomplete assessments. Older snapshots without these fields have unverified coverage.
 
 Findings are deterministic Go code; no model decides database health. Counter findings always carry their scope. An index with zero reads is a review candidate—not permission to drop it—because counters reset, replicas and rare jobs may use it, and the sampled workload may be incomplete.
 
@@ -198,7 +203,7 @@ make benchmark
 make check
 ```
 
-`make e2e` binds a fresh `mysql:8.4` container to an ephemeral `127.0.0.1` port by default (set `MYSQ_MYSQL_PORT` to request a specific port), uses a tmpfs data directory, generates concurrent OLTP traffic, holds a real row-lock chain, runs a long statement, and then verifies every CLI command, all output formats, CI exit behavior, local history and diff, export checksums, and a real PTY-driven TUI refresh/export/quit flow. It tears the container and temporary evidence down on exit.
+`make e2e` binds a fresh `mysql:8.4` container to an ephemeral `127.0.0.1` port by default (set `MYSQ_MYSQL_PORT` to request a specific port), uses a tmpfs data directory, generates concurrent OLTP traffic, holds a real row-lock chain, runs a long statement, and then verifies every CLI command, all output formats, CI exit behavior, local history and diff, export checksums, a sleeping transaction holding up a metadata lock, and a real PTY-driven TUI investigation/refresh/export/quit flow. It tears the container and temporary evidence down on exit.
 
 `make benchmark` uses a fresh, isolated Docker MySQL fixture on an ephemeral `127.0.0.1` port, runs the same concurrent workload, validates each command's JSON evidence, and reports median, p95, minimum, and maximum latency. See [docs/performance.md](docs/performance.md) for paired baseline comparisons and the latest measured result.
 

@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-const SchemaVersion = "1.4.0"
+const SchemaVersion = "1.5.0"
 
 type Context struct {
 	SchemaVersion    string            `json:"schema_version"`
@@ -12,6 +12,7 @@ type Context struct {
 	SampleIntervals  SampleIntervals   `json:"sample_intervals_ms" jsonschema_description:"Observed endpoint-to-endpoint duration for each sampled counter family, in milliseconds."`
 	Fingerprint      string            `json:"fingerprint"`
 	Server           Server            `json:"server"`
+	BlockingChains   []BlockingChain   `json:"blocking_chains,omitempty"`
 	Health           Health            `json:"health"`
 	Metrics          Metrics           `json:"metrics"`
 	Findings         []Finding         `json:"findings"`
@@ -63,11 +64,13 @@ type Server struct {
 }
 
 type Health struct {
-	Score    int `json:"score"`
-	Critical int `json:"critical"`
-	Warnings int `json:"warnings"`
-	Notes    int `json:"notes"`
-	Healthy  int `json:"healthy"`
+	Score      int               `json:"score"`
+	Critical   int               `json:"critical"`
+	Warnings   int               `json:"warnings"`
+	Notes      int               `json:"notes"`
+	Healthy    int               `json:"healthy"`
+	Unknown    int               `json:"unknown"`
+	Subsystems []SubsystemHealth `json:"subsystems,omitempty"`
 }
 
 type Metrics struct {

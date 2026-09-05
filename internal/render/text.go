@@ -45,11 +45,12 @@ func Text(w io.Writer, ctx *model.Context, options Options) error {
 	scoreStyle := p.green
 	if ctx.Health.Critical > 0 {
 		scoreStyle = p.red
-	} else if ctx.Health.Warnings > 0 {
+	} else if ctx.Health.State() != "HEALTHY" {
 		scoreStyle = p.yellow
 	}
 	score := fmt.Sprintf("Database health  %s  %3d/100", healthBar(ctx.Health.Score, 24, scoreStyle, p.muted), ctx.Health.Score)
 	out.WriteString(scoreStyle.Bold(true).Render(score) + "\n")
+	out.WriteString(p.muted.Render(fmt.Sprintf("%s · %d subsystems unverified · score reflects detected findings only", ctx.Health.State(), ctx.Health.Unknown)) + "\n")
 	out.WriteString(renderMetricStrip(ctx, p) + "\n\n")
 
 	if len(ctx.Findings) == 0 {
@@ -73,7 +74,7 @@ func Text(w io.Writer, ctx *model.Context, options Options) error {
 		}
 	}
 
-	healthy := healthySubsystems(ctx.Findings)
+	healthy := healthySubsystems(ctx.Health)
 	if len(healthy) > 0 {
 		out.WriteString(p.green.Bold(true).Render("GOOD") + "\n")
 		out.WriteString(p.green.Render("● ") + p.muted.Render(strings.Join(healthy, " · ")) + "\n\n")
@@ -138,6 +139,11 @@ func renderFull(ctx *model.Context, p palette, width int) string {
 		{"instrumentation", statusFor(ctx, "instrumentation"), capabilityValue(ctx), "probe coverage"},
 	}
 	out.WriteString(table([]string{"subsystem", "status", "value", "note"}, rows, []int{20, 10, 18, 35}, p))
+	for _, subsystem := range ctx.Health.Subsystems {
+		if !subsystem.Complete {
+			out.WriteString(p.yellow.Render("Unverified "+subsystem.Name+": ") + subsystem.Reason + "\n")
+		}
+	}
 
 	section("ENGINE ACTIVITY")
 	engineRows := [][]string{
@@ -310,42 +316,25 @@ func findingsBySeverity(findings []model.Finding, severity model.Severity) []mod
 	return result
 }
 
-var namedSubsystems = []string{"connections", "workload", "queries", "indexes", "tables", "locks", "buffer pool", "temporary tables", "replication", "durability", "instrumentation"}
-
-func healthySubsystems(findings []model.Finding) []string {
-	affected := map[string]bool{}
-	for _, finding := range findings {
-		affected[finding.Subsystem] = true
-	}
-	result := make([]string, 0)
-	for _, subsystem := range namedSubsystems {
-		if !affected[subsystem] {
-			result = append(result, subsystem)
+func healthySubsystems(health model.Health) []string {
+	result := []string{}
+	for _, subsystem := range health.Subsystems {
+		if subsystem.Complete && subsystem.Status == "ok" {
+			result = append(result, subsystem.Name)
 		}
 	}
 	return result
 }
 
 func statusFor(ctx *model.Context, subsystem string) string {
-	status := "ok"
-	for _, finding := range ctx.Findings {
-		if finding.Subsystem != subsystem {
-			continue
-		}
-		if finding.Severity == model.SeverityCritical {
-			return "fail"
-		}
-		if finding.Severity == model.SeverityWarning {
-			status = "warn"
-		} else if status == "ok" {
-			status = "note"
-		}
-	}
-	return status
+	return ctx.Health.Subsystem(subsystem).Status
 }
 
 func replicationValue(ctx *model.Context) string {
 	if ctx.Replication == nil {
+		if ctx.Health.Subsystem("replication").Status != "not_applicable" {
+			return "unverified"
+		}
 		return "not a replica"
 	}
 	if ctx.Replication.SecondsBehind == nil {
@@ -356,7 +345,7 @@ func replicationValue(ctx *model.Context) string {
 
 func replicationNote(ctx *model.Context) string {
 	if ctx.Replication == nil {
-		return "source or standalone"
+		return ctx.Health.Subsystem("replication").Reason
 	}
 	return fmt.Sprintf("io %s · sql %s", ctx.Replication.IORunning, ctx.Replication.SQLRunning)
 }

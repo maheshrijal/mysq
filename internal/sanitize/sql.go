@@ -1,40 +1,139 @@
 package sanitize
 
 import (
-	"regexp"
+	"github.com/charmbracelet/x/ansi"
 	"strings"
+	"unicode"
 )
 
-var (
-	singleQuoted = regexp.MustCompile(`'(?:''|\\.|[^'])*'`)
-	doubleQuoted = regexp.MustCompile(`"(?:""|\\.|[^"])*"`)
-	numbers      = regexp.MustCompile(`\b\d+(?:\.\d+)?\b`)
-	spaces       = regexp.MustCompile(`\s+`)
-)
-
-// SQL removes literal values while preserving enough statement shape for diagnosis.
+// SQL retains identifiers and operators, replacing literals and comments. Two
+// lexical passes cover both MySQL backslash-escape modes; their redaction spans
+// are combined so ambiguous or truncated input loses detail rather than values.
 func SQL(value string) string {
-	value = singleQuoted.ReplaceAllString(value, "?")
-	value = doubleQuoted.ReplaceAllString(value, "?")
-	value = numbers.ReplaceAllString(value, "?")
-	return strings.TrimSpace(spaces.ReplaceAllString(value, " "))
+	return strings.Join(strings.Fields(redact(value, true)), " ")
 }
 
-// Text applies the same conservative literal redaction to diagnostic text.
-func Text(value string) string {
-	lines := strings.Split(value, "\n")
-	for i, line := range lines {
-		// Diagnostic errors can embed values even when they are not themselves SQL
-		// statements (for example duplicate-entry replication failures).
-		line = singleQuoted.ReplaceAllString(line, "?")
-		line = doubleQuoted.ReplaceAllString(line, "?")
-		upper := strings.ToUpper(strings.TrimSpace(line))
-		if strings.HasPrefix(upper, "SELECT ") || strings.HasPrefix(upper, "INSERT ") ||
-			strings.HasPrefix(upper, "UPDATE ") || strings.HasPrefix(upper, "DELETE ") ||
-			strings.HasPrefix(upper, "REPLACE ") {
-			line = SQL(line)
+func redact(value string, numbers bool) string {
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1
 		}
-		lines[i] = line
+		return r
+	}, ansi.Strip(value))
+	masked := make([]bool, len(value))
+	mark := func(start, end int) {
+		for i := start; i < end; i++ {
+			masked[i] = true
+		}
+	}
+	for _, escapes := range []bool{true, false} {
+		for i := 0; i < len(value); {
+			start := i
+			switch {
+			case value[i] == '\'' || value[i] == '"':
+				quote := value[i]
+				i++
+				for i < len(value) {
+					if escapes && value[i] == '\\' {
+						i++
+						if i < len(value) {
+							i++
+						}
+						continue
+					}
+					if value[i] == quote {
+						i++
+						if i < len(value) && value[i] == quote {
+							i++
+							continue
+						}
+						break
+					}
+					i++
+				}
+				mark(start, i)
+			case value[i] == '`':
+				i++
+				for i < len(value) {
+					if value[i] == '`' {
+						i++
+						if i < len(value) && value[i] == '`' {
+							i++
+							continue
+						}
+						break
+					}
+					i++
+				}
+			case value[i] == '#' || (strings.HasPrefix(value[i:], "--") && (i+2 == len(value) || value[i+2] <= ' ')):
+				for i < len(value) && value[i] != '\n' {
+					i++
+				}
+				mark(start, i)
+			case strings.HasPrefix(value[i:], "/*"):
+				i += 2
+				for i < len(value) && !strings.HasPrefix(value[i:], "*/") {
+					i++
+				}
+				if i < len(value) {
+					i += 2
+				}
+				mark(start, i)
+			case numbers && ((value[i] >= '0' && value[i] <= '9') || (value[i] == '.' && i+1 < len(value) && value[i+1] >= '0' && value[i+1] <= '9')) && (i == 0 || !identifierByte(value[i-1])):
+				i++
+				for i < len(value) {
+					b := value[i]
+					if identifierByte(b) || b == '.' {
+						i++
+						continue
+					}
+					if (b == '+' || b == '-') && (value[i-1] == 'e' || value[i-1] == 'E') {
+						i++
+						continue
+					}
+					break
+				}
+				mark(start, i)
+			default:
+				i++
+			}
+		}
+	}
+	var out strings.Builder
+	for i := 0; i < len(value); {
+		if !masked[i] {
+			out.WriteByte(value[i])
+			i++
+			continue
+		}
+		out.WriteString("?")
+		for i < len(value) && masked[i] {
+			i++
+		}
+	}
+	return out.String()
+}
+
+func identifierByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '$' || b >= 128
+}
+
+// Text preserves monitor counters but removes quoted values, comments, terminal
+// controls, and InnoDB record dumps. Infrastructure identifiers remain sensitive.
+func Text(value string) string {
+	lines := strings.Split(redact(value, false), "\n")
+	for i, line := range lines {
+		upper := strings.ToUpper(strings.TrimSpace(line))
+		if strings.Contains(upper, "PHYSICAL RECORD") || strings.Contains(upper, "; HEX ") || strings.Contains(upper, "; ASC ") {
+			lines[i] = "[record data omitted]"
+			continue
+		}
+		for _, prefix := range []string{"SELECT ", "INSERT ", "UPDATE ", "DELETE ", "REPLACE ", "WITH ", "CALL ", "EXPLAIN ", "SET "} {
+			if strings.HasPrefix(upper, prefix) {
+				lines[i] = SQL(line)
+				break
+			}
+		}
 	}
 	return strings.Join(lines, "\n")
 }

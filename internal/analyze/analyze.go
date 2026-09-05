@@ -41,6 +41,8 @@ func Apply(ctx *model.Context) {
 	})
 	ctx.Findings = findings
 	ctx.Health = score(findings)
+	assessCoverage(ctx)
+	ctx.BlockingChains = BlockingChains(ctx)
 }
 
 func analyzeConnections(ctx *model.Context, add func(model.Finding)) {
@@ -68,6 +70,12 @@ func analyzeConnections(ctx *model.Context, add func(model.Finding)) {
 }
 
 func analyzeWorkload(ctx *model.Context, add func(model.Finding)) {
+	if ctx.Metrics.StatementErrorsPerSec > 0 {
+		add(finding("statement_errors", model.SeverityWarning, "workload", "Statements are returning errors",
+			fmt.Sprintf("%.2f statement errors/s were observed during the sample.", ctx.Metrics.StatementErrorsPerSec),
+			"Inspect sampled server errors and affected statements; correlate error codes with application failures before changing configuration.", map[string]any{"errors_per_second": ctx.Metrics.StatementErrorsPerSec, "interval_ms": ctx.SampleIntervals.StatementCounters}))
+	}
+
 	longest := uint64(0)
 	count := 0
 	objects := make([]string, 0)
@@ -114,32 +122,39 @@ func analyzeQueries(ctx *model.Context, add func(model.Finding)) {
 	}
 	for _, query := range ctx.Queries {
 		share := query.TotalLatencyMillis * 100 / total
-		if query.Calls < 5 || (share < 35 && query.MeanLatencyMillis < 250) {
+		currentTimePerSecond := 0.0
+		for _, sample := range ctx.StatementSamples {
+			if sample.Schema == query.Schema && sample.Digest == query.Digest {
+				currentTimePerSecond = sample.DatabaseTimeMillisPerSecond
+				break
+			}
+		}
+		if query.Calls < 5 || (query.MeanLatencyMillis < 10 && currentTimePerSecond < 100) || (share < 35 && query.MeanLatencyMillis < 250) {
 			continue
 		}
 		severity := model.SeverityNote
 		if share >= 50 || query.MeanLatencyMillis >= 500 {
 			severity = model.SeverityWarning
 		}
-		f := finding("expensive_query_"+shortDigest(query.Digest), severity, "queries",
+		f := finding("expensive_query_"+query.Schema+"_"+query.Digest, severity, "queries",
 			"A statement dominates database time",
 			fmt.Sprintf("Digest %s accounts for %.1f%% of captured statement latency across %d calls (%.2fms mean).", shortDigest(query.Digest), share, query.Calls, query.MeanLatencyMillis),
 			"Review EXPLAIN for the normalized statement and compare rows examined with rows returned.",
-			map[string]any{"digest": query.Digest, "share_percent": share, "calls": query.Calls, "mean_latency_ms": query.MeanLatencyMillis})
-		f.Objects = []string{"digest:" + query.Digest}
+			map[string]any{"schema": query.Schema, "scope": "cumulative captured digests", "sample_database_time_ms_per_second": currentTimePerSecond, "digest": query.Digest, "share_percent": share, "calls": query.Calls, "mean_latency_ms": query.MeanLatencyMillis})
+		f.Objects = []string{"digest:" + query.Schema + ":" + query.Digest}
 		add(f)
 		break
 	}
 	for _, query := range ctx.Queries {
-		if query.NoIndexUsed == 0 || query.Calls < 5 {
+		if query.NoIndexUsed == 0 || query.Calls < 5 || query.RowsExamined/query.Calls < 1000 {
 			continue
 		}
-		f := finding("query_no_index_"+shortDigest(query.Digest), model.SeverityWarning, "queries",
+		f := finding("query_no_index_"+query.Schema+"_"+query.Digest, model.SeverityWarning, "queries",
 			"A recurring statement is not using an index",
 			fmt.Sprintf("Digest %s reported %d executions without an index.", shortDigest(query.Digest), query.NoIndexUsed),
 			"Use EXPLAIN to confirm access paths; add or reshape an index only after validating selectivity and write cost.",
-			map[string]any{"digest": query.Digest, "no_index_used": query.NoIndexUsed, "calls": query.Calls})
-		f.Objects = []string{"digest:" + query.Digest}
+			map[string]any{"schema": query.Schema, "scope": "cumulative captured digests", "rows_examined_per_call": query.RowsExamined / query.Calls, "digest": query.Digest, "no_index_used": query.NoIndexUsed, "calls": query.Calls})
+		f.Objects = []string{"digest:" + query.Schema + ":" + query.Digest}
 		add(f)
 		break
 	}
@@ -185,14 +200,14 @@ func analyzeIndexes(ctx *model.Context, add func(model.Finding)) {
 func analyzeTables(ctx *model.Context, add func(model.Finding)) {
 	missing := make([]string, 0)
 	for _, table := range ctx.Tables {
-		if !table.HasPrimaryKey {
+		if strings.EqualFold(table.Engine, "InnoDB") && !table.HasPrimaryKey {
 			missing = append(missing, table.Schema+"."+table.Name)
 		}
 	}
 	if len(missing) > 0 {
 		f := finding("tables_without_primary_key", model.SeverityWarning, "tables",
 			"InnoDB tables are missing primary keys",
-			fmt.Sprintf("%d table(s) have no primary key, causing hidden row IDs and making row-based replication less efficient.", len(missing)),
+			fmt.Sprintf("%d table(s) have no explicit primary key. InnoDB uses a suitable UNIQUE NOT NULL key or a hidden row ID; review row identity and replication impact.", len(missing)),
 			"Choose stable, narrow primary keys based on domain identity; validate duplicates before adding constraints.",
 			map[string]any{"count": len(missing)})
 		f.Objects = firstN(missing, 10)
@@ -201,6 +216,18 @@ func analyzeTables(ctx *model.Context, add func(model.Finding)) {
 }
 
 func analyzeLocks(ctx *model.Context, add func(model.Finding)) {
+	pending := 0
+	for _, lock := range ctx.MetadataLocks {
+		if strings.EqualFold(lock.Status, "PENDING") {
+			pending++
+		}
+	}
+	if pending > 0 {
+		add(finding("metadata_lock_waits", model.SeverityWarning, "locks", "Statements are waiting for metadata locks",
+			fmt.Sprintf("%d pending metadata lock(s) were captured.", pending),
+			"Inspect pending locks and granted owners on the same object, including sleeping sessions. Matching objects identify candidates, not proven blocking edges.", map[string]any{"pending": pending, "scope": "point-in-time"}))
+	}
+
 	if len(ctx.Locks) > 0 {
 		objects := make([]string, 0, len(ctx.Locks))
 		for _, lock := range ctx.Locks {
@@ -223,6 +250,12 @@ func analyzeLocks(ctx *model.Context, add func(model.Finding)) {
 }
 
 func analyzeBufferPool(ctx *model.Context, add func(model.Finding)) {
+	if ctx.Metrics.RedoWaitsPerSecond > 0 || ctx.Metrics.BufferPoolWaitsPerSec > 0 {
+		add(finding("innodb_flush_waits", model.SeverityWarning, "buffer pool", "InnoDB work is waiting for log or buffer capacity",
+			fmt.Sprintf("%.2f redo waits/s and %.2f buffer-pool waits/s were observed.", ctx.Metrics.RedoWaitsPerSecond, ctx.Metrics.BufferPoolWaitsPerSec),
+			"Correlate redo generation, checkpoint age, pending I/O, and file latency. These waits alone do not prove undersized memory or slow storage.", map[string]any{"redo_waits_per_second": ctx.Metrics.RedoWaitsPerSecond, "buffer_waits_per_second": ctx.Metrics.BufferPoolWaitsPerSec, "interval_ms": ctx.IntervalMillis}))
+	}
+
 	hit := ctx.Metrics.BufferPoolHitPercent
 	if hit < 95 {
 		add(finding("low_buffer_pool_hit", model.SeverityCritical, "buffer pool",
@@ -318,7 +351,7 @@ func analyzeDurability(ctx *model.Context, add func(model.Finding)) {
 }
 
 func analyzeInstrumentation(ctx *model.Context, add func(model.Finding)) {
-	if !ctx.Server.PerformanceSchema {
+	if !ctx.Server.PerformanceSchema && strings.EqualFold(ctx.Variables["performance_schema"], "OFF") {
 		add(finding("performance_schema_disabled", model.SeverityWarning, "instrumentation",
 			"Performance Schema is disabled",
 			"Statement digests, index usage, waits, and table I/O cannot be inspected.",
@@ -327,12 +360,12 @@ func analyzeInstrumentation(ctx *model.Context, add func(model.Finding)) {
 	}
 	unavailable := 0
 	for _, capability := range ctx.Capabilities {
-		if !capability.Available && capability.Name != "replication" {
+		if !capability.Available {
 			unavailable++
 		}
 	}
 	if unavailable > 0 {
-		add(finding("partial_visibility", model.SeverityNote, "instrumentation",
+		add(finding("partial_visibility", model.SeverityWarning, "instrumentation",
 			"Some diagnostic probes were unavailable",
 			fmt.Sprintf("%d probe(s) could not be collected; see collection_warnings for exact errors.", unavailable),
 			"Grant only the documented monitoring privileges needed for the missing probes, or accept the explicitly reduced coverage.",
@@ -349,9 +382,7 @@ func finding(id string, severity model.Severity, subsystem, title, summary, reco
 
 func score(findings []model.Finding) model.Health {
 	health := model.Health{Score: 100}
-	affected := map[string]bool{}
 	for _, finding := range findings {
-		affected[finding.Subsystem] = true
 		switch finding.Severity {
 		case model.SeverityCritical:
 			health.Critical++
@@ -366,11 +397,6 @@ func score(findings []model.Finding) model.Health {
 	}
 	if health.Score < 0 {
 		health.Score = 0
-	}
-	for _, subsystem := range subsystems {
-		if !affected[subsystem] {
-			health.Healthy++
-		}
 	}
 	return health
 }

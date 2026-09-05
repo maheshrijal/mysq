@@ -16,6 +16,7 @@ type navigationKeyMap struct {
 	Open         key.Binding
 	Back         key.Binding
 	Filter       key.Binding
+	Blockers     key.Binding
 	Refresh      key.Binding
 	Export       key.Binding
 	Help         key.Binding
@@ -77,6 +78,7 @@ func defaultNavigationKeyMap() navigationKeyMap {
 			key.WithKeys("/"),
 			key.WithHelp("/", "filter current view"),
 		),
+		Blockers: key.NewBinding(key.WithKeys("B"), key.WithHelp("B", "blocking chains")),
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "refresh"),
