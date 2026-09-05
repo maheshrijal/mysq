@@ -8,24 +8,46 @@ Open an interactive dashboard, get a quick health report, or export the evidence
 
 ## Install
 
-You need [Go 1.25 or newer](https://go.dev/dl/). On macOS or Linux:
+On macOS or Linux, install the latest release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+mysq --help
+```
+
+The installer detects **amd64** (Intel/AMD) or **arm64** (including Apple Silicon), downloads the matching GoReleaser archive, verifies its SHA-256 checksum, and installs into `~/.local/bin`. No Go installation or sudo is needed. Add the `export PATH` line to `~/.zshrc` or `~/.bashrc` to keep `mysq` available in new terminals. Run the installer again to update.
+
+To choose a directory or a specific published tag:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | INSTALL_DIR="$HOME/bin" sh
+curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | VERSION=v0.1.0 sh
+```
+
+Use an existing tag from [Releases](https://github.com/maheshrijal/mysq/releases). The installer needs a published release; until the first release is available, use the Go installation below.
+
+<details>
+<summary>Install with Go</summary>
+
+With [Go 1.25 or newer](https://go.dev/dl/):
 
 ```sh
 mkdir -p "$HOME/.local/bin"
 GOBIN="$HOME/.local/bin" go install github.com/maheshrijal/mysq/cmd/mysq@latest
 export PATH="$HOME/.local/bin:$PATH"
-
-mysq --help
 ```
 
-Add the `export PATH` line to `~/.zshrc` or `~/.bashrc` to keep `mysq` available in new terminals. Run the same `go install` command to update.
+Run the same command to update from source.
 
-There are no prebuilt [GitHub releases](https://github.com/maheshrijal/mysq/releases) yet. The Go command above installs the current code; a release-download script is not available yet.
+</details>
 
 <details>
 <summary>Windows installation</summary>
 
-With Go installed, run in PowerShell:
+Download `mysq_windows_amd64.zip` or `mysq_windows_arm64.zip` from [Releases](https://github.com/maheshrijal/mysq/releases), extract `mysq.exe`, and add its directory to `Path`. The release includes `checksums.txt`; use `Get-FileHash -Algorithm SHA256` to check the downloaded ZIP.
+
+Alternatively, with Go installed, run in PowerShell:
 
 ```powershell
 go install github.com/maheshrijal/mysq/cmd/mysq@latest
@@ -120,10 +142,17 @@ export MYSQ_DATABASE_URL='db.example.com/app?tls=true'
 
 The server certificate must be trusted by your machine and match the hostname.
 
-<details>
-<summary>Existing MySQL URLs, DSNs, and connection precedence</summary>
+### Full connection strings
 
-Existing formats also work:
+You can pass a full MySQL URL or native driver DSN to `tui`, `inspect`, and the other database commands, or store it in `MYSQ_DATABASE_URL`:
+
+```sh
+mysq tui 'mysql://mysq_monitor:password@db.example.com:3306/app?tls=true'
+mysq inspect 'mysq_monitor:password@tcp(db.example.com:3306)/app?tls=true'
+mysq tui 'mysq_monitor:password@unix(/var/run/mysqld/mysqld.sock)/app'
+```
+
+These examples contain placeholder passwords. To keep passwords out of shell history and process arguments, prefer the exported DBOPS credentials with a credential-free connection string:
 
 ```sh
 export MYSQ_DATABASE_URL='mysql://db.example.com:3306/app?tls=true'
@@ -134,8 +163,6 @@ export MYSQ_DATABASE_URL='tcp(db.example.com:3306)/app?tls=true'
 A connection string that includes a username uses its own credentials, including an empty password. mysq does not combine that username with `DBOPS_MYSQL_PWD`. Full URLs require percent-encoding special characters in credentials; using the separate environment variables avoids that step.
 
 Endpoint precedence is: command argument → `MYSQ_DATABASE_URL` → legacy `MYSQLDOT_DATABASE_URL` → `DATABASE_URL`. The TUI prompts only when none is set. Other database commands require an endpoint and print setup guidance if one is missing. Credentials alone never silently select localhost.
-
-</details>
 
 ## Use the dashboard
 

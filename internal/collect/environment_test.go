@@ -3,9 +3,50 @@ package collect
 import (
 	"strings"
 	"testing"
+	"time"
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
+
+func TestFullConnectionStrings(t *testing.T) {
+	t.Setenv("DBOPS_MYSQL_USER", "shell_user")
+	t.Setenv("DBOPS_MYSQL_PWD", "shell_password")
+	for _, raw := range []string{
+		"mysql://explicit:p%40ss%3A%2F%3F%23@db.example:3307/app%20db?tls=true&timeout=3s&readTimeout=4s&writeTimeout=5s&charset=utf8mb4&loc=Asia%2FKolkata",
+		"explicit:p@ss:/?#@tcp(db.example:3307)/app%20db?tls=true&timeout=3s&readTimeout=4s&writeTimeout=5s&charset=utf8mb4&loc=Asia%2FKolkata",
+	} {
+		target, err := ResolveConnection(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := mysqlDriver.ParseDSN(target.DSN)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.User != "explicit" || cfg.Passwd != "p@ss:/?#" || cfg.Addr != "db.example:3307" || cfg.DBName != "app db" ||
+			cfg.TLSConfig != "true" || cfg.Timeout != 3*time.Second || cfg.ReadTimeout != 4*time.Second ||
+			cfg.WriteTimeout != 5*time.Second || cfg.Loc.String() != "Asia/Kolkata" || !strings.Contains(target.DSN, "charset=utf8mb4") {
+			t.Fatal("full connection string lost credentials or driver options")
+		}
+	}
+	for _, raw := range []string{"explicit:own@unix(/var/run/mysqld/mysqld.sock)/app", "unix(/var/run/mysqld/mysqld.sock)/app"} {
+		target, err := ResolveConnection(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := mysqlDriver.ParseDSN(target.DSN)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantUser, wantPassword := "shell_user", "shell_password"
+		if strings.HasPrefix(raw, "explicit:") {
+			wantUser, wantPassword = "explicit", "own"
+		}
+		if cfg.Net != "unix" || cfg.Addr != "/var/run/mysqld/mysqld.sock" || cfg.DBName != "app" || cfg.User != wantUser || cfg.Passwd != wantPassword {
+			t.Fatal("Unix socket connection lost its address or credentials")
+		}
+	}
+}
 
 func TestDBOPSCredentialsAndConnectionPrecedence(t *testing.T) {
 	for _, name := range []string{"MYSQ_DATABASE_URL", "MYSQLDOT_DATABASE_URL", "DATABASE_URL"} {

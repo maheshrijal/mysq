@@ -6,6 +6,7 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Added
 
+- Release installer for macOS/Linux on amd64 and arm64, with SHA-256 verification, configurable install directory, and optional version pinning. GoReleaser publishes consistently named archives for those platforms and Windows.
 - Connect with `host[:port]/database` using exported `DBOPS_MYSQL_USER` and `DBOPS_MYSQL_PWD`. The TUI asks for an endpoint when none is configured; port defaults to 3306. Existing URLs/DSNs retain credential and endpoint precedence.
 - Live Overview trends for QPS, running threads, row-lock waits, and physical InnoDB read/write throughput, with a shared timeline, responsive line charts/sparklines, five-minute in-memory history, and `p` pause/resume. A separate two-second sampler preserves diagnostic snapshots and query selection; missing/reset samples appear as gaps.
 - Queries-only `K` cancellation with live session selection, exact typed `kill` confirmation, execution identity revalidation, and explicit accepted/failed outcomes. Query details show current executing users, hosts, connections, and statement timing independently of historical digest totals.
