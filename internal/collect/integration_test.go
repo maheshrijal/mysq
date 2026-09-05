@@ -141,7 +141,31 @@ func TestFixtureActiveUsersBeyondSessionLimit(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			sampleCtx, stop := context.WithCancel(ctx)
 			var running sync.WaitGroup
-			defer func() { stop(); running.Wait() }()
+			var connectionIDs []any
+			defer func() {
+				stop()
+				running.Wait()
+				if len(connectionIDs) == 0 {
+					return
+				}
+				// Closing the client socket does not synchronously end SLEEP on
+				// MySQL. Wait for these exact test sessions to disappear so their
+				// delayed completions cannot pollute the next idle measurement.
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cleanupCancel()
+				query := "SELECT COUNT(*) FROM performance_schema.threads WHERE PROCESSLIST_ID IN (" + strings.TrimSuffix(strings.Repeat("?,", len(connectionIDs)), ",") + ")"
+				for {
+					var remaining int
+					if err := conn.QueryRowContext(cleanupCtx, query, connectionIDs...).Scan(&remaining); err != nil {
+						t.Errorf("wait for fixture sessions to finish: %v", err)
+						return
+					}
+					if remaining == 0 {
+						return
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+			}()
 			start := func(db *sql.DB) uint64 {
 				t.Helper()
 				c, err := db.Conn(sampleCtx)
@@ -153,6 +177,7 @@ func TestFixtureActiveUsersBeyondSessionLimit(t *testing.T) {
 					c.Close()
 					t.Fatal(err)
 				}
+				connectionIDs = append(connectionIDs, id)
 				running.Add(1)
 				go func() {
 					defer running.Done()
