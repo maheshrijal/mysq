@@ -41,6 +41,8 @@ type Model struct {
 	ctx                         context.Context
 	inspect                     Inspector
 	export                      Exporter
+	queryControl                QueryController
+	live                        liveQueries
 	snapshot                    *model.Context
 	viewport                    viewport.Model
 	spinner                     spinner.Model
@@ -90,14 +92,14 @@ var (
 	cyan       = lipgloss.AdaptiveColor{Light: "#1E66F5", Dark: "#7AA2F7"}
 )
 
-func Run(ctx context.Context, inspect Inspector, export Exporter) error {
-	model := New(ctx, inspect, export)
+func Run(ctx context.Context, inspect Inspector, export Exporter, control ...QueryController) error {
+	model := New(ctx, inspect, export, control...)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	_, err := program.Run()
 	return err
 }
 
-func New(ctx context.Context, inspect Inspector, export Exporter) Model {
+func New(ctx context.Context, inspect Inspector, export Exporter, control ...QueryController) Model {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = lipgloss.NewStyle().Foreground(cyan)
@@ -116,9 +118,14 @@ func New(ctx context.Context, inspect Inspector, export Exporter) Model {
 	filterInput.TextStyle = lipgloss.NewStyle().Foreground(text)
 	filterInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(muted)
 	filterInput.Cursor.Style = lipgloss.NewStyle().Foreground(cyan)
+	var queryControl QueryController
+	if len(control) > 0 {
+		queryControl = control[0]
+	}
 	return Model{
 		ctx: ctx, inspect: inspect, export: export, spinner: spin,
-		viewport: viewport.New(80, 20), keyHelp: keyHelp, keys: defaultNavigationKeyMap(), filterInput: filterInput,
+		queryControl: queryControl,
+		viewport:     viewport.New(80, 20), keyHelp: keyHelp, keys: defaultNavigationKeyMap(), filterInput: filterInput,
 		loading: true,
 	}
 }
@@ -128,6 +135,10 @@ func (m Model) Init() tea.Cmd { return tea.Batch(m.spinner.Tick, m.inspectComman
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	var commands []tea.Cmd
 	switch msg := message.(type) {
+	case sessionsMessage:
+		return m.receiveSessions(msg)
+	case killMessage:
+		return m.receiveKill(msg)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	case tea.WindowSizeMsg:
@@ -197,6 +208,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		commands = append(commands, command)
 		m.applyFilterInputChange(before)
 	}
+	if m.live.stage == "confirm" {
+		m.live.input, command = m.live.input.Update(message)
+		commands = append(commands, command)
+		m.rebuild()
+	}
 	return m, tea.Batch(commands...)
 }
 
@@ -205,10 +221,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if m.width > 0 && (m.width < 52 || m.height < 18) {
+		if msg.String() == "esc" && m.live.stage != "sending" {
+			m.live.stage = ""
+		}
 		if key.Matches(msg, m.keys.Quit) {
 			return m, tea.Quit
 		}
 		return m, nil
+	}
+	if m.live.stage != "" {
+		return m.handleQueryAction(msg)
 	}
 	if m.filtering {
 		return m.updateFilter(msg)
@@ -232,6 +254,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case key.Matches(msg, m.keys.KillQuery):
+		if tabs[m.tab] == "Queries" && !m.inInvestigation() && !m.loading && !m.exporting && m.exportPath == "" {
+			return m, m.loadSessions(true)
+		}
+		return m, nil
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Back):
@@ -323,6 +350,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.queryDetailOffset = 0
 			m.queryDetail = true
 			m.rebuild()
+			return m, m.loadSessions(false)
 		}
 		return m, nil
 	case m.scrollFindingList(msg):
@@ -335,7 +363,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.resizeViewport()
 			m.loading = true
 			m.setStatus("Refreshing every diagnostic probe…", true)
-			return m, tea.Batch(m.inspectCommand(), m.spinner.Tick)
+			var sessions tea.Cmd
+			if m.queryDetail {
+				sessions = m.loadSessions(false)
+			}
+			return m, tea.Batch(m.inspectCommand(), m.spinner.Tick, sessions)
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Export):
@@ -731,6 +763,18 @@ func (m Model) filterCounts() (int, int) {
 }
 
 func (m Model) helpBindings() contextualHelp {
+	if m.live.stage == "sending" {
+		return contextualHelp{}
+	}
+	if m.live.stage != "" {
+		bindings := []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel / back"))}
+		if m.live.stage == "choose" {
+			bindings = append(bindings, m.keys.Up, m.keys.Down, m.keys.Open)
+		} else if m.live.stage == "confirm" {
+			bindings = append(bindings, key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm exact kill")))
+		}
+		return contextualHelp{short: bindings, full: [][]key.Binding{bindings}}
+	}
 	paging := []key.Binding{m.keys.PageUp, m.keys.PageDown, m.keys.HalfPageUp, m.keys.HalfPageDown, m.keys.Top, m.keys.Bottom}
 	navigation := []key.Binding{m.keys.PreviousView, m.keys.NextView, m.keys.Jump}
 	actions := []key.Binding{m.keys.Blockers, m.keys.Refresh, m.keys.Export, m.keys.Help, m.keys.Quit}
@@ -758,6 +802,10 @@ func (m Model) helpBindings() contextualHelp {
 	}
 	if m.activeFilter() != "" && !m.queryDetail {
 		context = append(context, m.keys.Back)
+	}
+	if tabs[m.tab] == "Queries" && !m.inInvestigation() {
+		context = append(context, m.keys.KillQuery)
+		short = append([]key.Binding{m.keys.KillQuery}, short...)
 	}
 	short = append(short, m.keys.Refresh, m.keys.Export, m.keys.Help, m.keys.Quit)
 
@@ -953,7 +1001,7 @@ func (m Model) footer() string {
 	}
 	status := m.status
 	if status == "" {
-		status = "Read-only · SQL literals redacted"
+		status = "Diagnostics · SQL literals redacted"
 	}
 	if m.help {
 		keys := keyHint("esc/?", "close help") + "  " + keyHint("↑/↓", "scroll") + "  " + keyHint("q", "quit")
@@ -993,6 +1041,11 @@ func (m Model) contentPanel(width, height int) string {
 }
 
 func (m *Model) rebuild() {
+	if m.live.stage != "" {
+		m.viewport.SetContent(m.queryActionView())
+		m.viewport.GotoTop()
+		return
+	}
 	if m.help {
 		m.viewport.SetContent(m.keyboardHelp())
 		m.viewport.GotoTop()
@@ -1036,7 +1089,7 @@ func (m *Model) rebuild() {
 	case "Queries":
 		totalLatency := totalQueryLatency(m.snapshot.Queries)
 		if m.queryDetail {
-			content = queryDetail(visible, m.viewport.Width, m.queryIndex, totalLatency)
+			content = m.liveExecutionView() + "\n" + queryDetail(visible, m.viewport.Width, m.queryIndex, totalLatency)
 		} else {
 			content = queries(visible, m.viewport.Width, m.queryIndex, totalLatency)
 		}
@@ -1396,7 +1449,7 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 		labelValue("P95", duration(query.P95LatencyMillis)),
 	}, "  ·  ")
 	var out strings.Builder
-	out.WriteString(panelBox(fmt.Sprintf("QUERY %d OF %d", selected+1, len(ctx.Queries)),
+	out.WriteString(panelBox(fmt.Sprintf("QUERY %d OF %d · SNAPSHOT", selected+1, len(ctx.Queries)),
 		lipgloss.NewStyle().Width(max(20, width-4)).Render(important), width))
 	out.WriteString("\n" + sectionTitle("NORMALIZED SQL") + "\n")
 	out.WriteString(lipgloss.NewStyle().Foreground(text).Bold(true).Width(max(20, width-2)).Render(query.Statement) + "\n")

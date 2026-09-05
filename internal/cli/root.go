@@ -17,6 +17,7 @@ import (
 	"github.com/maheshrijal/mysq/internal/analyze"
 	"github.com/maheshrijal/mysq/internal/collect"
 	"github.com/maheshrijal/mysq/internal/compare"
+	"github.com/maheshrijal/mysq/internal/control"
 	bundle "github.com/maheshrijal/mysq/internal/export"
 	"github.com/maheshrijal/mysq/internal/history"
 	"github.com/maheshrijal/mysq/internal/model"
@@ -53,11 +54,12 @@ func newRoot(version string, out, errOut io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
-		Long: `mysq is a read-only, findings-first MySQL diagnostic.
+		Long: `mysq is a findings-first MySQL diagnostic.
 
 It samples MySQL's own status and Performance Schema, produces a polished terminal
 report, remembers local snapshots, and exports a redacted evidence bundle for
-agents. It never creates objects or writes data in the inspected database.`,
+agents. Diagnostics are read-only. The TUI Queries tab can send KILL QUERY for one
+live execution after explicit typed confirmation.`,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 			noColor, _ := cmd.Flags().GetBool("no-color")
 			app.color = !noColor && os.Getenv("NO_COLOR") == "" && term.IsTerminal(os.Stdout.Fd())
@@ -110,7 +112,7 @@ func (a *App) tuiCommand() *cobra.Command {
 				result, err := bundle.Write(ctx, output, bundle.Options{})
 				return result.Directory, err
 			}
-			return terminalui.Run(cmd.Context(), inspect, export)
+			return terminalui.Run(cmd.Context(), inspect, export, control.Queries{Target: target})
 		},
 	}
 	command.Flags().DurationVar(&interval, "interval", time.Second, "counter sampling interval")

@@ -3,6 +3,12 @@ GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'mysq_monitor'@'%';
 GRANT SELECT ON performance_schema.* TO 'mysq_monitor'@'%';
 GRANT SELECT ON app.* TO 'mysq_monitor'@'%';
 
+-- Explicit operator account for query cancellation tests; monitor stays read-only.
+CREATE USER 'mysq_operator'@'%' IDENTIFIED BY 'mysq-operator-test';
+GRANT PROCESS, REPLICATION CLIENT, CONNECTION_ADMIN ON *.* TO 'mysq_operator'@'%';
+GRANT SELECT ON performance_schema.* TO 'mysq_operator'@'%';
+GRANT SELECT ON app.* TO 'mysq_operator'@'%';
+
 CREATE USER 'loadgen'@'%' IDENTIFIED BY 'mysq-load-test';
 GRANT ALL PRIVILEGES ON app.* TO 'loadgen'@'%';
 

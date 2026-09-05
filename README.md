@@ -2,7 +2,7 @@
 
 MySQL diagnostics for humans and agents.
 
-`mysq` is a single read-only CLI that turns MySQL's own status counters and Performance Schema into a findings-first health report. It has a polished interactive terminal, focused drill-down commands, local history and offline diffs, CI health gates, and a native evidence bundle designed for coding and operations agents.
+`mysq` turns MySQL's own status counters and Performance Schema into a findings-first health report. It has an interactive terminal, focused drill-down commands, local history and offline diffs, CI health gates, and a native evidence bundle designed for coding and operations agents. Diagnostics are read-only; the TUI Queries tab also offers explicitly confirmed query cancellation.
 
 No collector, web server, cloud account, or database-side objects are required.
 
@@ -66,6 +66,9 @@ mysq export --zip
 - Left/Right, Tab/Shift-Tab, and number keys switch views without losing each view's scroll position. Arrow keys are the universal navigation layer; `h`/`j`/`k`/`l`, Page Up/Down, Ctrl-U/D, Home/End, and `g`/`G` provide familiar Vim and pager aliases. In Queries, movement and paging follow the selected statement, Enter opens its full normalized SQL and execution evidence, and Esc returns to the selected row.
 - `?` opens complete contextual keyboard help. `/` filters Queries, Tables, Connections, or Findings without changing the captured snapshot; Enter applies, Esc cancels editing, and Esc on a filtered view clears it.
 - `r` reruns every diagnostic probe and saves a new local snapshot.
+- Enter in Queries also reads current executions for the selected schema and digest, showing users, hosts, connection/thread/event IDs, database, duration, and state. Historical user attribution in the query summary remains tied to the snapshot; live session details are checked separately and are not persisted.
+- Live matching examines up to 100 instrumented candidates. Prepared executions with no event digest use MySQL's parser to normalize their current SQL; unparseable or invisible executions are excluded. An empty result means no match was identified in that bounded read.
+- `K` is available only in Queries: select one live execution with Up/Down, press Enter, then type exactly `kill` and press Enter. Esc cancels before dispatch. Historical digests with no visible current execution cannot be killed. No bulk cancellation or kill action is exposed in other tabs or CLI commands.
 - `e` writes the complete native agent bundle directly from the terminal and keeps its destination visible until dismissed with `Esc`.
 - Cards, gauges, tables, findings, and key hints reflow at terminal breakpoints; very small terminals get an explicit resize state instead of a broken layout.
 
@@ -171,6 +174,10 @@ GRANT SELECT ON app.* TO 'mysq_monitor'@'%';
 That grant can read application rows, even though mysq never queries them. If that tradeoff is unacceptable, omit it: server, workload, process, lock, replication, and configuration diagnostics remain available, while missing table/index coverage is reported explicitly.
 
 The role is the primary safety boundary. mysq also sets `transaction_read_only=ON`, applies a 10-second statement execution limit, uses a single connection, and contains no mutating SQL in its collector.
+
+For query cancellation, use a deliberately authorized operator account with the monitoring grants plus `CONNECTION_ADMIN` to cancel other users' queries (the older `SUPER` privilege also permits this). Targets executing with `SYSTEM_USER` additionally require that privilege. `mysq init` does not grant cancellation privileges, and mysq never grants them automatically. Permission errors are displayed in the TUI.
+
+Cancellation sends `KILL QUERY`, retaining the connection. MySQL interrupts asynchronously; transaction locks may remain until the client ends its transaction. A successful request is displayed as accepted, followed by a diagnostic refresh. Before sending, mysq rechecks the server UUID, connection, thread, statement event, schema, digest, user, and host on one pinned control connection. Finished, replaced, or unidentifiable executions are refused. MySQL only accepts a connection ID for `KILL QUERY`, so there is an unavoidable race between rechecking and dispatch; the confirmation explains this. Failed sends are never retried automatically. See the [MySQL KILL documentation](https://dev.mysql.com/doc/refman/8.4/en/kill.html).
 
 ## What it checks
 

@@ -103,6 +103,7 @@ MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --store "$histo
 stop_load
 
 MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" go test ./internal/collect -run TestFixtureSleepingMetadataOwner -count=1
+MYSQ_E2E_LOAD_DSN="$load_dsn" MYSQ_E2E_MONITOR_DSN="$monitor_dsn" MYSQ_E2E_CONTROL_DSN="mysq_operator:mysq-operator-test@tcp(127.0.0.1:${port})/app?parseTime=true" go test ./internal/control -run TestFixtureKillQuery -count=1
 
 # With no application client active, a full inspection must not count its own
 # digest-sampler SELECTs as workload inside the global-status window. Briefly

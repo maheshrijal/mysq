@@ -6,6 +6,7 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Added
 
+- Queries-only `K` cancellation with live session selection, exact typed `kill` confirmation, execution identity revalidation, and explicit accepted/failed outcomes. Query details show current executing users, hosts, connections, and statement timing independently of historical digest totals.
 - Findings-first 80×24 overview, selectable findings with evidence drill-down, and `B` blocking-chain investigations in the TUI.
 - `mysq blockers` and scoped JSON for root owners, captured edges, distinct waiters, metadata-lock candidates, and coverage caveats.
 - Context 1.5.0 with shared subsystem assessments, incomplete-coverage counts, and blocking chains.
