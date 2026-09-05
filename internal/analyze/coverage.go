@@ -42,6 +42,12 @@ func assessCoverage(ctx *model.Context) {
 				gaps = append(gaps, "global status: not recorded")
 			}
 		}
+		if strings.EqualFold(ctx.Variables["performance_schema"], "OFF") {
+			switch name {
+			case "workload", "queries", "indexes", "tables", "locks", "instrumentation":
+				gaps = append(gaps, "Performance Schema is disabled; successful empty queries do not verify this subsystem")
+			}
+		}
 		for _, consumer := range ctx.Instrumentation.DisabledConsumers {
 			if consumer == "global_instrumentation" || consumer == "thread_instrumentation" ||
 				(consumer == "statements_digest" && name == "queries") ||

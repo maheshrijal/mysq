@@ -154,3 +154,16 @@ func TestFailedVariableProbeIsNotMisreportedAsDisabled(t *testing.T) {
 		}
 	}
 }
+
+func TestDisabledPerformanceSchemaCannotVerifyEmptySuccessfulProbes(t *testing.T) {
+	ctx := &model.Context{Metrics: model.Metrics{BufferPoolHitPercent: 100}, Variables: map[string]string{"performance_schema": "OFF"}, GlobalStatus: map[string]string{"Uptime": "100"}}
+	for _, name := range []string{"global variables", "process list", "statement counters", "statement digests", "statement database time", "instrumentation coverage", "index statistics", "table statistics", "row lock waits", "active transactions", "metadata locks", "InnoDB monitor", "replication"} {
+		ctx.Capabilities = append(ctx.Capabilities, model.Capability{Name: name, Available: true})
+	}
+	Apply(ctx)
+	for _, name := range []string{"workload", "queries", "indexes", "tables", "locks", "instrumentation"} {
+		if ctx.Health.Subsystem(name).Complete {
+			t.Errorf("disabled instrumentation verified %s", name)
+		}
+	}
+}
