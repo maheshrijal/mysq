@@ -136,12 +136,16 @@ main() {
     tar -xzf "$temp_dir/$archive" -C "$temp_dir" mysq
     [ -f "$temp_dir/mysq" ] && [ ! -L "$temp_dir/mysq" ] || fail 'release archive has no regular mysq binary'
     mkdir -p "$install_dir"
+    install_action=Installed
+    if [ -e "$install_dir/mysq" ] || [ -L "$install_dir/mysq" ]; then
+        install_action=Updated
+    fi
     staged_binary=$(mktemp "$install_dir/.mysq.XXXXXX")
     cp "$temp_dir/mysq" "$staged_binary"
     chmod 755 "$staged_binary"
     mv -f "$staged_binary" "$install_dir/mysq"
     staged_binary=
-    printf 'Installed %s/mysq\n' "$install_dir"
+    printf '%s %s/mysq (%s release)\n' "$install_action" "$install_dir" "$version"
     configure_path
 }
 
