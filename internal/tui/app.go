@@ -78,18 +78,20 @@ type Model struct {
 }
 
 var (
-	// The palette deliberately leaves the terminal background alone. Adaptive
-	// foregrounds keep the UI legible in both light and dark terminals while the
-	// Tokyo Night/Catppuccin-inspired accents remain restrained and semantic.
-	surface    = lipgloss.AdaptiveColor{Light: "#E6E9EF", Dark: "#24283B"}
-	surfaceAlt = lipgloss.AdaptiveColor{Light: "#DCE0E8", Dark: "#1F2335"}
-	border     = lipgloss.AdaptiveColor{Light: "#BCC0CC", Dark: "#3B4261"}
-	muted      = lipgloss.AdaptiveColor{Light: "#7C7F93", Dark: "#737AA2"}
-	text       = lipgloss.AdaptiveColor{Light: "#4C4F69", Dark: "#C0CAF5"}
-	green      = lipgloss.AdaptiveColor{Light: "#40A02B", Dark: "#9ECE6A"}
-	yellow     = lipgloss.AdaptiveColor{Light: "#DF8E1D", Dark: "#E0AF68"}
-	red        = lipgloss.AdaptiveColor{Light: "#D20F39", Dark: "#F7768E"}
-	cyan       = lipgloss.AdaptiveColor{Light: "#1E66F5", Dark: "#7AA2F7"}
+	// Ghostty resolves default colors and ANSI slots against its current theme,
+	// including already-painted cells. Never cache light/dark RGB colors here.
+	// Keep all body text on the terminal's own high-contrast foreground/background.
+	surface    = lipgloss.NoColor{}
+	surfaceAlt = lipgloss.NoColor{}
+	border     = lipgloss.Color("8")
+	muted      = lipgloss.NoColor{}
+	text       = lipgloss.NoColor{}
+	green      = lipgloss.Color("2")
+	yellow     = lipgloss.Color("3")
+	red        = lipgloss.Color("1")
+	cyan       = lipgloss.Color("4")
+	identity   = lipgloss.Color("6")
+	number     = lipgloss.Color("5")
 )
 
 func Run(ctx context.Context, inspect Inspector, export Exporter, control ...QueryController) error {
@@ -937,7 +939,7 @@ func (m Model) renderTabs(indices []int, measureOnly bool) string {
 		}
 		style := lipgloss.NewStyle().Foreground(muted).Padding(0, 1)
 		if active {
-			style = style.Foreground(cyan).Background(surface).Bold(true)
+			style = style.Foreground(text).Reverse(true).Bold(true)
 		}
 		items = append(items, style.Render(label))
 	}
@@ -1433,6 +1435,7 @@ func totalQueryLatency(queries []model.Query) float64 {
 }
 
 func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) string {
+	width = min(width, 108)
 	if selected < 0 || selected >= len(ctx.Queries) {
 		return empty("The selected query is no longer available. Press Esc to return to Queries.")
 	}
@@ -1454,18 +1457,36 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 	out.WriteString("\n" + sectionTitle("NORMALIZED SQL") + "\n")
 	out.WriteString(lipgloss.NewStyle().Width(max(20, width-2)).Render(highlightedSQL(query.Statement)) + "\n")
 
-	evidence := []string{
-		labelValue("AVG / P99 / MAX", duration(query.MeanLatencyMillis)+" / "+duration(query.P99LatencyMillis)+" / "+duration(query.MaxLatencyMillis)),
-		labelValue("ROWS EXAMINED", humanCount(query.RowsExamined)),
-		labelValue("ROWS SENT", humanCount(query.RowsSent)),
-		labelValue("ERRORS / WARNINGS", humanCount(query.Errors)+" / "+humanCount(query.Warnings)),
-		labelValue("NO INDEX CALLS", humanCount(query.NoIndexUsed)),
-		labelValue("FULL SCANS", humanCount(query.FullScans)),
-		labelValue("TEMP TABLES", humanCount(query.TmpTables)),
-		labelValue("TEMP ON DISK", humanCount(query.TmpDiskTables)),
+	evidence := [][2]string{
+		{"AVG / P99 / MAX", duration(query.MeanLatencyMillis) + " / " + duration(query.P99LatencyMillis) + " / " + duration(query.MaxLatencyMillis)},
+		{"ROWS EXAMINED", humanCount(query.RowsExamined)},
+		{"ROWS SENT", humanCount(query.RowsSent)},
+		{"ERRORS / WARNINGS", humanCount(query.Errors) + " / " + humanCount(query.Warnings)},
+		{"NO INDEX CALLS", humanCount(query.NoIndexUsed)},
+		{"FULL SCANS", humanCount(query.FullScans)},
+		{"TEMP TABLES", humanCount(query.TmpTables)},
+		{"TEMP ON DISK", humanCount(query.TmpDiskTables)},
 	}
-	out.WriteString("\n" + sectionTitle("EXECUTION EVIDENCE") + "\n" +
-		lipgloss.NewStyle().Width(max(20, width-2)).Render(strings.Join(evidence, "  ·  ")) + "\n")
+	out.WriteString("\n" + sectionTitle("EXECUTION EVIDENCE") + "\n")
+	columns := 1
+	if width >= 100 {
+		columns = 2
+	}
+	cellWidth := (width - 2) / columns
+	for i, item := range evidence {
+		valueColor := lipgloss.TerminalColor(number)
+		if item[1] == "0" || item[1] == "0 / 0" {
+			valueColor = text
+		}
+		if i == 3 && (query.Errors > 0 || query.Warnings > 0) {
+			valueColor = yellow
+		}
+		cell := lipgloss.NewStyle().Width(19).Render(item[0]) + lipgloss.NewStyle().Foreground(valueColor).Render(item[1])
+		out.WriteString(lipgloss.NewStyle().Width(cellWidth).Render(cell))
+		if (i+1)%columns == 0 {
+			out.WriteByte('\n')
+		}
+	}
 	if query.FirstSeen != "" || query.LastSeen != "" {
 		out.WriteString("\n" + lipgloss.NewStyle().Width(max(20, width-2)).Render(labelValue("OBSERVED", fallback(query.FirstSeen, "—")+" → "+fallback(query.LastSeen, "—"))) + "\n")
 	}
@@ -1476,8 +1497,17 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 }
 
 func labelValue(label, value string) string {
-	return lipgloss.NewStyle().Foreground(muted).Bold(true).Render(label+" ") +
-		lipgloss.NewStyle().Foreground(text).Render(value)
+	var color lipgloss.TerminalColor = text
+	switch strings.ToUpper(label) {
+	case "USER", "DATABASE", "HOST", "SCHEMA":
+		color = identity
+	default:
+		if len(value) > 0 && value[0] >= '0' && value[0] <= '9' {
+			color = number
+		}
+	}
+	return lipgloss.NewStyle().Foreground(muted).Render(label+" ") +
+		lipgloss.NewStyle().Foreground(color).Render(value)
 }
 
 func engine(ctx *model.Context, width int) string {
@@ -1868,7 +1898,7 @@ func config(ctx *model.Context, width int) string {
 func row(values []string, widths []int, header bool) string {
 	style := lipgloss.NewStyle().Foreground(text)
 	if header {
-		style = style.Foreground(cyan).Background(surfaceAlt).Bold(true)
+		style = style.Bold(true)
 	}
 	var out strings.Builder
 	for i, value := range values {
@@ -1887,7 +1917,7 @@ func row(values []string, widths []int, header bool) string {
 func selectableRow(values []string, widths []int, selected bool) string {
 	style := lipgloss.NewStyle().Foreground(text)
 	if selected {
-		style = style.Foreground(cyan).Background(surfaceAlt).Bold(true)
+		style = style.Reverse(true).Bold(true)
 	}
 	var out strings.Builder
 	for i, value := range values {
@@ -1928,7 +1958,7 @@ func miniBar(percent float64, width int, color lipgloss.TerminalColor) string {
 }
 
 func sectionTitle(value string) string {
-	return lipgloss.NewStyle().Foreground(cyan).Bold(true).Render("▌ " + value)
+	return lipgloss.NewStyle().Foreground(cyan).Render("▌ ") + lipgloss.NewStyle().Foreground(text).Bold(true).Render(value)
 }
 func empty(value string) string { return "\n" + lipgloss.NewStyle().Foreground(muted).Render(value) }
 func errorView(err error) string {

@@ -175,9 +175,9 @@ func highlightedSQL(statement string) string {
 		}
 		switch strings.ToUpper(token) {
 		case "SELECT", "FROM", "WHERE", "UPDATE", "SET", "INSERT", "INTO", "VALUES", "DELETE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ORDER", "BY", "GROUP", "HAVING", "LIMIT", "OFFSET", "DISTINCT", "WITH", "UNION", "ALL", "CASE", "WHEN", "THEN", "ELSE", "END", "ASC", "DESC", "FOR", "LOCK", "SHARE":
-			return lipgloss.NewStyle().Foreground(cyan).Bold(true).Render(token)
+			return lipgloss.NewStyle().Foreground(cyan).Render(token)
 		}
-		return lipgloss.NewStyle().Foreground(text).Render(token)
+		return lipgloss.NewStyle().Foreground(identity).Render(token)
 	})
 }
 
@@ -206,7 +206,7 @@ func executionTable(items []control.Execution, selected, width int) string {
 	}
 	out.WriteByte('\n')
 	for index, e := range items {
-		elapsedColor := text
+		var elapsedColor lipgloss.TerminalColor = number
 		if e.Seconds >= 10 {
 			elapsedColor = yellow
 		}
@@ -214,10 +214,10 @@ func executionTable(items []control.Execution, selected, width int) string {
 			elapsedColor = red
 		}
 		values := []string{"", fmt.Sprint(e.ID), sanitize.Text(e.User), fmt.Sprintf("%ds", e.Seconds), fallback(sanitize.Text(e.State), e.Command)}
-		colors := []lipgloss.TerminalColor{cyan, cyan, text, elapsedColor, green}
+		colors := []lipgloss.TerminalColor{cyan, identity, identity, elapsedColor, green}
 		if wide {
 			values = []string{"", fmt.Sprint(e.ID), sanitize.Text(e.User), sanitize.Text(e.Host), fmt.Sprintf("%ds", e.Seconds), fallback(sanitize.Text(e.State), e.Command)}
-			colors = []lipgloss.TerminalColor{cyan, cyan, text, muted, elapsedColor, green}
+			colors = []lipgloss.TerminalColor{cyan, identity, identity, text, elapsedColor, green}
 		}
 		if strings.Contains(strings.ToLower(e.State), "wait") || strings.Contains(strings.ToLower(e.State), "lock") {
 			colors[len(colors)-1] = yellow
@@ -228,7 +228,7 @@ func executionTable(items []control.Execution, selected, width int) string {
 		for i, value := range values {
 			style := lipgloss.NewStyle().Foreground(colors[i]).Width(widths[i])
 			if index == selected {
-				style = style.Background(surface).Bold(i == 1 || i == 2)
+				style = style.Foreground(text).Reverse(true).Bold(i == 1 || i == 2)
 			}
 			out.WriteString(style.Render(compact(value, widths[i]-1)))
 		}
@@ -241,7 +241,7 @@ func (m Model) liveExecutionView() string {
 	if m.queryControl == nil {
 		return ""
 	}
-	width := max(42, m.viewport.Width-2)
+	width := max(42, min(104, m.viewport.Width-2))
 	var out strings.Builder
 	out.WriteString(sectionTitle("CURRENT EXECUTIONS") + "\n")
 	if m.live.loading {
@@ -256,10 +256,12 @@ func (m Model) liveExecutionView() string {
 	if len(m.live.items) == 0 {
 		return out.String() + quiet("No matching instrumented execution visible now.\nHistorical digests can outlive their sessions.") + "\n"
 	}
-	out.WriteString(quiet(fmt.Sprintf("Checked %s · %d visible · at most 100 candidates", m.live.at.Format("15:04:05"), len(m.live.items))) + "\n\n")
+	out.WriteString(quiet(fmt.Sprintf("Checked %s · %d visible", m.live.at.Format("15:04:05"), len(m.live.items))) + "\n\n")
 	out.WriteString(executionTable(m.live.items, -1, width) + "\n")
-	for _, e := range m.live.items {
-		out.WriteString(lipgloss.NewStyle().Width(width).Render(quiet(fmt.Sprintf("Connection %d · Thread %d · event %d", e.ID, e.ThreadID, e.EventID))+"\n"+labelValue("Database", fallback(sanitize.Text(e.Database), "(none)"))+"  "+labelValue("Host", sanitize.Text(e.Host))+"  "+labelValue("Statement", duration(e.StatementLatencyMillis))) + "\n")
+	if width < 76 {
+		for _, e := range m.live.items {
+			out.WriteString(lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("Connection %d · ", e.ID)+labelValue("Host", sanitize.Text(e.Host))) + "\n")
+		}
 	}
 	out.WriteString("\n" + keyHint("K", "select an execution to cancel"))
 	return out.String()
@@ -322,7 +324,7 @@ func (m Model) queryActionView() string {
 	body += wrap(highlightedSQL(compact(e.Statement, width))) + gap
 	body += lipgloss.NewStyle().Foreground(yellow).Width(width).Render("Connection stays open; transaction locks may remain.") + "\n"
 	body += wrap(quiet("Rechecked before sending; a new statement can race the kill.")) + gap
-	body += lipgloss.NewStyle().Background(surface).Padding(0, 1).Render(m.live.input.View()) + "  " + lipgloss.NewStyle().Foreground(red).Bold(true).Render("Enter confirm") + "  " + keyHint("Esc", "cancel")
+	body += lipgloss.NewStyle().Underline(true).Render(m.live.input.View()) + "  " + lipgloss.NewStyle().Foreground(red).Bold(true).Render("Enter confirm") + "  " + keyHint("Esc", "cancel")
 	if m.live.result != "" {
 		body += "\n" + lipgloss.NewStyle().Foreground(red).Width(width).Render(m.live.result)
 	}

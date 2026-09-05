@@ -108,7 +108,7 @@ func TestQueryDetailFetchesExecutingUsersAndConnections(t *testing.T) {
 	m, _ := queryActionModel()
 	deliverAction(&m, actionKey(&m, "enter"))
 	view := ansi.Strip(m.View())
-	for _, want := range []string{"CURRENT EXECUTIONS", "alice", "bob", "web-1", "web-2", "Connection 11", "Database app", "30s", "executing", "Thread 21"} {
+	for _, want := range []string{"CURRENT EXECUTIONS", "alice", "bob", "web-1", "web-2", "CONNECTION", "11", "DATABASE app", "30s", "executing"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing %q: %s", want, view)
 		}

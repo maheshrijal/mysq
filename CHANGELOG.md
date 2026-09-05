@@ -25,6 +25,7 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Changed
 
+- Use Ghostty's native foreground/background and ANSI palette instead of cached light/dark RGB colors. Theme changes retain readable body text and selection. Give SQL identifiers and numeric evidence distinct colors, reduce bold labels, align query metrics, and remove repeated live-session metadata.
 - Make query investigation and cancellation easier to scan with aligned session columns, a highlighted selection, SQL syntax colors, explicit steps, and semantic confirmation/result colors in both terminal themes.
 - Failed refreshes show STALE; unavailable replication and other failed probes produce warning-level coverage findings. Multi-channel replication is explicitly unsupported rather than assessing only the first channel.
 - Query comparisons use schema plus digest, omit detected reset/restart deltas, expose interval means, and avoid declaring resolution through coverage gaps.
