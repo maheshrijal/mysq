@@ -324,7 +324,9 @@ func (m Model) queryActionView() string {
 	body += wrap(highlightedSQL(compact(e.Statement, width))) + gap
 	body += lipgloss.NewStyle().Foreground(yellow).Width(width).Render("Connection stays open; transaction locks may remain.") + "\n"
 	body += wrap(quiet("Rechecked before sending; a new statement can race the kill.")) + gap
-	body += lipgloss.NewStyle().Underline(true).Render(m.live.input.View()) + "  " + lipgloss.NewStyle().Foreground(red).Bold(true).Render("Enter confirm") + "  " + keyHint("Esc", "cancel")
+	// The input owns its ANSI styles. Lip Gloss's underline space styler splits
+	// nested escape sequences into individual runes, exposing them as text.
+	body += m.live.input.View() + "  " + lipgloss.NewStyle().Foreground(red).Bold(true).Render("Enter confirm") + "  " + keyHint("Esc", "cancel")
 	if m.live.result != "" {
 		body += "\n" + lipgloss.NewStyle().Foreground(red).Width(width).Render(m.live.result)
 	}

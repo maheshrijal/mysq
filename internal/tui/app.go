@@ -1413,7 +1413,7 @@ func queries(ctx *model.Context, width, selected int, totalLatency float64) stri
 		} else if !wide {
 			values = []string{marker, duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.P95LatencyMillis), users, query.Statement}
 		}
-		out.WriteString(selectableRow(values, widths, index == selected) + "\n")
+		out.WriteString(semanticRow(values, headings, widths, index == selected) + "\n")
 	}
 	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  user is point-in-time  ·  selected share %.1f%%  ·  literals removed", queryShare(ctx.Queries, selected, totalLatency))))
 	return out.String()
@@ -1516,7 +1516,7 @@ func engine(ctx *model.Context, width int) string {
 	currentLoad := summarizeCurrentLoad(ctx)
 	load := fmt.Sprintf("active %d  ·  executing %d  ·  waiting %d  ·  top wait %s  ·  top user %s",
 		currentLoad.active, currentLoad.executing, currentLoad.waiting, currentLoad.topWait, currentLoad.topUser)
-	out.WriteString(panelBox("CURRENT DATABASE LOAD", lipgloss.NewStyle().Foreground(text).Bold(true).Render(load), width) + "\n")
+	out.WriteString(panelBox("CURRENT DATABASE LOAD", lipgloss.NewStyle().Foreground(text).Render(load), width) + "\n")
 
 	out.WriteString(sectionTitle("INNODB I/O AND REDO") + "\n")
 	metricWidths := []int{max(24, width/3), max(18, width/5), max(24, width-width/3-width/5)}
@@ -1555,7 +1555,7 @@ func engine(ctx *model.Context, width int) string {
 				identityWidth = waitWidths[0]
 				values = []string{compactMiddle(wait.Name, waitWidths[0]-1), fmt.Sprintf("%.1f%%", wait.SampleSharePercent), duration(wait.WaitMillisPerSecond) + "/s"}
 			}
-			out.WriteString(row(values, waitWidths, false) + "\n")
+			out.WriteString(semanticRow(values, waitHeadings, waitWidths, false) + "\n")
 			out.WriteString(identityContinuation(wait.Name, identityWidth, width))
 		}
 	}
@@ -1577,7 +1577,7 @@ func engine(ctx *model.Context, width int) string {
 				identityWidth = ioWidths[0]
 				values = []string{compactPath(item.Name, ioWidths[0]-1), fmt.Sprintf("%.1f", item.ReadsPerSecond), fmt.Sprintf("%.1f", item.WritesPerSecond)}
 			}
-			out.WriteString(row(values, ioWidths, false) + "\n")
+			out.WriteString(semanticRow(values, ioHeadings, ioWidths, false) + "\n")
 			out.WriteString(identityContinuation(item.Name, identityWidth, width))
 		}
 	}
@@ -1598,7 +1598,7 @@ func engine(ctx *model.Context, width int) string {
 				identityWidth = errorWidths[0]
 				values = []string{compactMiddle(item.Name, errorWidths[0]-1), fmt.Sprint(item.Number), fmt.Sprintf("%.2f", item.RaisedPerSecond)}
 			}
-			out.WriteString(row(values, errorWidths, false) + "\n")
+			out.WriteString(semanticRow(values, errorHeadings, errorWidths, false) + "\n")
 			out.WriteString(identityContinuation(item.Name, identityWidth, width))
 		}
 	}
@@ -1652,7 +1652,7 @@ func engine(ctx *model.Context, width int) string {
 				identityWidth = memoryWidths[0]
 				values = []string{compactMiddle(consumer.Name, memoryWidths[0]-1), humanBytes(consumer.CurrentBytes), humanBytes(consumer.HighBytes)}
 			}
-			out.WriteString(row(values, memoryWidths, false) + "\n")
+			out.WriteString(semanticRow(values, memoryHeadings, memoryWidths, false) + "\n")
 			out.WriteString(identityContinuation(consumer.Name, identityWidth, width))
 		}
 	}
@@ -1664,7 +1664,7 @@ func rows(values [][]string, headings []string, widths []int) string {
 	var out strings.Builder
 	out.WriteString(row(headings, widths, true) + "\n")
 	for _, values := range values {
-		out.WriteString(row(values, widths, false) + "\n")
+		out.WriteString(semanticRow(values, headings, widths, false) + "\n")
 	}
 	return out.String()
 }
@@ -1701,7 +1701,7 @@ func tablesView(ctx *model.Context, width int) string {
 				values = []string{humanBytes(table.TotalBytes), humanCount(table.EstimatedRows), humanCount(table.Reads), duration(table.ReadLatencyMillis),
 					humanCount(table.Writes), duration(table.WriteLatencyMillis), pk, table.Schema + "." + table.Name}
 			}
-			out.WriteString(row(values, widths, false) + "\n")
+			out.WriteString(semanticRow(values, headings, widths, false) + "\n")
 			out.WriteString(identityContinuation(table.Schema+"."+table.Name, identityWidth, width))
 		}
 	}
@@ -1733,7 +1733,7 @@ func tablesView(ctx *model.Context, width int) string {
 				compactIdentity := index.Schema + "." + index.Table + "." + index.Name
 				values = []string{compactMiddle(compactIdentity, indexWidths[0]-1), humanCount(index.Reads), humanCount(index.Writes), strings.TrimSpace(flags)}
 			}
-			out.WriteString(row(values, indexWidths, false) + "\n")
+			out.WriteString(semanticRow(values, indexHeadings, indexWidths, false) + "\n")
 			out.WriteString(identityContinuation(identity, identityWidth, width))
 		}
 	}
@@ -1759,30 +1759,33 @@ func connections(ctx *model.Context, width int) string {
 			if compactLayout {
 				values = []string{group.Kind, compactMiddle(group.Key, groupWidths[1]-1), fmt.Sprint(group.Total), fmt.Sprint(group.Active)}
 			}
-			out.WriteString(row(values, groupWidths, false) + "\n")
+			out.WriteString(semanticRow(values, groupHeadings, groupWidths, false) + "\n")
 			out.WriteString(identityContinuation(group.Key, groupWidths[1], width))
 		}
 		out.WriteString("\n" + sectionTitle("PROCESS SNAPSHOT") + "\n")
 	}
 	if compactLayout {
 		processWidths := []int{7, max(16, width-32), 9, 7, 9}
-		out.WriteString("\n" + row([]string{"ID", "STATEMENT", "USER", "TIME", "WAIT"}, processWidths, true) + "\n")
+		processHeadings := []string{"ID", "STATEMENT", "USER", "TIME", "WAIT"}
+		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
-			out.WriteString(row([]string{compactMiddle(fmt.Sprint(process.ID), processWidths[0]-1), compactMiddle(process.Statement, processWidths[1]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processWidths, false) + "\n")
+			out.WriteString(semanticRow([]string{compactMiddle(fmt.Sprint(process.ID), processWidths[0]-1), compactMiddle(process.Statement, processWidths[1]-1), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process)}, processHeadings, processWidths, false) + "\n")
 			out.WriteString(processContinuation(process, processWidths[0], processWidths[1], width))
 		}
 	} else if width < 103 {
 		processWidths := []int{8, 12, 8, 18, max(22, width-46)}
-		out.WriteString("\n" + row([]string{"ID", "USER", "TIME", "WAIT", "STATEMENT"}, processWidths, true) + "\n")
+		processHeadings := []string{"ID", "USER", "TIME", "WAIT", "STATEMENT"}
+		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
-			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processWidths, false) + "\n")
+			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, false) + "\n")
 			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
 		}
 	} else {
 		processWidths := []int{8, 13, 18, 8, 28, max(28, width-75)}
-		out.WriteString("\n" + row([]string{"ID", "USER", "HOST", "TIME", "WAIT", "STATEMENT"}, processWidths, true) + "\n")
+		processHeadings := []string{"ID", "USER", "HOST", "TIME", "WAIT", "STATEMENT"}
+		out.WriteString("\n" + row(processHeadings, processWidths, true) + "\n")
 		for _, process := range ctx.Processes {
-			out.WriteString(row([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processWidths, false) + "\n")
+			out.WriteString(semanticRow([]string{fmt.Sprint(process.ID), process.User, process.Host, fmt.Sprintf("%ds", process.Seconds), processActivity(process), process.Statement}, processHeadings, processWidths, false) + "\n")
 			out.WriteString(processContinuation(process, processWidths[0], processWidths[len(processWidths)-1], width))
 		}
 	}
@@ -1793,7 +1796,7 @@ func connections(ctx *model.Context, width int) string {
 		out.WriteString("\n\n" + sectionTitle("ROW LOCK WAITS") + "\n")
 		for _, lock := range ctx.Locks {
 			line := fmt.Sprintf("%s waits for %s on %s.%s index %s (%s %s)", lock.WaitingTransaction, lock.BlockingTransaction, lock.Schema, lock.Table, lock.Index, lock.LockType, lock.LockMode)
-			out.WriteString(lipgloss.NewStyle().Width(width).Render(line) + "\n")
+			out.WriteString(lipgloss.NewStyle().Foreground(yellow).Width(width).Render(line) + "\n")
 		}
 	}
 	if len(ctx.Transactions) > 0 {
@@ -1812,7 +1815,7 @@ func connections(ctx *model.Context, width int) string {
 				identityWidth = transactionWidths[0]
 				values = []string{compactMiddle(transaction.Statement, transactionWidths[0]-1), transaction.ID, transaction.User, fmt.Sprintf("%ds", transaction.AgeSeconds)}
 			}
-			out.WriteString(row(values, transactionWidths, false) + "\n")
+			out.WriteString(semanticRow(values, transactionHeadings, transactionWidths, false) + "\n")
 			out.WriteString(identityContinuation(transaction.Statement, identityWidth, width))
 		}
 	}
@@ -1833,7 +1836,7 @@ func connections(ctx *model.Context, width int) string {
 				identityWidth = metadataWidths[0]
 				values = []string{compactMiddle(object, metadataWidths[0]-1), lock.Status, lock.User, lock.LockType}
 			}
-			out.WriteString(row(values, metadataWidths, false) + "\n")
+			out.WriteString(semanticRow(values, metadataHeadings, metadataWidths, false) + "\n")
 			out.WriteString(identityContinuation(object, identityWidth, width))
 		}
 	}
