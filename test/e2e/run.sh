@@ -66,7 +66,7 @@ if [[ "$load_ready" != true ]]; then
 fi
 sleep 2
 
-MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --full --no-store >"$work_dir/full.txt"
+DBOPS_MYSQL_USER=mysq_monitor DBOPS_MYSQL_PWD=mysq-monitor-test "$binary" inspect "127.0.0.1:${port}/app" --full --no-store >"$work_dir/full.txt"
 MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format json --no-store >"$work_dir/context.json"
 go run ./test/e2e/verify --context "$work_dir/context.json"
 MYSQ_DATABASE_URL="$monitor_dsn" "$binary" inspect --format markdown --no-store >"$work_dir/report.md"
@@ -124,7 +124,7 @@ cd "$work_dir"
 tui_harness_log="$work_dir/tui-harness.log"
 tui_pty_log="$work_dir/tui-pty.log"
 set +e
-expect "$repo_root/test/e2e/tui.exp" "$binary" "$monitor_dsn" "$tui_pty_log" >"$tui_harness_log" 2>&1
+MYSQ_DATABASE_URL= MYSQLDOT_DATABASE_URL= DATABASE_URL= DBOPS_MYSQL_USER=mysq_monitor DBOPS_MYSQL_PWD=mysq-monitor-test expect "$repo_root/test/e2e/tui.exp" "$binary" "127.0.0.1:${port}/app" "$tui_pty_log" >"$tui_harness_log" 2>&1
 tui_status=$?
 set -e
 if [[ "$tui_status" -ne 0 ]]; then

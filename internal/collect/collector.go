@@ -45,7 +45,8 @@ func New(version string) *Collector {
 	}
 }
 
-func ResolveConnection(argument string) (Target, error) {
+// ConnectionInput chooses an endpoint; credentials alone never choose a server.
+func ConnectionInput(argument string) string {
 	raw := strings.TrimSpace(argument)
 	if raw == "" {
 		raw = strings.TrimSpace(os.Getenv("MYSQ_DATABASE_URL"))
@@ -58,29 +59,46 @@ func ResolveConnection(argument string) (Target, error) {
 	if raw == "" {
 		raw = strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	}
+	return raw
+}
+
+func ResolveConnection(argument string) (Target, error) {
+	raw := ConnectionInput(argument)
 	if raw == "" {
-		return Target{}, errors.New("no MySQL connection supplied: pass a DSN or set MYSQ_DATABASE_URL")
+		return Target{}, errors.New("no MySQL endpoint supplied: use mysq inspect host[:port]/database, set MYSQ_DATABASE_URL, or run mysq tui for a connection prompt")
 	}
 
 	if strings.HasPrefix(raw, "mysql://") {
 		return targetFromURL(raw)
 	}
+	// A bare host/database uses shell credentials. Preserve native driver DSNs,
+	// including credential-free tcp(...) and unix(...) forms.
+	if !strings.ContainsAny(raw, "@()") && !strings.HasPrefix(raw, "/") && !strings.Contains(raw, "://") {
+		return targetFromURL("mysql://" + raw)
+	}
 	cfg, err := mysqlDriver.ParseDSN(raw)
 	if err != nil {
 		return Target{}, fmt.Errorf("parse MySQL DSN: %w", err)
 	}
+	applyEnvironmentCredentials(cfg)
 	prepareConfig(cfg)
 	host, port := splitAddress(cfg.Addr)
 	return Target{DSN: cfg.FormatDSN(), Host: host, Port: port, Database: cfg.DBName}, nil
+}
+
+func applyEnvironmentCredentials(cfg *mysqlDriver.Config) {
+	// Explicit credentials are a pair: never attach a shell password to a
+	// different explicit username or replace its intentionally empty password.
+	if cfg.User == "" && os.Getenv("DBOPS_MYSQL_USER") != "" {
+		cfg.User = os.Getenv("DBOPS_MYSQL_USER")
+		cfg.Passwd = os.Getenv("DBOPS_MYSQL_PWD")
+	}
 }
 
 func targetFromURL(raw string) (Target, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return Target{}, fmt.Errorf("parse MySQL URL: %w", err)
-	}
-	if u.User == nil || u.User.Username() == "" {
-		return Target{}, errors.New("MySQL URL must include a username")
 	}
 	host := u.Hostname()
 	if host == "" {
@@ -96,10 +114,15 @@ func targetFromURL(raw string) (Target, error) {
 			return Target{}, fmt.Errorf("invalid MySQL port: %d", port)
 		}
 	}
-	password, _ := u.User.Password()
 	cfg := mysqlDriver.NewConfig()
-	cfg.User = u.User.Username()
-	cfg.Passwd = password
+	if u.User != nil {
+		cfg.User = u.User.Username()
+		cfg.Passwd, _ = u.User.Password()
+	}
+	applyEnvironmentCredentials(cfg)
+	if cfg.User == "" {
+		return Target{}, errors.New("MySQL URL needs a username; export DBOPS_MYSQL_USER and DBOPS_MYSQL_PWD or include credentials in the URL")
+	}
 	cfg.Net = "tcp"
 	cfg.Addr = net.JoinHostPort(host, strconv.Itoa(port))
 	cfg.DBName = strings.TrimPrefix(u.EscapedPath(), "/")
