@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -21,9 +22,30 @@ type Execution struct {
 	ServerUUID   string
 	EventID      uint64
 	rawStatement string
+	anchor       *sql.Conn
 }
 
-type Queries struct{ Target collect.Target }
+// Queries owns one pinned session for the lifetime of the TUI. A selection is
+// bound to that exact session; Kill must never reconnect after it is lost.
+type Queries struct {
+	Target    collect.Target
+	mu        sync.Mutex
+	conn      *sql.Conn
+	closeConn func()
+}
+
+func (q *Queries) Close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.release()
+}
+
+func (q *Queries) release() {
+	if q.closeConn != nil {
+		q.closeConn()
+	}
+	q.conn, q.closeConn = nil, nil
+}
 
 const executionSelect = `SELECT @@server_uuid, t.PROCESSLIST_ID, t.THREAD_ID, es.EVENT_ID,
  COALESCE(t.PROCESSLIST_USER,''), COALESCE(t.PROCESSLIST_HOST,''),
@@ -40,17 +62,28 @@ const executionSelect = `SELECT @@server_uuid, t.PROCESSLIST_ID, t.THREAD_ID, es
 
 // Sessions resolves schema + digest from at most 100 current candidates. Prepared
 // executions may lack an event digest; MySQL's parser resolves their current SQL.
-func (q Queries) Sessions(ctx context.Context, schema, digest string) ([]Execution, error) {
+func (q *Queries) Sessions(ctx context.Context, schema, digest string) ([]Execution, error) {
 	if digest == "" {
 		return nil, errors.New("this query has no digest; live executions cannot be identified")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	conn, closeConn, err := q.connect(ctx)
-	if err != nil {
-		return nil, err
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.conn == nil {
+		var err error
+		q.conn, q.closeConn, err = q.connect(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
-	defer closeConn()
+	conn := q.conn
+	complete := false
+	defer func() {
+		if !complete {
+			q.release()
+		}
+	}()
 	if err := checkVisibility(ctx, conn); err != nil {
 		return nil, err
 	}
@@ -83,9 +116,11 @@ func (q Queries) Sessions(ctx context.Context, schema, digest string) ([]Executi
 			return nil, fmt.Errorf("identify current execution: %w", err)
 		}
 		if e.Digest == digest {
+			e.anchor = conn
 			result = append(result, e)
 		}
 	}
+	complete = true
 	return result, nil
 }
 
@@ -114,7 +149,7 @@ func resolveDigest(ctx context.Context, conn *sql.Conn, e *Execution) error {
 // Kill sends exactly one KILL QUERY after checking the same server, thread and
 // statement event. MySQL has no atomic compare-and-kill operation: a statement
 // can still change between this check and dispatch. Never retry a failed send.
-func (q Queries) Kill(ctx context.Context, target Execution, confirmation string) error {
+func (q *Queries) Kill(ctx context.Context, target Execution, confirmation string) error {
 	if confirmation != "kill" {
 		return errors.New("type exactly kill to confirm")
 	}
@@ -123,22 +158,26 @@ func (q Queries) Kill(ctx context.Context, target Execution, confirmation string
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	conn, closeConn, err := q.connect(ctx)
-	if err != nil {
-		return err
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.conn == nil || target.anchor == nil || target.anchor != q.conn {
+		return errors.New("control connection changed; nothing was sent. Refresh and select it again")
 	}
-	defer closeConn()
+	conn := q.conn
 	if err := checkVisibility(ctx, conn); err != nil {
-		return fmt.Errorf("nothing was sent: %w", err)
+		q.release()
+		return fmt.Errorf("control connection or visibility lost; nothing was sent: %w", err)
 	}
 	current, err := scanExecution(conn.QueryRowContext(ctx, executionSelect+` AND t.PROCESSLIST_ID=?`, target.ID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("execution ended or is no longer visible; nothing was sent")
 	}
 	if err != nil {
+		q.release()
 		return fmt.Errorf("could not recheck execution; nothing was sent: %w", err)
 	}
 	if err := resolveDigest(ctx, conn, &current); err != nil {
+		q.release()
 		return fmt.Errorf("could not identify execution; nothing was sent: %w", err)
 	}
 	if !sameExecution(target, current) {
@@ -148,6 +187,7 @@ func (q Queries) Kill(ctx context.Context, target Execution, confirmation string
 	// connection rather than sql.DB.Exec, which may retry on ErrBadConn.
 	_, err = conn.ExecContext(ctx, fmt.Sprintf("KILL QUERY %d", target.ID))
 	if err != nil {
+		q.release()
 		var mysqlErr *mysql.MySQLError
 		if errors.As(err, &mysqlErr) {
 			switch mysqlErr.Number {
@@ -180,7 +220,7 @@ func sameExecution(a, b Execution) bool {
 		a.User == b.User && a.Host == b.Host
 }
 
-func (q Queries) connect(ctx context.Context) (*sql.Conn, func(), error) {
+func (q *Queries) connect(ctx context.Context) (*sql.Conn, func(), error) {
 	db, err := sql.Open("mysql", q.Target.DSN)
 	if err != nil {
 		return nil, nil, err

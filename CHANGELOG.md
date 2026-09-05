@@ -26,6 +26,7 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Changed
 
+- Bind query cancellation to the original pinned control session, refusing stale selections after connection loss or MySQL restart even when execution IDs are reused.
 - Apply semantic colors to the main Connections, Queries, Engine, and Tables grids, including SQL syntax and explicit lock/primary-key/visibility signals. Fix literal ANSI fragments and flickering in the typed query-cancellation confirmation.
 - Use Ghostty's native foreground/background and ANSI palette instead of cached light/dark RGB colors. Theme changes retain readable body text and selection. Give SQL identifiers and numeric evidence distinct colors, reduce bold labels, align query metrics, and remove repeated live-session metadata.
 - Make query investigation and cancellation easier to scan with aligned session columns, a highlighted selection, SQL syntax colors, explicit steps, and semantic confirmation/result colors in both terminal themes.

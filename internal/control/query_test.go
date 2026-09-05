@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"os"
 	"strings"
@@ -78,6 +79,8 @@ func TestFixtureKillQuery(t *testing.T) {
 	}
 	defer observer.Close()
 	operator, monitor := Queries{Target: targets[2]}, Queries{Target: targets[1]}
+	defer operator.Close()
+	defer monitor.Close()
 	newConn := func() (*sql.Conn, uint64) {
 		conn, err := db.Conn(ctx)
 		if err != nil {
@@ -150,9 +153,44 @@ func TestFixtureKillQuery(t *testing.T) {
 	if strings.Contains(execution.Statement, "15") || strings.Contains(execution.Statement, "7") {
 		t.Fatal("SQL literals leaked")
 	}
-	if err := monitor.Kill(ctx, execution, "kill"); err == nil || !strings.Contains(err.Error(), "denied") {
+	monitorItems, err := monitor.Sessions(ctx, "app", execution.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var monitorExecution Execution
+	for _, item := range monitorItems {
+		if item.ID == id {
+			monitorExecution = item
+		}
+	}
+	if monitorExecution.ID != id {
+		t.Fatal("monitor did not find test execution")
+	}
+	if err := monitor.Kill(ctx, monitorExecution, "kill"); err == nil || !strings.Contains(err.Error(), "denied") {
 		t.Fatalf("monitor cancellation: %v", err)
 	}
+	// A restart necessarily breaks this observer session. Invalidate the real
+	// connection and prove Kill cannot reconnect, even while the target's entire
+	// visible identity still matches. A new lookup must not revive the old token.
+	if err := operator.conn.Raw(func(any) error { return driver.ErrBadConn }); !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("invalidate control session: %v", err)
+	}
+	if err := operator.Kill(ctx, execution, "kill"); err == nil || !strings.Contains(err.Error(), "nothing was sent") {
+		t.Fatalf("lost observer allowed cancellation: %v", err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("target stopped after observer loss: %v", err)
+	default:
+	}
+	freshExecution := find(id)
+	if !sameExecution(execution, freshExecution) {
+		t.Fatal("test target identity changed unexpectedly")
+	}
+	if err := operator.Kill(ctx, execution, "kill"); err == nil || !strings.Contains(err.Error(), "connection changed") {
+		t.Fatalf("reconnection revived old selection: %v", err)
+	}
+	execution = freshExecution
 	if err := operator.Kill(ctx, execution, "kill"); err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +223,7 @@ func TestFixtureKillQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertInterrupted(done)
-	if err := operator.Kill(ctx, otherExecution, "kill"); err != nil {
+	if err := operator.Kill(ctx, find(otherID), "kill"); err != nil {
 		t.Fatal(err)
 	}
 	assertInterrupted(otherDone)

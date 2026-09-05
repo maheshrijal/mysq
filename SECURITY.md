@@ -10,6 +10,8 @@ The collector contains read-only `SHOW` and `SELECT` statements, sets the sessio
 
 MySQL's connection-ID-only kill API cannot atomically validate a statement event and cancel it. A statement can change between revalidation and dispatch; this residual race is disclosed in the confirmation. An accepted request does not prove interruption has completed. The connection and open transaction can survive, and locks may remain. A network error after dispatch leaves the outcome unknown. Read-only diagnostics and exports never invoke the control path.
 
+Execution selections also carry a private anchor to the exact pinned control session that observed them. Kill never reconnects: a broken session or a later lookup on a new session invalidates old selections. This prevents a confirmation surviving a MySQL restart from matching reused connection/thread/event IDs under the same persisted server UUID. The controller serializes access to its one session and closes it on TUI exit; failed operations release broken sessions.
+
 ## Credential handling
 
 Prefer `MYSQ_DATABASE_URL` rather than a positional DSN so passwords do not enter shell history or the process list. DSNs are used only to establish a connection. Connection credentials are not intentionally persisted. Error and diagnostic text may come from the server; review exports before sharing.

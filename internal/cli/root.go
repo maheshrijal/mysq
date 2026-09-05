@@ -120,7 +120,9 @@ func (a *App) tuiCommand() *cobra.Command {
 			sample := func(ctx context.Context) (collect.TrendCounters, error) {
 				return collect.SampleTrends(ctx, db)
 			}
-			return terminalui.Run(cmd.Context(), inspect, export, control.Queries{Target: target}, sample)
+			controller := &control.Queries{Target: target}
+			defer controller.Close()
+			return terminalui.Run(cmd.Context(), inspect, export, controller, sample)
 		},
 	}
 	command.Flags().DurationVar(&interval, "interval", time.Second, "counter sampling interval")
