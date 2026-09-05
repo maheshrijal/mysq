@@ -1,5 +1,25 @@
 # Performance
 
+## Debug timing logs
+
+Use `mysq tui --debug-log /path/to/new-debug.jsonl` with your usual connection setup to investigate a real slowdown. For a single report, use `mysq inspect --no-store --debug-log /path/to/new-debug.jsonl`. The flag enables logging; there is no separate `--debug` switch. Parent directories must already exist. The file is created with mode `0600`, and existing paths, including symlinks, are rejected before the command runs. Normal terminal and JSON output stay unchanged.
+
+Reproduce the slow action and quit with `q`. Events are written immediately, so another terminal can follow the file with `tail -f /path/to/new-debug.jsonl`. Each line contains a timestamp, phase, and operation. Start/end pairs share an `id`; end events include wall-clock `duration_ms`. A start without an end identifies an operation still running, or interrupted at shutdown. Session events identify the binary version. Result events provide `ok`, `error`, `timeout`, or `canceled` where instrumented, without recording raw errors.
+
+`collect.openConnection` includes connection establishment and session setup. Collector function spans cover database calls and row decoding. `sampling.wait` identifies the intentional observation delay (one second by default). `analyze`, `history.save`, `trends.sample`, and `tui.update`, `tui.rebuild`, and `tui.view` separate local work from collection. Parent spans include their children: do not add all durations together. TUI spans measure application work, not the terminal emulator's painting or keyboard delivery. This is timing instrumentation, not a CPU profile or SQL trace.
+
+The log excludes connection strings, endpoints, SQL text, results, and keyboard input. Visible errors and ordinary exports retain their existing behavior; the timing file is separate. Logging adds file I/O, so use a local disk and capture a short reproduction. Files are not rotated. Without the flag, timing calls are no-ops and no log file is opened.
+
+## Parallel full inspections
+
+Full inspections use three optional-probe workers alongside one pinned primary connection. Independent metadata probes and counter endpoint batches overlap, while the primary global-status window remains free of collector queries. Optional tasks have a three-second client budget and worker sessions have a three-second server statement limit. Slow optional sections degrade explicitly; focused commands retain their ten-second statement limit. A failed counter baseline is not queried again. NULL error numbers are retained as the uninstrumented error bucket (number zero).
+
+These changes shorten serial waits without increasing concurrency beyond four diagnostic clients. Full snapshots still wait for all scheduled work; three seconds is a per-task budget, not a whole-startup guarantee. TUI graph sampling and explicitly opened query-control sessions are separate from this limit. On a busy server, parallel reads can contend for resources, so compare debug captures on the affected database rather than extrapolating a localhost benchmark.
+
+A 2026-09-05 local comparison used MySQL 8.4, a TCP proxy delaying each direction by 12.5 ms per relay read, and `inspect --format json --no-store --interval 100ms`. Six measured pairs after one warmup pair alternated execution order on the same fixture. The sequential `caadd38` binary had a 1,198.30 ms median; the parallel candidate had a 941.20 ms median (21.5% lower), with all 19 current capabilities available and every sample window at least 100 ms. This isolates network-latency savings; it does not reproduce the affected database's expensive summary queries or predict its startup time.
+
+## Command benchmark
+
 mysq has an end-to-end command benchmark because its useful latency includes the MySQL connection, real Performance Schema queries, sampling, analysis, and output serialization. Microbenchmarks of individual Go helpers would miss the dominant costs.
 
 Run it with:

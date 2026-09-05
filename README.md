@@ -113,6 +113,8 @@ Active users are sampled independently of the Connections tab’s 100-session li
 
 Ghostty is the primary terminal target. Colors follow your terminal theme, and layouts adapt to the window size. Use at least 52 columns × 18 rows; 100 columns or more gives tables and graphs more room.
 
+Full diagnostic refreshes use up to four database connections to collect independent evidence in parallel. Optional probes have a three-second budget; slow or failed sections appear as unavailable while successful evidence remains visible. The separate live graph sampler uses one additional connection. Focused commands such as `mysq memory` retain the longer ten-second statement limit for targeted investigation.
+
 ### Cancel a running query
 
 In **Queries**, press `K`, select one current execution, and press Enter to review its user, host, and connection. Type exactly **`kill`**, then press Enter to confirm.
@@ -196,6 +198,14 @@ That grant permits reading application rows, although mysq does not query them. 
 | Graphs are empty | Allow a few seconds to collect history; check for a paused state or sampling error. |
 
 MySQL 8.0 and 8.4 are supported. Percona Server is recognized; MariaDB is not yet a compatibility target.
+
+To capture a slow startup, refresh, or navigation action, run the dashboard with timing logs:
+
+```sh
+mysq tui --debug-log "$HOME/mysq-debug-$(date +%Y%m%d-%H%M%S).jsonl"
+```
+
+Use your usual connection environment or pass the endpoint as usual. Reproduce the delay, then press `q`. The new, private JSONL file records connection and probe durations, sampling waits, analysis, history saves, live samples, and TUI update/render work. It excludes credentials, SQL, query results, and keystrokes. `--debug-log` also works with commands such as `inspect` and `queries`; it refuses existing files. See [debug timing logs](docs/performance.md#debug-timing-logs) for interpretation and limitations.
 
 ## Contributing
 
