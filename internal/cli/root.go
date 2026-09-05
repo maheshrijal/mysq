@@ -18,6 +18,7 @@ import (
 	"github.com/maheshrijal/mysq/internal/collect"
 	"github.com/maheshrijal/mysq/internal/compare"
 	"github.com/maheshrijal/mysq/internal/control"
+	"github.com/maheshrijal/mysq/internal/debuglog"
 	bundle "github.com/maheshrijal/mysq/internal/export"
 	"github.com/maheshrijal/mysq/internal/history"
 	"github.com/maheshrijal/mysq/internal/model"
@@ -74,6 +75,9 @@ Use inspect for a report, tui for the dashboard, or export to share the evidence
 	for _, section := range []string{"queries", "tables", "indexes", "processes", "transactions", "blockers", "locks", "metadata-locks", "waits", "io", "errors", "memory", "engine", "coverage", "variables", "replication"} {
 		root.AddCommand(app.focusedCommand(section))
 	}
+	var debugPath string
+	root.PersistentFlags().StringVar(&debugPath, "debug-log", "", "enable debug timing logs in a new private JSONL file")
+	enableDebugLog(root, &debugPath, version)
 	return root
 }
 
@@ -103,17 +107,23 @@ func (a *App) tuiCommand() *cobra.Command {
 				}
 			}
 			inspect := func(ctx context.Context) (*model.Context, error) {
+				defer debuglog.Start(ctx, "tui.refresh")()
 				collector := collect.New(a.Version)
 				collector.Interval = interval
 				result, err := collector.Inspect(ctx, target)
 				if err != nil {
 					return nil, err
 				}
+				doneAnalyze := debuglog.Start(ctx, "analyze")
 				analyze.Apply(result)
+				doneAnalyze()
+				doneHistory := debuglog.Start(ctx, "history.save")
 				store, storeErr := history.Open("")
 				if storeErr == nil {
 					_, storeErr = store.Save(result)
 				}
+				doneHistory()
+				debuglog.Result(ctx, "history.save", storeErr)
 				if storeErr != nil {
 					result.Warnings = append(result.Warnings, "snapshot history: "+storeErr.Error())
 				}
@@ -173,12 +183,18 @@ func (a *App) inspectCommand() *cobra.Command {
 				return ExitError{Code: 3, Err: err}
 			}
 			if !flags.noStore {
-				store, err := history.Open(flags.storePath)
-				if err != nil {
-					return fmt.Errorf("open snapshot history: %w", err)
-				}
-				if _, err := store.Save(ctx); err != nil {
-					return fmt.Errorf("save snapshot history: %w", err)
+				if err := func() error {
+					defer debuglog.Start(cmd.Context(), "history.save")()
+					store, err := history.Open(flags.storePath)
+					if err != nil {
+						return fmt.Errorf("open snapshot history: %w", err)
+					}
+					if _, err := store.Save(ctx); err != nil {
+						return fmt.Errorf("save snapshot history: %w", err)
+					}
+					return nil
+				}(); err != nil {
+					return err
 				}
 			}
 			if flags.exportDir != "" {
@@ -385,7 +401,9 @@ func (a *App) inspect(ctx context.Context, argument string, interval time.Durati
 	if err != nil {
 		return nil, err
 	}
+	doneAnalyze := debuglog.Start(ctx, "analyze")
 	analyze.Apply(result)
+	doneAnalyze()
 	return result, nil
 }
 
@@ -421,6 +439,7 @@ func (a *App) inspectSection(ctx context.Context, argument string, interval time
 }
 
 func (a *App) render(cmd *cobra.Command, ctx *model.Context, format string, full bool) error {
+	defer debuglog.Start(cmd.Context(), "render.report")()
 	switch strings.ToLower(format) {
 	case "text":
 		width, _, err := term.GetSize(os.Stdout.Fd())

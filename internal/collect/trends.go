@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/maheshrijal/mysq/internal/debuglog"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ func OpenTrendSampler(target Target) (*sql.DB, error) {
 }
 
 func SampleTrends(ctx context.Context, db *sql.DB) (TrendCounters, error) {
+	defer debuglog.Start(ctx, "trends.sample")()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	rows, err := db.QueryContext(ctx, `SELECT @@server_uuid, VARIABLE_NAME, VARIABLE_VALUE

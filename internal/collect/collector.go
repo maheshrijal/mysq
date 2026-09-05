@@ -18,6 +18,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	mysqlDriver "github.com/go-sql-driver/mysql"
 
+	"github.com/maheshrijal/mysq/internal/debuglog"
 	"github.com/maheshrijal/mysq/internal/model"
 	"github.com/maheshrijal/mysq/internal/sanitize"
 )
@@ -204,6 +205,7 @@ func splitAddress(addr string) (string, int) {
 }
 
 func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context, error) {
+	defer debuglog.Start(ctx, "collect.Inspect")()
 	db, conn, err := c.openConnection(ctx, target)
 	if err != nil {
 		return nil, err
@@ -310,13 +312,16 @@ func (c *Collector) Inspect(ctx context.Context, target Target) (*model.Context,
 	if interval < 100*time.Millisecond {
 		interval = 100 * time.Millisecond
 	}
+	doneSample := debuglog.Start(ctx, "sampling.wait")
 	timer := time.NewTimer(interval)
 	select {
 	case <-ctx.Done():
 		timer.Stop()
+		doneSample()
 		return nil, ctx.Err()
 	case <-timer.C:
 	}
+	doneSample()
 	second, err := queryNameValue(ctx, conn, "SHOW GLOBAL STATUS")
 	if err != nil {
 		return nil, fmt.Errorf("collect final global status: %w", err)
@@ -378,6 +383,7 @@ func recordFullSampleIntervals(result *model.Context, status, waits, fileIO, ser
 }
 
 func (c *Collector) openConnection(ctx context.Context, target Target) (*sql.DB, *sql.Conn, error) {
+	defer debuglog.Start(ctx, "collect.openConnection")()
 	db, err := sql.Open("mysql", target.DSN)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open MySQL connection: %w", err)
@@ -491,6 +497,7 @@ func redactVariables(variables map[string]string) {
 // Sampling commands retain the configured interval; cumulative and point-in-time
 // commands return immediately instead of paying for an unrelated full snapshot.
 func (c *Collector) InspectSection(ctx context.Context, target Target, section string) (*model.Context, error) {
+	defer debuglog.Start(ctx, "collect.InspectSection")()
 	db, conn, err := c.openConnection(ctx, target)
 	if err != nil {
 		return nil, err
@@ -721,6 +728,7 @@ func (c *Collector) focusedSampleProbe(result *model.Context, name string, errs 
 }
 
 func (c *Collector) collectEngineSection(ctx context.Context, conn *sql.Conn, result *model.Context) error {
+	defer debuglog.Start(ctx, "collect.collectEngineSection")()
 	var err error
 	result.Variables, err = queryNameValue(ctx, conn, "SHOW GLOBAL VARIABLES")
 	if err != nil {
@@ -802,17 +810,21 @@ func applyStatementRates(metrics *model.Metrics, first, second statementCounter,
 }
 
 func (c *Collector) waitForSample(ctx context.Context) (time.Time, error) {
+	defer debuglog.Start(ctx, "collect.waitForSample")()
 	interval := c.Interval
 	if interval < 100*time.Millisecond {
 		interval = 100 * time.Millisecond
 	}
 	started := time.Now()
+	doneSample := debuglog.Start(ctx, "sampling.wait")
 	timer := time.NewTimer(interval)
 	select {
 	case <-ctx.Done():
 		timer.Stop()
+		doneSample()
 		return time.Time{}, ctx.Err()
 	case <-timer.C:
+		doneSample()
 		return started, nil
 	}
 }
@@ -826,6 +838,7 @@ func (c *Collector) waitForFocusedSample(ctx context.Context, result *model.Cont
 
 func (c *Collector) probe(ctx context.Context, result *model.Context, name string, fn func() error) {
 	err := fn()
+	debuglog.Result(ctx, "probe."+name, err)
 	c.recordCapability(result, name, err)
 }
 
@@ -859,6 +872,7 @@ func compactError(err error) string {
 }
 
 func (c *Collector) collectServer(ctx context.Context, conn *sql.Conn, server *model.Server) error {
+	defer debuglog.Start(ctx, "collect.collectServer")()
 	row := conn.QueryRowContext(ctx, `SELECT VERSION(), @@hostname, DATABASE(), @@server_uuid,
         @@server_id, @@read_only, @@super_read_only`)
 	var database sql.NullString
@@ -885,6 +899,7 @@ func (c *Collector) collectServer(ctx context.Context, conn *sql.Conn, server *m
 }
 
 func queryNameValue(ctx context.Context, conn *sql.Conn, statement string) (map[string]string, error) {
+	defer debuglog.Start(ctx, "collect.queryNameValue")()
 	rows, err := conn.QueryContext(ctx, statement)
 	if err != nil {
 		return nil, err
@@ -902,6 +917,7 @@ func queryNameValue(ctx context.Context, conn *sql.Conn, statement string) (map[
 }
 
 func queryMaps(ctx context.Context, conn *sql.Conn, statement string, args ...any) ([]map[string]string, error) {
+	defer debuglog.Start(ctx, "collect.queryMaps")()
 	rows, err := conn.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
@@ -1054,6 +1070,7 @@ func deriveMetrics(first, second, variables map[string]string, elapsed time.Dura
 }
 
 func (c *Collector) historyListLength(ctx context.Context, conn *sql.Conn, result *model.Context) uint64 {
+	defer debuglog.Start(ctx, "collect.historyListLength")()
 	var value uint64
 	err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(COUNT), 0)
         FROM information_schema.INNODB_METRICS WHERE NAME='trx_rseg_history_len'`).Scan(&value)
@@ -1073,6 +1090,7 @@ func fingerprint(server model.Server) string {
 }
 
 func (c *Collector) collectQueries(ctx context.Context, conn *sql.Conn) ([]model.Query, error) {
+	defer debuglog.Start(ctx, "collect.collectQueries")()
 	statement := `SELECT COALESCE(DIGEST,''), COALESCE(SCHEMA_NAME,''), COALESCE(DIGEST_TEXT,''),
 		COUNT_STAR, SUM_TIMER_WAIT / 1000000000, AVG_TIMER_WAIT / 1000000000,
 		CASE WHEN MAX_TIMER_WAIT <= 9223372036854775807 THEN MAX_TIMER_WAIT ELSE 0 END / 1000000000,
@@ -1107,6 +1125,7 @@ func (c *Collector) collectQueries(ctx context.Context, conn *sql.Conn) ([]model
 }
 
 func (c *Collector) collectTables(ctx context.Context, conn *sql.Conn) ([]model.Table, error) {
+	defer debuglog.Start(ctx, "collect.collectTables")()
 	statement := `SELECT t.TABLE_SCHEMA, t.TABLE_NAME, COALESCE(t.ENGINE,''),
         COALESCE(t.TABLE_ROWS,0), COALESCE(t.DATA_LENGTH,0), COALESCE(t.INDEX_LENGTH,0),
         COALESCE(t.DATA_LENGTH + t.INDEX_LENGTH,0), COALESCE(io.COUNT_READ,0),
@@ -1144,6 +1163,7 @@ func (c *Collector) collectTables(ctx context.Context, conn *sql.Conn) ([]model.
 }
 
 func (c *Collector) collectIndexes(ctx context.Context, conn *sql.Conn) ([]model.Index, error) {
+	defer debuglog.Start(ctx, "collect.collectIndexes")()
 	statement := `SELECT s.TABLE_SCHEMA, s.TABLE_NAME, s.INDEX_NAME,
         GROUP_CONCAT(s.COLUMN_NAME ORDER BY s.SEQ_IN_INDEX SEPARATOR ', '),
         MIN(s.NON_UNIQUE)=0, MIN(COALESCE(s.IS_VISIBLE,'YES'))='YES',
@@ -1176,6 +1196,7 @@ func (c *Collector) collectIndexes(ctx context.Context, conn *sql.Conn) ([]model
 }
 
 func (c *Collector) collectProcesses(ctx context.Context, conn *sql.Conn) ([]model.Process, error) {
+	defer debuglog.Start(ctx, "collect.collectProcesses")()
 	statement := `SELECT t.PROCESSLIST_ID, t.THREAD_ID, COALESCE(t.PROCESSLIST_USER,''),
 		COALESCE(t.PROCESSLIST_HOST,''), COALESCE(t.PROCESSLIST_DB,''),
 		COALESCE(t.PROCESSLIST_COMMAND,''), COALESCE(t.PROCESSLIST_TIME,0),
@@ -1213,6 +1234,7 @@ func (c *Collector) collectProcesses(ctx context.Context, conn *sql.Conn) ([]mod
 // display's 100-session limit. Filter to the returned schema/digest pairs and
 // deduplicate on the server so busy pools do not inflate the result set.
 func (c *Collector) collectActiveQueryUsers(ctx context.Context, conn *sql.Conn, queries []model.Query) error {
+	defer debuglog.Start(ctx, "collect.collectActiveQueryUsers")()
 	var filters []string
 	var args []any
 	for _, query := range queries {
@@ -1320,6 +1342,7 @@ func summarizeProcesses(processes []model.Process) []model.ConnectionGroup {
 }
 
 func (c *Collector) collectLocks(ctx context.Context, conn *sql.Conn) ([]model.LockWait, error) {
+	defer debuglog.Start(ctx, "collect.collectLocks")()
 	statement := `SELECT w.REQUESTING_ENGINE_TRANSACTION_ID, w.BLOCKING_ENGINE_TRANSACTION_ID,
         COALESCE(r.OBJECT_SCHEMA,''), COALESCE(r.OBJECT_NAME,''), COALESCE(r.INDEX_NAME,''),
         COALESCE(r.LOCK_TYPE,''), COALESCE(r.LOCK_MODE,'')
@@ -1344,6 +1367,7 @@ func (c *Collector) collectLocks(ctx context.Context, conn *sql.Conn) ([]model.L
 }
 
 func (c *Collector) collectTransactions(ctx context.Context, conn *sql.Conn) ([]model.Transaction, error) {
+	defer debuglog.Start(ctx, "collect.collectTransactions")()
 	statement := `SELECT COALESCE(trx.TRX_ID,''), COALESCE(trx.TRX_STATE,''),
 		COALESCE(CAST(trx.TRX_STARTED AS CHAR),''),
 		COALESCE(TIMESTAMPDIFF(SECOND, trx.TRX_STARTED, NOW()),0),
@@ -1374,6 +1398,7 @@ func (c *Collector) collectTransactions(ctx context.Context, conn *sql.Conn) ([]
 }
 
 func (c *Collector) collectMetadataLocks(ctx context.Context, conn *sql.Conn) ([]model.MetadataLock, error) {
+	defer debuglog.Start(ctx, "collect.collectMetadataLocks")()
 	statement := `SELECT ml.OWNER_THREAD_ID, COALESCE(t.PROCESSLIST_ID,0),
 		COALESCE(t.PROCESSLIST_USER,''), COALESCE(t.PROCESSLIST_HOST,''),
 		COALESCE(ml.OBJECT_TYPE,''), COALESCE(ml.OBJECT_SCHEMA,''),
@@ -1436,6 +1461,7 @@ type statementDigestCounter struct {
 }
 
 func (c *Collector) collectStatementDigestCounters(ctx context.Context, conn *sql.Conn) (map[string]statementDigestCounter, error) {
+	defer debuglog.Start(ctx, "collect.collectStatementDigestCounters")()
 	rows, err := conn.QueryContext(ctx, `SELECT COALESCE(DIGEST,''), COALESCE(SCHEMA_NAME,''),
 		COALESCE(DIGEST_TEXT,''), COUNT_STAR, SUM_TIMER_WAIT / 1000000000
 	  FROM performance_schema.events_statements_summary_by_digest
@@ -1518,6 +1544,7 @@ func internalStatementSample(statement string) bool {
 }
 
 func (c *Collector) collectWaitCounters(ctx context.Context, conn *sql.Conn) (map[string]waitCounter, error) {
+	defer debuglog.Start(ctx, "collect.collectWaitCounters")()
 	statement := `SELECT EVENT_NAME,
 		SUBSTRING_INDEX(SUBSTRING_INDEX(EVENT_NAME,'/',3),'/',-2), COUNT_STAR,
 		SUM_TIMER_WAIT / 1000000000, AVG_TIMER_WAIT / 1000000,
@@ -1579,6 +1606,7 @@ func deriveWaitEvents(first, second map[string]waitCounter, elapsed time.Duratio
 }
 
 func (c *Collector) collectFileIOCounters(ctx context.Context, conn *sql.Conn) (map[string]fileIOCounter, error) {
+	defer debuglog.Start(ctx, "collect.collectFileIOCounters")()
 	rows, err := conn.QueryContext(ctx, `SELECT EVENT_NAME,
 		SUBSTRING_INDEX(SUBSTRING_INDEX(EVENT_NAME,'/',5),'/',-1),
 		COUNT_READ, COUNT_WRITE, SUM_NUMBER_OF_BYTES_READ, SUM_NUMBER_OF_BYTES_WRITE,
@@ -1644,6 +1672,7 @@ func deriveFileIO(first, second map[string]fileIOCounter, elapsed time.Duration)
 }
 
 func (c *Collector) collectErrorCounters(ctx context.Context, conn *sql.Conn) (map[uint64]errorCounter, error) {
+	defer debuglog.Start(ctx, "collect.collectErrorCounters")()
 	rows, err := conn.QueryContext(ctx, `SELECT ERROR_NUMBER, COALESCE(ERROR_NAME,''), COALESCE(SQL_STATE,''),
 		SUM_ERROR_RAISED, SUM_ERROR_HANDLED, COALESCE(CAST(FIRST_SEEN AS CHAR),''),
 		COALESCE(CAST(LAST_SEEN AS CHAR),'')
@@ -1693,6 +1722,7 @@ func deriveServerErrors(first, second map[uint64]errorCounter, elapsed time.Dura
 }
 
 func (c *Collector) collectStatementCounters(ctx context.Context, conn *sql.Conn) (statementCounter, error) {
+	defer debuglog.Start(ctx, "collect.collectStatementCounters")()
 	var result statementCounter
 	err := conn.QueryRowContext(ctx, `SELECT COALESCE(SUM(COUNT_STAR),0), COALESCE(SUM(SUM_ERRORS),0),
 		COALESCE(SUM(SUM_WARNINGS),0)
@@ -1702,6 +1732,7 @@ func (c *Collector) collectStatementCounters(ctx context.Context, conn *sql.Conn
 }
 
 func (c *Collector) collectStatementLatency(ctx context.Context, conn *sql.Conn) (model.StatementLatency, error) {
+	defer debuglog.Start(ctx, "collect.collectStatementLatency")()
 	var result model.StatementLatency
 	err := conn.QueryRowContext(ctx, `SELECT
 		COALESCE(MIN(CASE WHEN BUCKET_QUANTILE >= 0.95 AND COUNT_BUCKET_AND_LOWER > 0 THEN BUCKET_TIMER_HIGH END),0) / 1000000000,
@@ -1715,6 +1746,7 @@ func (c *Collector) collectStatementLatency(ctx context.Context, conn *sql.Conn)
 }
 
 func (c *Collector) collectInstrumentation(ctx context.Context, conn *sql.Conn, variables map[string]string) (model.Instrumentation, error) {
+	defer debuglog.Start(ctx, "collect.collectInstrumentation")()
 	result := model.Instrumentation{DigestCapacity: unsigned(variables["performance_schema_digests_size"])}
 	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM performance_schema.events_statements_summary_by_digest
@@ -1776,6 +1808,7 @@ func floatDelta(first, second float64) float64 {
 }
 
 func (c *Collector) collectMemoryConsumers(ctx context.Context, conn *sql.Conn) ([]model.MemoryConsumer, error) {
+	defer debuglog.Start(ctx, "collect.collectMemoryConsumers")()
 	statement := `SELECT EVENT_NAME, CURRENT_NUMBER_OF_BYTES_USED,
 		HIGH_NUMBER_OF_BYTES_USED, CURRENT_COUNT_USED
 	  FROM performance_schema.memory_summary_global_by_event_name
@@ -1798,6 +1831,7 @@ func (c *Collector) collectMemoryConsumers(ctx context.Context, conn *sql.Conn) 
 }
 
 func (c *Collector) collectReplication(ctx context.Context, conn *sql.Conn) (*model.Replication, error) {
+	defer debuglog.Start(ctx, "collect.collectReplication")()
 	rows, err := queryMaps(ctx, conn, "SHOW REPLICA STATUS")
 	if err != nil && legacyReplicationFallback(err) {
 		rows, err = queryMaps(ctx, conn, "SHOW SLAVE STATUS")
@@ -1872,6 +1906,7 @@ func legacyReplicationFallback(err error) bool {
 }
 
 func collectInnoDBStatus(ctx context.Context, conn *sql.Conn) (string, error) {
+	defer debuglog.Start(ctx, "collect.collectInnoDBStatus")()
 	rows, err := conn.QueryContext(ctx, "SHOW ENGINE INNODB STATUS")
 	if err != nil {
 		return "", err

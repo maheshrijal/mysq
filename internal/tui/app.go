@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/maheshrijal/mysq/internal/debuglog"
 	"github.com/maheshrijal/mysq/internal/model"
 )
 
@@ -145,6 +146,7 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	defer debuglog.Start(m.ctx, "tui.update")()
 	var commands []tea.Cmd
 	switch msg := message.(type) {
 	case trendTick:
@@ -904,6 +906,7 @@ func (m Model) keyboardHelp() string {
 }
 
 func (m Model) View() string {
+	defer debuglog.Start(m.ctx, "tui.view")()
 	if m.width == 0 {
 		return "Starting mysq…"
 	}
@@ -1110,6 +1113,7 @@ func (m Model) contentPanel(width, height int) string {
 }
 
 func (m *Model) rebuild() {
+	defer debuglog.Start(m.ctx, "tui.rebuild")()
 	if m.live.stage != "" {
 		m.viewport.SetContent(m.queryActionView())
 		m.viewport.GotoTop()
@@ -1208,6 +1212,7 @@ func (m Model) inspectCommand() tea.Cmd {
 		ctx, cancel := context.WithTimeout(m.ctx, 45*time.Second)
 		defer cancel()
 		result, err := m.inspect(ctx)
+		debuglog.Result(ctx, "tui.refresh", err)
 		return inspectMessage{context: result, err: err}
 	}
 }

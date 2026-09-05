@@ -197,6 +197,14 @@ That grant permits reading application rows, although mysq does not query them. 
 
 MySQL 8.0 and 8.4 are supported. Percona Server is recognized; MariaDB is not yet a compatibility target.
 
+To capture a slow startup, refresh, or navigation action, run the dashboard with timing logs:
+
+```sh
+mysq tui --debug-log "$HOME/mysq-debug-$(date +%Y%m%d-%H%M%S).jsonl"
+```
+
+Use your usual connection environment or pass the endpoint as usual. Reproduce the delay, then press `q`. The new, private JSONL file records connection and probe durations, sampling waits, analysis, history saves, live samples, and TUI update/render work. It excludes credentials, SQL, query results, and keystrokes. `--debug-log` also works with commands such as `inspect` and `queries`; it refuses existing files. See [debug timing logs](docs/performance.md#debug-timing-logs) for interpretation and limitations.
+
 ## Contributing
 
 For local development, run `make build`, `make check`, and `make e2e`. See [architecture](docs/architecture.md), [performance testing](docs/performance.md), and [security](SECURITY.md) for implementation details.
