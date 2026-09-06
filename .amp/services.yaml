@@ -1,0 +1,4 @@
+services:
+  docker:
+    # Unix socket only: never expose an unauthenticated Docker API as a portal.
+    command: sudo dockerd --host=unix:///var/run/docker.sock --group=user

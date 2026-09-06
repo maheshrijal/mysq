@@ -215,6 +215,22 @@ Use your usual connection environment or pass the endpoint as usual. Reproduce t
 
 For local development, run `make build`, `make check`, and `make e2e`. See [architecture](docs/architecture.md), [performance testing](docs/performance.md), and [security](SECURITY.md) for implementation details.
 
+### Amp orbs
+
+`.agents/setup` installs Go 1.25.14, the C compiler required by race tests, Expect,
+and Docker Compose. It downloads the locked Go modules and warms the build and
+race-test caches for Amp's reusable project snapshots. Repeated setup runs reuse
+installed packages and Go caches; `.agents/resume` only checks tool availability.
+No production database credentials are needed for setup or unit tests.
+
+Run `make check` for vet, race tests, and a CLI build. For the disposable MySQL 8.4
+fixture, run `amp orb services ensure`, then `make e2e` (or `make benchmark`). Docker
+is supervised through `.amp/services.yaml` and listens only on its Unix socket;
+there is no web portal for this terminal application. The first fixture run pulls
+the MySQL image; subsequent runs in that orb reuse it. The test scripts create,
+seed, and clean up their own databases rather than preserving running containers
+in setup snapshots.
+
 ## Inspired by
 
 - [MySQL Awesome Stats Collector](https://github.com/k4kratik/mysql-awesome-stats-collector)
