@@ -25,3 +25,55 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  homebrew:
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: homebrew-tap-mysq
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check publishing credentials
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          test -n "$TAP_TOKEN" || { echo 'Missing HOMEBREW_TAP_GITHUB_TOKEN'; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          repository: maheshrijal/homebrew-tap
+          ref: main
+          path: tap
+          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+      - name: Download published checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release download "$RELEASE_TAG" --repo maheshrijal/mysq --pattern checksums.txt --dir "$RUNNER_TEMP/mysq-release"
+      - name: Update and validate formula
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 tools/update_homebrew.py "$RELEASE_TAG" "$RUNNER_TEMP/mysq-release/checksums.txt" tap/Formula/mysq.rb
+          ruby -c tap/Formula/mysq.rb
+          git -C tap diff --check
+          git -C tap diff -- Formula/mysq.rb
+      - name: Publish formula
+        working-directory: tap
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if git diff --quiet -- Formula/mysq.rb; then
+            echo 'Formula already up to date.'
+            exit 0
+          fi
+          git config user.name 'Mahesh Rijal'
+          git config user.email '62394512+maheshrijal@users.noreply.github.com'
+          git add Formula/mysq.rb
+          git commit -m "Brew formula update for mysq version $RELEASE_TAG"
+          git push origin HEAD:main
