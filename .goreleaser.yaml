@@ -24,6 +24,26 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+homebrew_casks:
+  - name: mysq
+    homepage: https://github.com/maheshrijal/mysq
+    description: Find slow queries, blocked transactions, and MySQL performance problems
+    binaries: [mysq]
+    skip_upload: auto
+    repository:
+      owner: maheshrijal
+      name: homebrew-tap
+      token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
+    commit_author:
+      name: Mahesh Rijal
+      email: 62394512+maheshrijal@users.noreply.github.com
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-d", "com.apple.quarantine", "#{staged_path}/mysq"]
+          end
+
 changelog:
   sort: asc
   filters:
