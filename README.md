@@ -12,6 +12,21 @@ Open an interactive dashboard, get a quick health report, or export the evidence
 
 macOS and Linux, on Intel/AMD or Apple Silicon/ARM:
 
+**Homebrew:**
+
+```fish
+brew install maheshrijal/tap/mysq
+```
+
+To upgrade:
+
+```fish
+brew update
+brew upgrade maheshrijal/tap/mysq
+```
+
+**Standalone installer:**
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | sh
 ```
