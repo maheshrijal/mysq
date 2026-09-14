@@ -2,6 +2,7 @@ package analyze
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -145,10 +146,12 @@ func analyzeQueries(ctx *model.Context, add func(model.Finding)) {
 		add(f)
 		break
 	}
+	noIndexReported := ""
 	for _, query := range ctx.Queries {
 		if query.NoIndexUsed == 0 || query.Calls < 5 || query.RowsExamined/query.Calls < 1000 {
 			continue
 		}
+		noIndexReported = query.Schema + "\x00" + query.Digest
 		f := finding("query_no_index_"+query.Schema+"_"+query.Digest, model.SeverityWarning, "queries",
 			"A recurring statement is not using an index",
 			fmt.Sprintf("Digest %s reported %d executions without an index.", shortDigest(query.Digest), query.NoIndexUsed),
@@ -157,6 +160,35 @@ func analyzeQueries(ctx *model.Context, add func(model.Finding)) {
 		f.Objects = []string{"digest:" + query.Schema + ":" + query.Digest}
 		add(f)
 		break
+	}
+	// Report the read amplifier that wasted the most rows in total. The digest
+	// query_no_index just reported is skipped so one root cause is not scored twice.
+	var worst *model.Query
+	wasted := uint64(0)
+	for i := range ctx.Queries {
+		query := &ctx.Queries[i]
+		ratio, ok := query.RowsExaminedPerReturned()
+		if !ok || query.Schema+"\x00"+query.Digest == noIndexReported || query.Calls < 5 || query.RowsExamined/query.Calls < 1000 || ratio < 100 || readsManyByDesign(query.Schema, query.Statement) {
+			continue
+		}
+		if query.RowsExamined-query.RowsSent > wasted {
+			worst, wasted = query, query.RowsExamined-query.RowsSent
+		}
+	}
+	if worst != nil {
+		worstRatio, _ := worst.RowsExaminedPerReturned()
+		perCall := worst.RowsExamined / worst.Calls
+		severity := model.SeverityNote
+		if worstRatio >= 1000 || perCall >= 100000 {
+			severity = model.SeverityWarning
+		}
+		f := finding("query_read_amplification_"+worst.Schema+"_"+worst.Digest, severity, "queries",
+			"A statement examines far more rows than it returns",
+			fmt.Sprintf("Digest %s examined %.0f rows for every row it returned (%d examined per call across %d calls).", shortDigest(worst.Digest), worstRatio, perCall, worst.Calls),
+			"Use EXPLAIN to find the access path examining unneeded rows; a more selective index usually lowers the ratio unless the rows come from a sort or temporary table.",
+			map[string]any{"schema": worst.Schema, "scope": "cumulative captured digests", "digest": worst.Digest, "rows_examined": worst.RowsExamined, "rows_sent": worst.RowsSent, "rows_examined_per_returned": worstRatio, "rows_wasted": wasted, "rows_examined_per_call": perCall, "calls": worst.Calls})
+		f.Objects = []string{"digest:" + worst.Schema + ":" + worst.Digest}
+		add(f)
 	}
 }
 
@@ -410,6 +442,35 @@ func severityRank(value model.Severity) int {
 	default:
 		return 2
 	}
+}
+
+// aggregateCall matches an aggregate function as Performance Schema digests
+// render it: uppercase, whole word, and a space before the parenthesis.
+var aggregateCall = regexp.MustCompile(`(?:^|[^A-Z_])(?:COUNT|SUM|AVG|MIN|MAX|STD|STDDEV|STDDEV_POP|STDDEV_SAMP|VARIANCE|VAR_POP|VAR_SAMP|GROUP_CONCAT|JSON_ARRAYAGG|JSON_OBJECTAGG|BIT_AND|BIT_OR|BIT_XOR) \(`)
+
+// readsManyByDesign reports statements whose high examined-to-returned ratio
+// is expected and cannot be lowered by an index: reads of system schemas, and
+// unfiltered aggregates or window functions. A statement is filtered when it
+// has a WHERE clause or a parameter inside a join condition. The ratio is
+// still shown for these statements.
+func readsManyByDesign(schema, statement string) bool {
+	switch strings.ToLower(schema) {
+	case "performance_schema", "information_schema", "sys", "mysql":
+		return true
+	}
+	upper := strings.ToUpper(statement)
+	for _, system := range []string{"`PERFORMANCE_SCHEMA` .", "`INFORMATION_SCHEMA` .", "`SYS` .", "`MYSQL` ."} {
+		if strings.Contains(upper, system) {
+			return true
+		}
+	}
+	if strings.Contains(upper, " WHERE ") {
+		return false
+	}
+	if _, joined, ok := strings.Cut(upper, " ON "); ok && strings.Contains(joined, "?") {
+		return false
+	}
+	return strings.Contains(upper, "GROUP BY") || strings.Contains(upper, " OVER (") || aggregateCall.MatchString(upper)
 }
 
 func shortDigest(value string) string {

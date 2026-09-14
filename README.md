@@ -128,7 +128,7 @@ Connections shows one compact row per session, with a `›` marker on the select
 
 Live SQL in the TUI retains literals and comments; terminal escape/control sequences are removed. Historical digests remain normalized because MySQL does not retain their original literals, and live SQL can be truncated by the server. History, CLI reports, and exports remain redacted.
 
-Active users are sampled independently of the Connections tab’s 100-session limit. A `—` means no user was observed for that query; historical query totals do not retain user attribution. Press Enter to check current executions. Ctrl+C closes mysq’s database connections.
+Active users are sampled independently of the Connections tab’s 100-session limit. A `—` under active users means no user was observed for that query, and under `READ/RET` that the statement returned no rows; historical query totals do not retain user attribution. Press Enter to check current executions. Ctrl+C closes mysq’s database connections.
 
 Ghostty is the primary terminal target. Colors follow your terminal theme, and layouts adapt to the window size. Use at least 52 columns × 18 rows; 100 columns or more gives tables and graphs more room.
 

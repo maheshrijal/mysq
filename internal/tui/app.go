@@ -1472,7 +1472,7 @@ func queries(ctx *model.Context, width, selected int, totalLatency float64) stri
 	wide := width >= 96
 	compactLayout := width < 68
 	widths := []int{2, 9, 8, 9, 11, 14, max(24, width-53)}
-	headings := []string{"", "DB TIME", "CALLS", "P95", "ROWS EXAM", "ACTIVE USERS", "QUERY"}
+	headings := []string{"", "DB TIME", "CALLS", "P95", "READ/RET", "ACTIVE USERS", "QUERY"}
 	if compactLayout {
 		widths = []int{2, 9, 13, max(20, width-24)}
 		headings = []string{"", "DB TIME", "ACTIVE USERS", "QUERY"}
@@ -1491,7 +1491,7 @@ func queries(ctx *model.Context, width, selected int, totalLatency float64) stri
 			marker = "›"
 		}
 		values := []string{marker, duration(query.TotalLatencyMillis), humanCount(query.Calls), duration(query.P95LatencyMillis),
-			humanCount(query.RowsExamined), users, query.Statement}
+			readRatio(query), users, query.Statement}
 		if compactLayout {
 			values = []string{marker, duration(query.TotalLatencyMillis), users, query.Statement}
 		} else if !wide {
@@ -1499,7 +1499,7 @@ func queries(ctx *model.Context, width, selected int, totalLatency float64) stri
 		}
 		out.WriteString(semanticRow(values, headings, widths, index == selected) + "\n")
 	}
-	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  active users at snapshot; — = not observed  ·  selected share %.1f%%  ·  literals removed", queryShare(ctx.Queries, selected, totalLatency))))
+	out.WriteString("\n" + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("Sorted by database time  ·  — = not observed or no rows returned  ·  selected share %.1f%%  ·  literals removed", queryShare(ctx.Queries, selected, totalLatency))))
 	return out.String()
 }
 
@@ -1543,8 +1543,8 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 
 	evidence := [][2]string{
 		{"AVG / P99 / MAX", duration(query.MeanLatencyMillis) + " / " + duration(query.P99LatencyMillis) + " / " + duration(query.MaxLatencyMillis)},
-		{"ROWS EXAMINED", humanCount(query.RowsExamined)},
-		{"ROWS SENT", humanCount(query.RowsSent)},
+		{"ROWS READ / RETURNED", humanCount(query.RowsExamined) + " / " + humanCount(query.RowsSent)},
+		{"READ PER RETURNED", readRatio(query)},
 		{"ERRORS / WARNINGS", humanCount(query.Errors) + " / " + humanCount(query.Warnings)},
 		{"NO INDEX CALLS", humanCount(query.NoIndexUsed)},
 		{"FULL SCANS", humanCount(query.FullScans)},
@@ -1559,13 +1559,13 @@ func queryDetail(ctx *model.Context, width, selected int, totalLatency float64) 
 	cellWidth := (width - 2) / columns
 	for i, item := range evidence {
 		valueColor := lipgloss.TerminalColor(number)
-		if item[1] == "0" || item[1] == "0 / 0" {
+		if item[1] == "0" || item[1] == "0 / 0" || item[1] == "—" || item[1] == "<1x" {
 			valueColor = text
 		}
 		if i == 3 && (query.Errors > 0 || query.Warnings > 0) {
 			valueColor = yellow
 		}
-		cell := lipgloss.NewStyle().Width(19).Render(item[0]) + lipgloss.NewStyle().Foreground(valueColor).Render(item[1])
+		cell := lipgloss.NewStyle().Width(22).Render(item[0]) + lipgloss.NewStyle().Foreground(valueColor).Render(item[1])
 		out.WriteString(lipgloss.NewStyle().Width(cellWidth).Render(cell))
 		if (i+1)%columns == 0 {
 			out.WriteByte('\n')
@@ -2128,6 +2128,19 @@ func humanBytes(value uint64) string {
 		return fmt.Sprintf("%d B", value)
 	}
 	return fmt.Sprintf("%.1f %s", n, units[i])
+}
+
+// readRatio formats rows examined per row returned; "—" when nothing was returned.
+func readRatio(query model.Query) string {
+	ratio, ok := query.RowsExaminedPerReturned()
+	switch {
+	case !ok:
+		return "—"
+	case ratio < 1:
+		return "<1x"
+	default:
+		return humanCount(uint64(ratio)) + "x"
+	}
 }
 
 func humanCount(value uint64) string {

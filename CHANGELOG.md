@@ -6,6 +6,8 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Added
 
+- Rows read per row returned for each statement digest: a `READ/RET` column in the wide TUI queries table and in `mysq queries`, and a `READ PER RETURNED` line in query details. Statements that return no rows show `—`.
+- `query_read_amplification` finding for the digest that wasted the most examined rows among those with at least 5 calls, 1000 rows examined per call, and 100 rows examined per row returned (warning at 1000x or 100k rows per call). The digest reported by `query_no_index`, unfiltered aggregates and window functions, and system-schema reads are excluded.
 - TUI live SQL retains literals and comments in connection details, current query executions, and transaction/blocking evidence; history, reports, and exports remain redacted.
 
 - Release installer for macOS/Linux on amd64 and arm64, with SHA-256 verification, configurable install directory, and optional version pinning. GoReleaser publishes consistently named archives for those platforms and Windows.
@@ -30,6 +32,7 @@ All notable changes to mysq are documented here. The project follows Semantic Ve
 
 ### Changed
 
+- The wide TUI queries table shows `READ/RET` instead of raw rows examined; the totals remain in query details and `mysq queries`.
 - Connections uses compact single-line rows with an explicit selection marker and Enter for full SQL. Nested waits no longer duplicate sessions or consume the 100-connection limit. Tagged mysq diagnostic, trend, and control sessions are excluded from process lists and active-query-user attribution.
 
 - Simplify README installation and lead connection setup with `MYSQ_DATABASE_URL`; keep DBOPS credential variables as secondary compatibility options.
