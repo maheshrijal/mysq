@@ -157,20 +157,21 @@ func TestReadAmplificationFinding(t *testing.T) {
 	}
 
 	for name, q := range map[string]model.Query{
-		"writes return nothing":             query("w", 5000000, 0, "UPDATE `orders` SET `status` = ? WHERE `id` = ?"),
-		"ratio below 100":                   query("r", 500000, 10000, "SELECT `id` FROM `orders` WHERE `email` = ?"),
-		"ratio exactly 99":                  query("e", 990000, 10000, "SELECT `id` FROM `orders` WHERE `email` = ?"),
-		"under 1000 examined per call":      query("p", 9990, 1, "SELECT `id` FROM `orders` WHERE `email` = ?"),
-		"unfiltered group by":               query("g", 5000000, 10, "SELECT `status` , `id` FROM `orders` GROUP BY `status`"),
-		"unfiltered aggregate":              query("s", 5000000, 10, "SELECT SUM ( `amount` ) FROM `orders`"),
-		"unfiltered group_concat":           query("gc", 5000000, 10, "SELECT GROUP_CONCAT ( `tag` ) FROM `tags`"),
-		"performance schema read":           query("ps", 5000000, 10, "SELECT `ERROR_NUMBER` FROM `performance_schema` . `events_errors_summary_global_by_error` WHERE `SUM_ERROR_RAISED` > ?"),
-		"mysql schema read":                 query("ms", 5000000, 10, "SELECT `User` FROM `mysql` . `user` WHERE `Host` = ?"),
-		"unfiltered join rollup":            query("j", 5000000, 10, "SELECT `d` . `name` , SUM ( `f` . `amt` ) FROM `dim` `d` JOIN `fact` `f` ON `f` . `dim_id` = `d` . `id` GROUP BY `d` . `name`"),
-		"window function":                   query("wf", 5000000, 10, "SELECT `id` , ROW_NUMBER ( ) OVER ( ORDER BY `created` ) FROM `fact` LIMIT ?"),
-		"column named count":                query("cc", 5000000, 10, "SELECT `count` , SUM ( `amount` ) FROM `orders`"),
-		"unfiltered join rollup with limit": query("jl", 5000000, 10, "SELECT `d` . `name` , SUM ( `f` . `amt` ) FROM `dim` `d` JOIN `fact` `f` ON `f` . `dim_id` = `d` . `id` GROUP BY `d` . `name` ORDER BY ? LIMIT ?"),
-		"named window":                      query("nw", 5000000, 10, "SELECT `id` , ROW_NUMBER ( ) OVER `w` FROM `fact` WINDOW `w` AS ( ORDER BY `created` ) LIMIT ?"),
+		"writes return nothing":                 query("w", 5000000, 0, "UPDATE `orders` SET `status` = ? WHERE `id` = ?"),
+		"ratio below 100":                       query("r", 500000, 10000, "SELECT `id` FROM `orders` WHERE `email` = ?"),
+		"ratio exactly 99":                      query("e", 990000, 10000, "SELECT `id` FROM `orders` WHERE `email` = ?"),
+		"under 1000 examined per call":          query("p", 9990, 1, "SELECT `id` FROM `orders` WHERE `email` = ?"),
+		"unfiltered group by":                   query("g", 5000000, 10, "SELECT `status` , `id` FROM `orders` GROUP BY `status`"),
+		"unfiltered aggregate":                  query("s", 5000000, 10, "SELECT SUM ( `amount` ) FROM `orders`"),
+		"unfiltered group_concat":               query("gc", 5000000, 10, "SELECT GROUP_CONCAT ( `tag` ) FROM `tags`"),
+		"performance schema read":               query("ps", 5000000, 10, "SELECT `ERROR_NUMBER` FROM `performance_schema` . `events_errors_summary_global_by_error` WHERE `SUM_ERROR_RAISED` > ?"),
+		"mysql schema read":                     query("ms", 5000000, 10, "SELECT `User` FROM `mysql` . `user` WHERE `Host` = ?"),
+		"unfiltered join rollup":                query("j", 5000000, 10, "SELECT `d` . `name` , SUM ( `f` . `amt` ) FROM `dim` `d` JOIN `fact` `f` ON `f` . `dim_id` = `d` . `id` GROUP BY `d` . `name`"),
+		"window function":                       query("wf", 5000000, 10, "SELECT `id` , ROW_NUMBER ( ) OVER ( ORDER BY `created` ) FROM `fact` LIMIT ?"),
+		"column named count":                    query("cc", 5000000, 10, "SELECT `count` , SUM ( `amount` ) FROM `orders`"),
+		"unfiltered join rollup with limit":     query("jl", 5000000, 10, "SELECT `d` . `name` , SUM ( `f` . `amt` ) FROM `dim` `d` JOIN `fact` `f` ON `f` . `dim_id` = `d` . `id` GROUP BY `d` . `name` ORDER BY ? LIMIT ?"),
+		"named window":                          query("nw", 5000000, 10, "SELECT `id` , ROW_NUMBER ( ) OVER `w` FROM `fact` WINDOW `w` AS ( ORDER BY `created` ) LIMIT ?"),
+		"unfiltered aggregate before intersect": query("is", 5000000, 10, "SELECT COUNT ( * ) FROM `a` JOIN `b` ON `a` . `id` = `b` . `a_id` INTERSECT SELECT ? FROM `c`"),
 		"fewer than five calls": func() model.Query {
 			q := query("f", 5000000, 10, "SELECT `id` FROM `orders` WHERE `email` = ?")
 			q.Calls = 4
@@ -190,6 +191,7 @@ func TestReadAmplificationFinding(t *testing.T) {
 		"column named count without aggregate":      query("cn", 5000000, 10, "SELECT `count` FROM `t` ORDER BY `count` LIMIT ?"),
 		"filter inside a join condition":            query("on", 5000000, 10, "SELECT `d` . `name` , SUM ( `f` . `amt` ) FROM `dim` `d` JOIN `fact` `f` ON `f` . `dim_id` = `d` . `id` AND `f` . `status` = ? GROUP BY `d` . `name`"),
 		"filter inside a second join condition":     query("on2", 5000000, 10, "SELECT COUNT ( * ) FROM `a` JOIN `b` ON `a` . `id` = `b` . `a_id` JOIN `c` ON `c` . `b_id` = `b` . `id` AND `c` . `kind` = ? GROUP BY `a` . `id`"),
+		"alias containing the word over":            query("ov", 5000000, 10, "SELECT `id` AS `hits over time` FROM `t` ORDER BY `id` LIMIT ?"),
 	} {
 		if _, ok := apply(q)["query_read_amplification_app_"+q.Digest]; !ok {
 			t.Fatalf("%s should trigger read amplification", name)

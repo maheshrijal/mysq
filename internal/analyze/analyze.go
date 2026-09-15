@@ -470,8 +470,13 @@ func readsManyByDesign(schema, statement string) bool {
 	if joinConditionFiltered(upper) {
 		return false
 	}
-	return strings.Contains(upper, "GROUP BY") || strings.Contains(upper, " OVER ") || aggregateCall.MatchString(upper)
+	return strings.Contains(upper, "GROUP BY") || windowCall.MatchString(upper) || aggregateCall.MatchString(upper)
 }
+
+// windowCall matches a window function: a call followed by an inline or named
+// window. Digests render identifiers backticked, so an alias containing the
+// word OVER does not match.
+var windowCall = regexp.MustCompile("\\) OVER [(`]")
 
 // joinConditionFiltered reports a parameter inside any JOIN ... ON expression.
 // Each expression ends at the next join or at the first clause that follows
@@ -484,7 +489,7 @@ func joinConditionFiltered(upper string) bool {
 			return false
 		}
 		end := len(after)
-		for _, clause := range []string{" JOIN ", " WHERE ", " GROUP BY", " HAVING ", " WINDOW ", " ORDER BY", " LIMIT ", " UNION "} {
+		for _, clause := range []string{" JOIN ", " WHERE ", " GROUP BY", " HAVING ", " WINDOW ", " ORDER BY", " LIMIT ", " UNION ", " INTERSECT ", " EXCEPT "} {
 			if i := strings.Index(after, clause); i >= 0 && i < end {
 				end = i
 			}
