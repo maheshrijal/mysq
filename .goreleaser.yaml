@@ -37,12 +37,14 @@ homebrew_casks:
     commit_author:
       name: Mahesh Rijal
       email: 62394512+maheshrijal@users.noreply.github.com
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-d", "com.apple.quarantine", "#{staged_path}/mysq"]
-          end
+    # Emit the structured hook directly; hooks.post.install generates deprecated postflight.
+    # Escape Homebrew's runtime token through GoReleaser's template pass.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-d", "com.apple.quarantine", "{{ "{{staged_path}}" }}/mysq"]
+        end
+      end
 
 changelog:
   sort: asc
