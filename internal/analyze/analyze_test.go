@@ -89,6 +89,116 @@ func TestCheapDominantQueryDoesNotWarn(t *testing.T) {
 	}
 }
 
+func TestReadAmplificationFinding(t *testing.T) {
+	apply := func(queries ...model.Query) map[string]model.Finding {
+		ctx := &model.Context{Server: model.Server{PerformanceSchema: true}, Metrics: model.Metrics{BufferPoolHitPercent: 100}, Queries: queries}
+		Apply(ctx)
+		out := map[string]model.Finding{}
+		for _, f := range ctx.Findings {
+			out[f.ID] = f
+		}
+		return out
+	}
+	query := func(digest string, examined, sent uint64, statement string) model.Query {
+		return model.Query{Schema: "app", Digest: digest, Calls: 10, TotalLatencyMillis: 100, RowsExamined: examined, RowsSent: sent, Statement: statement}
+	}
+
+	f, ok := apply(query("a", 5000000, 10, "SELECT `id` FROM `orders` WHERE `email` = ?"))["query_read_amplification_app_a"]
+	if !ok || f.Severity != model.SeverityWarning || f.Evidence["rows_examined_per_returned"] != 500000.0 {
+		t.Fatalf("expected warning read amplification finding, got %+v", f)
+	}
+	if f := apply(query("b", 50000, 100, "SELECT `id` FROM `orders` WHERE `email` = ?"))["query_read_amplification_app_b"]; f.Severity != model.SeverityNote {
+		t.Fatalf("expected note for ratio 500 at 5000 rows per call, got %+v", f)
+	}
+	if f := apply(query("c", 2000000, 4000, "SELECT `id` FROM `orders` WHERE `email` = ?"))["query_read_amplification_app_c"]; f.Severity != model.SeverityWarning {
+		t.Fatalf("expected warning for 200000 rows per call even at ratio 500, got %+v", f)
+	}
+	ratioOnly := query("ro", 2000000, 1000, "SELECT `id` FROM `orders` WHERE `email` = ?")
+	ratioOnly.Calls = 1000
+	if f := apply(ratioOnly)["query_read_amplification_app_ro"]; f.Severity != model.SeverityWarning {
+		t.Fatalf("expected warning for ratio 2000 at 2000 rows per call, got %+v", f)
+	}
+
+	// The most wasted rows wins, not the first digest by database time.
+	first := query("first", 100000, 100, "SELECT `id` FROM `orders` WHERE `email` = ?")
+	first.TotalLatencyMillis = 1000
+	worst := query("worst", 5000000, 10, "SELECT `id` FROM `orders` WHERE `token` = ?")
+	findings := apply(first, worst)
+	if _, ok := findings["query_read_amplification_app_worst"]; !ok {
+		t.Fatalf("expected the worst digest to be reported, got %v", findings)
+	}
+	if _, ok := findings["query_read_amplification_app_first"]; ok {
+		t.Fatal("reported more than one read amplification digest")
+	}
+
+	// The digest query_no_index reports is not scored twice, but a second
+	// no-index digest that query_no_index did not report is still eligible.
+	noIndex := query("n", 5000000, 10, "SELECT `id` FROM `orders` WHERE `note` = ?")
+	noIndex.NoIndexUsed = 10
+	noIndex.TotalLatencyMillis = 1000
+	second := query("n2", 500000, 10, "SELECT `id` FROM `orders` WHERE `token` = ?")
+	second.NoIndexUsed = 1
+	findings = apply(noIndex, second)
+	if _, ok := findings["query_no_index_app_n"]; !ok {
+		t.Fatal("expected query_no_index")
+	}
+	if _, ok := findings["query_read_amplification_app_n"]; ok {
+		t.Fatal("read amplification duplicated query_no_index for the same digest")
+	}
+	if _, ok := findings["query_read_amplification_app_n2"]; !ok {
+		t.Fatalf("second no-index digest was reported by nothing: %v", findings)
+	}
+
+	// A digest under a system default database is exempt without a schema prefix.
+	system := query("sd", 5000000, 10, "SELECT COUNT ( * ) FROM `setup_instruments` WHERE `ENABLED` = ?")
+	system.Schema = "performance_schema"
+	if _, ok := apply(system)["query_read_amplification_performance_schema_sd"]; ok {
+		t.Fatal("system-schema default database should be exempt")
+	}
+
+	for name, q := range map[string]model.Query{
+		"writes return nothing":                 query("w", 5000000, 0, "UPDATE `orders` SET `status` = ? WHERE `id` = ?"),
+		"ratio below 100":                       query("r", 500000, 10000, "SELECT `id` FROM `orders` WHERE `email` = ?"),
+		"ratio exactly 99":                      query("e", 990000, 10000, "SELECT `id` FROM `orders` WHERE `email` = ?"),
+		"under 1000 examined per call":          query("p", 9990, 1, "SELECT `id` FROM `orders` WHERE `email` = ?"),
+		"unfiltered group by":                   query("g", 5000000, 10, "SELECT `status` , `id` FROM `orders` GROUP BY `status`"),
+		"unfiltered aggregate":                  query("s", 5000000, 10, "SELECT SUM ( `amount` ) FROM `orders`"),
+		"unfiltered group_concat":               query("gc", 5000000, 10, "SELECT GROUP_CONCAT ( `tag` ) FROM `tags`"),
+		"performance schema read":               query("ps", 5000000, 10, "SELECT `ERROR_NUMBER` FROM `performance_schema` . `events_errors_summary_global_by_error` WHERE `SUM_ERROR_RAISED` > ?"),
+		"mysql schema read":                     query("ms", 5000000, 10, "SELECT `User` FROM `mysql` . `user` WHERE `Host` = ?"),
+		"unfiltered join rollup":                query("j", 5000000, 10, "SELECT `d` . `name` , SUM ( `f` . `amt` ) FROM `dim` `d` JOIN `fact` `f` ON `f` . `dim_id` = `d` . `id` GROUP BY `d` . `name`"),
+		"window function":                       query("wf", 5000000, 10, "SELECT `id` , ROW_NUMBER ( ) OVER ( ORDER BY `created` ) FROM `fact` LIMIT ?"),
+		"column named count":                    query("cc", 5000000, 10, "SELECT `count` , SUM ( `amount` ) FROM `orders`"),
+		"unfiltered join rollup with limit":     query("jl", 5000000, 10, "SELECT `d` . `name` , SUM ( `f` . `amt` ) FROM `dim` `d` JOIN `fact` `f` ON `f` . `dim_id` = `d` . `id` GROUP BY `d` . `name` ORDER BY ? LIMIT ?"),
+		"named window":                          query("nw", 5000000, 10, "SELECT `id` , ROW_NUMBER ( ) OVER `w` FROM `fact` WINDOW `w` AS ( ORDER BY `created` ) LIMIT ?"),
+		"unfiltered aggregate before intersect": query("is", 5000000, 10, "SELECT COUNT ( * ) FROM `a` JOIN `b` ON `a` . `id` = `b` . `a_id` INTERSECT SELECT ? FROM `c`"),
+		"fewer than five calls": func() model.Query {
+			q := query("f", 5000000, 10, "SELECT `id` FROM `orders` WHERE `email` = ?")
+			q.Calls = 4
+			return q
+		}(),
+	} {
+		if _, ok := apply(q)["query_read_amplification_app_"+q.Digest]; ok {
+			t.Fatalf("%s should not trigger read amplification", name)
+		}
+	}
+	for name, q := range map[string]model.Query{
+		"filtered aggregate can use a better index": query("fa", 5000000, 10, "SELECT SUM ( `amount` ) FROM `orders` WHERE `status` = ?"),
+		"aggregate in a subquery":                   query("sq", 5000000, 10, "SELECT `id` FROM `orders` WHERE `total` > ( SELECT AVG ( `total` ) FROM `orders` )"),
+		"function name ending in an aggregate name": query("cs", 5000000, 10, "SELECT `id` FROM `orders` WHERE CHECKSUM ( `blob` ) = ?"),
+		"distinct scan":                             query("d", 5000000, 10, "SELECT DISTINCTROW `user_id` FROM `events`"),
+		"aggregate name inside another function":    query("bc", 5000000, 10, "SELECT `id` FROM `t` ORDER BY BIT_COUNT ( `mask` )"),
+		"column named count without aggregate":      query("cn", 5000000, 10, "SELECT `count` FROM `t` ORDER BY `count` LIMIT ?"),
+		"filter inside a join condition":            query("on", 5000000, 10, "SELECT `d` . `name` , SUM ( `f` . `amt` ) FROM `dim` `d` JOIN `fact` `f` ON `f` . `dim_id` = `d` . `id` AND `f` . `status` = ? GROUP BY `d` . `name`"),
+		"filter inside a second join condition":     query("on2", 5000000, 10, "SELECT COUNT ( * ) FROM `a` JOIN `b` ON `a` . `id` = `b` . `a_id` JOIN `c` ON `c` . `b_id` = `b` . `id` AND `c` . `kind` = ? GROUP BY `a` . `id`"),
+		"alias containing the word over":            query("ov", 5000000, 10, "SELECT `id` AS `hits over time` FROM `t` ORDER BY `id` LIMIT ?"),
+	} {
+		if _, ok := apply(q)["query_read_amplification_app_"+q.Digest]; !ok {
+			t.Fatalf("%s should trigger read amplification", name)
+		}
+	}
+}
+
 func TestCapturedOperationalFailuresProduceFindings(t *testing.T) {
 	ctx := &model.Context{Server: model.Server{PerformanceSchema: true}, Metrics: model.Metrics{BufferPoolHitPercent: 100, RedoWaitsPerSecond: 100, StatementErrorsPerSec: 100}, MetadataLocks: []model.MetadataLock{{Status: "PENDING"}}}
 	Apply(ctx)

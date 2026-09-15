@@ -166,6 +166,15 @@ type Query struct {
 	ActiveUsers        []string `json:"active_users,omitempty"`
 }
 
+// RowsExaminedPerReturned reports how many rows a statement examined for each row
+// it returned. It is undefined for statements that returned nothing.
+func (q Query) RowsExaminedPerReturned() (float64, bool) {
+	if q.RowsSent == 0 {
+		return 0, false
+	}
+	return float64(q.RowsExamined) / float64(q.RowsSent), true
+}
+
 type Table struct {
 	Schema             string  `json:"schema"`
 	Name               string  `json:"name"`

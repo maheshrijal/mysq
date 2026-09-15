@@ -29,10 +29,13 @@ func semanticRow(values, headings []string, widths []int, selected bool) string 
 }
 
 func tableCellColor(heading, value string) lipgloss.TerminalColor {
+	if heading == "READ/RET" && (value == "—" || value == "<1x") {
+		return text
+	}
 	switch heading {
 	case "ID", "TRX", "USER", "ACTIVE USERS", "HOST", "TABLE", "OBJECT", "INDEX AND COLUMNS", "EVENT", "FILE INSTRUMENT", "CONSUMER", "NAME":
 		return identity
-	case "DB TIME", "CALLS", "P95", "ROWS EXAM", "TIME", "AGE", "TOTAL", "ACTIVE", "SLEEP", "OTHER",
+	case "DB TIME", "CALLS", "P95", "READ/RET", "TIME", "AGE", "TOTAL", "ACTIVE", "SLEEP", "OTHER",
 		"LOCKED", "MODIFIED", "SIZE", "ROWS", "READS", "WRITES", "READ TIME", "WRITE TIME", "CARDINALITY",
 		"VALUE", "RELATED", "SHARE", "WAIT/S", "EVENTS/S", "CUM TOTAL", "READ/S", "WRITE/S", "READ LAT", "WRITE LAT",
 		"ERROR", "SAMPLE/S", "CURRENT", "HIGH WATER", "ALLOCATIONS":

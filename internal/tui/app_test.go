@@ -1301,7 +1301,7 @@ func TestQuerySelectionOpensDetailAndEscapeReturnsToList(t *testing.T) {
 		Health:  model.Health{Score: 100},
 		Metrics: model.Metrics{ConnectionsMax: 100, BufferPoolHitPercent: 100},
 		Queries: []model.Query{
-			{Statement: "SELECT id FROM users", Calls: 10, TotalLatencyMillis: 100, MeanLatencyMillis: 10, ActiveUsers: []string{"api"}},
+			{Statement: "SELECT id FROM users", Calls: 10, TotalLatencyMillis: 100, MeanLatencyMillis: 10, RowsExamined: 0, RowsSent: 10, ActiveUsers: []string{"api"}},
 			{Digest: "digest-2", Schema: "app", Statement: "UPDATE orders SET status = ? WHERE id = ?", Calls: 3, TotalLatencyMillis: 90, MeanLatencyMillis: 30, RowsExamined: 12, RowsSent: 1, NoIndexUsed: 1, TmpTables: 2, TmpDiskTables: 1, ActiveUsers: []string{"worker"}},
 		},
 	}
@@ -1320,15 +1320,15 @@ func TestQuerySelectionOpensDetailAndEscapeReturnsToList(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 	view := m.View()
-	if !m.queryDetail || !strings.Contains(view, "NORMALIZED SQL") || !strings.Contains(view, "UPDATE orders SET status") || !strings.Contains(view, "USER") || !strings.Contains(view, "worker") {
+	if !m.queryDetail || !strings.Contains(view, "NORMALIZED SQL") || !strings.Contains(view, "UPDATE orders SET status") || !strings.Contains(view, "READ PER RETURNED") || !strings.Contains(view, "12x") || !strings.Contains(view, "USER") || !strings.Contains(view, "worker") {
 		t.Fatalf("enter did not open useful query detail:\n%s", view)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)
 	view = m.View()
-	if m.queryDetail || m.queryIndex != 1 || !strings.Contains(view, "ROWS EXAM") || !strings.Contains(view, "USER") || !strings.Contains(view, "QUERY") {
-		t.Fatalf("escape did not return to the selected query row:\n%s", view)
+	if m.queryDetail || m.queryIndex != 1 || !strings.Contains(view, "READ/RET") || !strings.Contains(view, "<1x") || !strings.Contains(view, "12x") || !strings.Contains(view, "USER") || !strings.Contains(view, "QUERY") {
+		t.Fatalf("escape did not return to the selected query row with ratio values:\n%s", view)
 	}
 	if strings.Contains(view, "TMP-D") || strings.Contains(view, "EXAM/SENT") {
 		t.Fatalf("query list retained low-value headers:\n%s", view)
