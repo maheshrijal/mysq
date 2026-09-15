@@ -467,10 +467,33 @@ func readsManyByDesign(schema, statement string) bool {
 	if strings.Contains(upper, " WHERE ") {
 		return false
 	}
-	if _, joined, ok := strings.Cut(upper, " ON "); ok && strings.Contains(joined, "?") {
+	if joinConditionFiltered(upper) {
 		return false
 	}
-	return strings.Contains(upper, "GROUP BY") || strings.Contains(upper, " OVER (") || aggregateCall.MatchString(upper)
+	return strings.Contains(upper, "GROUP BY") || strings.Contains(upper, " OVER ") || aggregateCall.MatchString(upper)
+}
+
+// joinConditionFiltered reports a parameter inside any JOIN ... ON expression.
+// Each expression ends at the next join or at the first clause that follows
+// the FROM list, so later parameters such as LIMIT ? do not count.
+func joinConditionFiltered(upper string) bool {
+	rest := upper
+	for {
+		_, after, ok := strings.Cut(rest, " ON ")
+		if !ok {
+			return false
+		}
+		end := len(after)
+		for _, clause := range []string{" JOIN ", " WHERE ", " GROUP BY", " HAVING ", " WINDOW ", " ORDER BY", " LIMIT ", " UNION "} {
+			if i := strings.Index(after, clause); i >= 0 && i < end {
+				end = i
+			}
+		}
+		if strings.Contains(after[:end], "?") {
+			return true
+		}
+		rest = after[end:]
+	}
 }
 
 func shortDigest(value string) string {
