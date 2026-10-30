@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+SECONDS=0
+echo 'Installing missing system prerequisites'
+packages=()
+for package in ca-certificates curl build-essential expect docker-ce docker-compose-plugin; do
+  if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+    packages+=("$package")
+  fi
+done
+if ((${#packages[@]})); then
+  # Amp's Debian base image includes the Docker apt repository.
+  sudo apt-get update -qq
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+fi
+echo "System prerequisites ready (${SECONDS}s)"
+
+# Stay on the repository's Go 1.25 release line, with security patch updates.
+go_version=1.25.14
+case "$(uname -m)" in
+  x86_64) arch=amd64; checksum=a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712 ;;
+  aarch64) arch=arm64; checksum=9bf234ea70ffec9347fdf6b22ce4add51717d3386a38a441e8c8743fceb5eaee ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+go_root="$HOME/.local/lib/go-$go_version"
+if [[ ! -x "$go_root/bin/go" ]]; then
+  echo "Installing Go $go_version"
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf "$temp_dir"' EXIT
+  curl --fail --location --silent --show-error --retry 3 \
+    "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" -o "$temp_dir/go.tar.gz"
+  echo "$checksum  $temp_dir/go.tar.gz" | sha256sum --check --status
+  tar -xzf "$temp_dir/go.tar.gz" -C "$temp_dir"
+  mkdir -p "$(dirname "$go_root")"
+  mv "$temp_dir/go" "$go_root"
+fi
+# /usr/local/bin is also on clean non-interactive login shells' PATH.
+sudo ln -sfn "$go_root/bin/go" /usr/local/bin/go
+sudo ln -sfn "$go_root/bin/gofmt" /usr/local/bin/gofmt
+go version
+echo "Toolchain ready (${SECONDS}s)"
+
+echo 'Downloading locked Go modules'
+time go mod download
+echo 'Warming build and race-test caches (no database needed)'
+time go build -trimpath -o bin/mysq ./cmd/mysq
+time go test -race -run '^$' ./...
+echo "Setup complete (${SECONDS}s). Use make check; for E2E, run amp orb services ensure then make e2e."

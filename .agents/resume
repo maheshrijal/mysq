@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# No authentication or dependency installation is needed on wake. Docker's
+# lifecycle is owned by .amp/services.yaml, not this short readiness check.
+go version
+docker compose version
+command -v expect >/dev/null
