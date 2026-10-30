@@ -41,7 +41,7 @@ func Focused(w io.Writer, section string, ctx *model.Context) error {
 		}
 
 	case "queries":
-		fmt.Fprintln(tw, "TOTAL\tSHARE\tCALLS\tMEAN\tP95\tP99\tMAX\tERRORS/WARN\tEXAMINED\tSENT\tACTIVE USER\tSTATEMENT")
+		fmt.Fprintln(tw, "TOTAL\tSHARE\tCALLS\tMEAN\tP95\tP99\tMAX\tERRORS/WARN\tEXAMINED\tSENT\tREAD/RET\tACTIVE USER\tSTATEMENT")
 		var total float64
 		for _, item := range ctx.Queries {
 			total += item.TotalLatencyMillis
@@ -55,10 +55,16 @@ func Focused(w io.Writer, section string, ctx *model.Context) error {
 			if len(item.ActiveUsers) > 0 {
 				users = strings.Join(item.ActiveUsers, ",")
 			}
-			fmt.Fprintf(tw, "%s\t%.1f%%\t%s\t%.2fms\t%s\t%s\t%s\t%d/%d\t%s\t%s\t%s\t%s\n", duration(item.TotalLatencyMillis), share,
+			ratio := "—"
+			if value, ok := item.RowsExaminedPerReturned(); ok && value < 1 {
+				ratio = "<1x"
+			} else if ok {
+				ratio = humanCount(uint64(value)) + "x"
+			}
+			fmt.Fprintf(tw, "%s\t%.1f%%\t%s\t%.2fms\t%s\t%s\t%s\t%d/%d\t%s\t%s\t%s\t%s\t%s\n", duration(item.TotalLatencyMillis), share,
 				humanCount(item.Calls), item.MeanLatencyMillis, duration(item.P95LatencyMillis), duration(item.P99LatencyMillis),
 				duration(item.MaxLatencyMillis), item.Errors, item.Warnings, humanCount(item.RowsExamined), humanCount(item.RowsSent),
-				users, truncate(item.Statement, 76))
+				ratio, users, truncate(item.Statement, 76))
 		}
 	case "tables":
 		fmt.Fprintln(tw, "SIZE\tROWS\tREADS\tWRITES\tPK\tTABLE")
