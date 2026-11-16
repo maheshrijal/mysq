@@ -28,7 +28,7 @@ brew upgrade maheshrijal/tap/mysq
 **Standalone installer:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | sh
 ```
 
 Open a new terminal after installation, or run the PATH command it prints. Run the same command to upgrade to the latest release; it reports the old and new versions.
@@ -49,7 +49,7 @@ Add `$(go env GOPATH)/bin` to PATH, or your `GOBIN` directory if configured.
 The curl installer needs a published release. It verifies SHA-256 checksums, installs into `~/.local/bin`, and configures PATH for sh, Bash, Zsh, and Fish. Set `INSTALL_DIR` to choose another directory, `VERSION` to pin a published tag, or `MYSQ_NO_MODIFY_PATH=1` to manage PATH yourself:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | env INSTALL_DIR="$HOME/bin" sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/maheshrijal/mysq/main/install.sh | env INSTALL_DIR="$HOME/bin" sh
 ```
 
 </details>
